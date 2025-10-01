@@ -153,18 +153,13 @@ for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
     -- zoneobj.owner = 0
     cz.zonesByName[zonename] = zoneobj --indexed by name of the trigger zone
     table.insert(cz.allZones, zoneobj.name) --list of all zone names / names of all zones
-    trigger.action.circleToAll(-1, 5000+zoneobj.zoneId, zoneobj.point, 700, {0,0,0,0.5}, {0,0,0,0}, 1)
+    trigger.action.circleToAll(-1, 5000+zoneobj.zoneId, zoneobj.point, 500, {0.5,0.5,0.5,0.8}, {0.6,0.6,0.6,0.5}, 1)
   end
 end
 
 local perimIds = cz:findPerimeter(cz.allZones)
 env.info("Perim IDs"..mist.utils.tableShow(perimIds))
 env.info("length of table: "..#perimIds)
-for i, zoneId in pairs(perimIds) do
-    local zone = cz:getZone(zoneId)
-    mist.marker.drawZone(zoneId, { color = {1,1,1,0.2} })
-    trigger.action.textToAll(-1, 240+i, zone.point, {1,1,0.6,1}, {0,0,0,0}, 14, true, "Perim "..i.." / Zone "..perimIds[i].."="..zoneId.." ("..cz.zonesByName[zoneId].name..")")
-end
 
 -- choose a few perimeter points for blue
 -- requirements: adjacent, at least 2, not more than half the total
@@ -183,7 +178,7 @@ for i = startElem, endElem do
     table.insert(blueOuterPerimIds, perimIds[pos])
     env.info("i: "..i..", pos in perim table: "..pos)
     env.info("perimeter zone #"..pos.." is value (zone) of "..perimIds[pos]..", which is CZ[_]")
-    mist.marker.drawZone(perimIds[pos], { fillColor = {0,0.5,1,0.5} })
+    -- mist.marker.drawZone(perimIds[pos], { fillColor = {0,0.5,1,0.5} })
 end
 env.info("Blue starts with "..#blueOuterPerimIds.." perimeter zones")
 env.info("They are "..mist.utils.tableShow(blueOuterPerimIds))
@@ -192,7 +187,6 @@ cz:assignCompassMaxima()
 local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
 local height = cz.maxima.northmost.x - cz.maxima.southmost.x
 local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
-trigger.action.circleToAll(-1, 1, centerpoint, 350, {0,0,0,0}, {0.8,0.8,0.1,1}, 1) -- mark center of combat area
 
 --find centroid (averaged point, center of mass) of blue perimeter, and use that to find nearby (non-perimeter) zones to create a blue cluster
 --this method could stand to be replaced with something better
@@ -203,7 +197,6 @@ for i, id in pairs(blueOuterPerimIds) do
     sumY = sumY + cz.zonesByName[id].y
 end
 local ctrPerim = { x = sumX/#blueOuterPerimIds, y = sumY/#blueOuterPerimIds }
-trigger.action.circleToAll(-1, 3, {x = ctrPerim.x, y = 200, z = ctrPerim.y}, 350, {0,0,0,0}, {0.3,1,0.6,1}, 1) -- mark center of blue edge area
 local startDistance = math.min(width, height)/2
 local bluezoneIds = cz:findZonesNearPoint(ctrPerim, cz.allZones, startDistance)
 -- make sure all previously chosen blue outer perim points are included
@@ -214,8 +207,9 @@ for _, name in pairs(blueOuterPerimIds) do
 end
 env.info("made nearby zones blue: "..#bluezoneIds)
 
-for _, zoneId in pairs(bluezoneIds) do
-    mist.marker.drawZone(zoneId, { color = {0,0,0,0}, fillColor = {0,0,0.7,0.3} })
+for i, zoneId in pairs(bluezoneIds) do
+    -- mist.marker.drawZone(zoneId, { color = {0,0,0,0}, fillColor = {0,0,0.7,0.3} })
+    trigger.action.circleToAll(-1, 6000+i, cz:getZone(zoneId).point, 510, {0.1,0.4,1,0.4}, {0.1,0.4,1,0.1}, 1)
 end
 
 --remove points that were elements of the whole perimeter
@@ -223,12 +217,6 @@ end
 local bluePerimIds = cz:findPerimeter(bluezoneIds)
 env.info(#bluePerimIds.." zones form the blue perimeter: "..mist.utils.tableShow(bluePerimIds))
 env.info("battlefront anchor zones "..blueOuterPerimIds[1]..", "..blueOuterPerimIds[#blueOuterPerimIds])
-
-for i, zoneId in pairs(bluePerimIds) do
-    local pt = mist.projectPoint(cz:getZone(zoneId).point, 500, math.rad(180))
-    mist.marker.drawZone(zoneId, { color = {0.1,0,1,1} })
-    trigger.action.textToAll(-1, 140+i, pt, {0,0,0,0.5}, {0,0,0,0}, 14, true, "Blue Perim "..i.." / Zone "..zoneId)
-end
 
 --create a sequence of line segments that connect blue zones between first and last bluePerimIds
 --we have 3 sequences of points:
@@ -254,13 +242,15 @@ end
 env.info("Frontline points (inclusive) "..mist.utils.tableShow(frontlinePoints))
 
 local ptA = cz:getZone(frontlinePoints[1]).point
+local heading = mist.utils.getHeadingPoints(ctrPerim, ptA)
+ptA = mist.projectPoint(ptA, 2400, heading)
 env.info("line segment from "..frontlinePoints[1])
 local ptB
 for i = 2, #frontlinePoints do
     ptB = cz:getZone(frontlinePoints[i]).point
-    trigger.action.markupToAll(7, -1, 1700+i, ptA, ptB, {0,0,1,1}, {0,0,1,1}, 4)
+    heading = mist.utils.getHeadingPoints(ctrPerim, ptB)
+    ptB = mist.projectPoint(ptB, 2200, heading)
+    trigger.action.lineToAll(-1, 1700+i, ptA, ptB, {0,0.3,1,1}, 1)
     env.info("line segment from "..frontlinePoints[i])
-    -- mist.marker.add({ pos = ptB, id = 800+i, markType = 5, message = "Line "..blueedge[i].name })
-    -- trigger.action.textToAll(-1, 800+i, ptB, {0,0,0,1}, {0,0,0,0}, 20, true, "Line "..blueedge[i].name.." to "..blueedge[i-1].name)
     ptA = ptB
 end
