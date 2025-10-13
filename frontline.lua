@@ -244,13 +244,17 @@ env.info("Frontline points (inclusive) "..mist.utils.tableShow(frontlinePoints))
 local ptA = cz:getZone(frontlinePoints[1]).point
 local heading = mist.utils.getHeadingPoints(ctrPerim, ptA)
 ptA = mist.projectPoint(ptA, 2400, heading)
+local ptA2 = mist.projectPoint(ptA, 100, heading)
 env.info("line segment from "..frontlinePoints[1])
-local ptB
+local ptB, ptB2
 for i = 2, #frontlinePoints do
     ptB = cz:getZone(frontlinePoints[i]).point
     heading = mist.utils.getHeadingPoints(ctrPerim, ptB)
     ptB = mist.projectPoint(ptB, 2200, heading)
+    ptB2 = mist.projectPoint(ptB, 100, heading)
     trigger.action.lineToAll(-1, 1700+i, ptA, ptB, {0,0.3,1,1}, 1)
+    trigger.action.lineToAll(-1, 1800+i, ptA2, ptB2, {0,0.3,1,1}, 1)
     env.info("line segment from "..frontlinePoints[i])
     ptA = ptB
+    ptA2 = ptB2
 end
