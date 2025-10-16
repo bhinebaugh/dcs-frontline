@@ -65,6 +65,211 @@ function ControlZones:getZone(name)
     return self.zonesByName[name]
 end
 
+function ControlZones:constructDelaunayIndex()
+    local points = {}
+    local keyToIndex = {}
+    local indexToKey = {}
+    local index = 1
+
+    -- Convert to indexed array for algorithm
+    -- e.g. {1: {zone info}, ...}
+    for key, point in pairs(self.zonesByName) do
+        points[index] = {x = point.x, y = point.y}
+        keyToIndex[key] = index
+        indexToKey[index] = key
+        index = index + 1
+    end
+
+    local triangles = self:delaunayTriangulate(points)
+
+    -- Convert back to key-based triangles
+    self.triangles = {}
+    for _, tri in ipairs(triangles) do
+        table.insert(self.triangles, {
+            indexToKey[tri[1]],
+            indexToKey[tri[2]],
+            indexToKey[tri[3]]
+        })
+    end
+
+    self.keyToIndex = keyToIndex
+    self.indexToKey = indexToKey
+
+end
+
+-- Bowyer-Watson Delaunay Triangulation
+function ControlZones:delaunayTriangulate(points)
+    if #points < 3 then return {} end
+
+    -- Find bounding super-triangle to bootstrap the algorithm
+    -- (Starting at infinity)
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+
+    for _, p in ipairs(points) do
+        minX = math.min(minX, p.x)
+        minY = math.min(minY, p.y)
+        maxX = math.max(maxX, p.x)
+        maxY = math.max(maxY, p.y)
+    end
+
+    local dx = maxX - minX
+    local dy = maxY - minY
+    local deltaMax = math.max(dx, dy) * 2
+
+    local superTriangle = {
+        {x = minX - deltaMax, y = minY - 1},
+        {x = minX + deltaMax * 2, y = minY - 1},
+        {x = minX + deltaMax, y = maxY + deltaMax * 2}
+    }
+
+    -- Add super triangle points
+    for _, p in ipairs(superTriangle) do
+        table.insert(points, p)
+    end
+
+    local triangles = {{#points - 2, #points - 1, #points}}
+
+    -- Add each point one at a time
+    for i = 1, #points - 3 do
+        local point = points[i]
+        local badTriangles = {}
+
+        -- Find triangles whose circumcircle contains the point
+        for j, tri in ipairs(triangles) do
+            if self:inCircumcircle(point, points[tri[1]], points[tri[2]], points[tri[3]]) then
+                table.insert(badTriangles, j)
+            end
+        end
+
+        -- Find the boundary of the polygonal hole
+        local polygon = {}
+        for _, triIdx in ipairs(badTriangles) do
+            local tri = triangles[triIdx]
+            local edges = {
+                {tri[1], tri[2]},
+                {tri[2], tri[3]},
+                {tri[3], tri[1]}
+            }
+
+            for _, edge in ipairs(edges) do
+                local shared = false
+                for _, otherTriIdx in ipairs(badTriangles) do
+                    if otherTriIdx ~= triIdx then
+                        local otherTri = triangles[otherTriIdx]
+                        if self:triangleHasEdge(otherTri, edge[1], edge[2]) then
+                            shared = true
+                            break
+                        end
+                    end
+                end
+
+                if not shared then
+                    table.insert(polygon, edge)
+                end
+            end
+        end
+
+        -- Remove bad triangles (in reverse to maintain indices)
+        for j = #badTriangles, 1, -1 do
+            table.remove(triangles, badTriangles[j])
+        end
+
+        -- Create new triangles from point to polygon edges
+        for _, edge in ipairs(polygon) do
+            table.insert(triangles, {edge[1], edge[2], i})
+        end
+    end
+
+    -- Remove triangles that share vertices with super triangle
+    local finalTriangles = {}
+    local superIndices = {#points - 2, #points - 1, #points}
+
+    for _, tri in ipairs(triangles) do
+        local hasSuper = false
+        for _, v in ipairs(tri) do
+            for _, s in ipairs(superIndices) do
+                if v == s then
+                    hasSuper = true
+                    break
+                end
+            end
+            if hasSuper then break end
+        end
+
+        if not hasSuper then
+            table.insert(finalTriangles, tri)
+        end
+    end
+
+    return finalTriangles
+end
+
+-- Check if point is inside circumcircle of triangle
+function ControlZones:inCircumcircle(p, a, b, c)
+    local ax, ay = a.x - p.x, a.y - p.y
+    local bx, by = b.x - p.x, b.y - p.y
+    local cx, cy = c.x - p.x, c.y - p.y
+
+    local det = (ax * ax + ay * ay) * (bx * cy - cx * by) -
+                (bx * bx + by * by) * (ax * cy - cx * ay) +
+                (cx * cx + cy * cy) * (ax * by - bx * ay)
+
+    return det > 0
+end
+
+-- Check if triangle contains edge
+function ControlZones:triangleHasEdge(tri, v1, v2)
+    return (tri[1] == v1 and tri[2] == v2) or (tri[2] == v1 and tri[1] == v2) or
+           (tri[2] == v1 and tri[3] == v2) or (tri[3] == v1 and tri[2] == v2) or
+           (tri[3] == v1 and tri[1] == v2) or (tri[1] == v1 and tri[3] == v2)
+end
+
+-- Get perimeter edges facing another color
+function ControlZones:getPerimeterEdges(color, facingColor)
+    if not self.triangles then
+        self:buildDelaunayIndex()
+    end
+    
+    local edges = {}
+    local edgeSet = {}  -- to avoid duplicates
+    
+    for _, tri in ipairs(self.triangles) do
+        local colors = {
+            self.owner[tri[1]],
+            self.owner[tri[2]],
+            self.owner[tri[3]]
+        }
+        
+        -- Check each edge of the triangle
+        local edgePairs = {
+            {1, 2, 3},
+            {2, 3, 1},
+            {3, 1, 2}
+        }
+        
+        for _, pair in ipairs(edgePairs) do
+            local v1, v2, v3 = pair[1], pair[2], pair[3]
+            
+            -- Edge v1-v2 is part of perimeter if:
+            -- - both v1 and v2 are 'color'
+            -- - v3 is 'facingColor'
+            if colors[v1] == color and colors[v2] == color and colors[v3] == facingColor then
+                local key1, key2 = tri[v1], tri[v2]
+                local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
+                
+                if not edgeSet[edgeKey] then
+                    edgeSet[edgeKey] = true
+                    table.insert(edges, {p1 = key1, p2 = key2})
+                end
+            end
+        end
+    end
+    
+    return edges
+end
+
+
 --get zones whose names start with 'control'
 --get their coordinates
 --grow from opposing start points somehow
@@ -178,6 +383,7 @@ for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
   end
 end
 cz:setup()
+cz:constructDelaunayIndex()
 
 local perimIds = cz:findPerimeter(cz.allZones)
 cz:assignCompassMaxima()
@@ -186,62 +392,41 @@ local height = cz.maxima.northmost.x - cz.maxima.southmost.x
 local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
 
 local blueZones = cz:getCluster("blue")
---find centroid (averaged point, center of mass) of blue cluster
-local sumX = 0
-local sumY = 0
-for _, id in pairs(blueZones) do
-    sumX = sumX + cz.zonesByName[id].x
-    sumY = sumY + cz.zonesByName[id].y
+local redZones = cz:getCluster("red")
+local centroid = {}
+--find centroid (averaged point, center of mass) of opponent's cluster
+--for now this will be used as the axis along which frontlines will be offset
+for color, zoneCluster in pairs({ blue = blueZones, red = redZones }) do
+    local sumX = 0
+    local sumY = 0
+    for _, id in pairs(zoneCluster) do
+        sumX = sumX + cz.zonesByName[id].x
+        sumY = sumY + cz.zonesByName[id].y
+    end
+    centroid[color] = { x = sumX / #zoneCluster, y = sumY / #zoneCluster }
 end
 
 local rgb = {
-    blue = {0,0,1,0.5},
-    red = {1,0,0,0.5},
+    blue = {0,0.1,0.8,0.8},
+    red = {0.5,0,0.1,0.8},
     neutral = {0.1,0.1,0.1,0.5},
 }
 local i = 0
 for name, color in pairs(cz.owner) do
     i = i + 1
-    trigger.action.circleToAll(-1, 6000+i, cz:getZone(name).point, 510, {0,0,0,0}, rgb[color], 1)
+    local z = cz:getZone(name)
+    local pt = z.point
+    trigger.action.circleToAll(-1, 5000+i, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+    -- trigger.action.textToAll(-1, 6000+i, pt, {0,0,0,1}, {0,0,0,0}, 20, true, z.name)
 end
 
---create a sequence of line segments that connect blue zones between first and last bluePerimIds
---we have 3 sequences of points:
---perimIds, which is the outer polygon
---blueOuterPerimIds, which is the sequence within perimIds that is blue
---bluePerimIds, which is blueOuterPerimIds plus points not on outer polygon (ie not a member of perimIds)
-
-local frontlinePoints = {}
--- start with last outer perim point (b/c both perims are constructed as points listed ccw)
--- then continue adding from blue perim list  until first outer perim point reached, wrapping around to start of array 
-local lastSharedPerimeterId = blueOuterPerimIds[#blueOuterPerimIds]
-local frontlineStartIndex = table.findIndex(bluePerimIds, lastSharedPerimeterId)
-local p = frontlineStartIndex
-for i = 1, #bluePerimIds do
-    table.insert(frontlinePoints, bluePerimIds[p])
-    if bluePerimIds[p] == blueOuterPerimIds[1] then
-        break
-    end
-    p = p + 1
-    if p > #bluePerimIds then p = 1 end
-end
-
-env.info("Frontline points (inclusive) "..mist.utils.tableShow(frontlinePoints))
-
-local ptA = cz:getZone(frontlinePoints[1]).point
-local heading = mist.utils.getHeadingPoints(ctrPerim, ptA)
-ptA = mist.projectPoint(ptA, 2400, heading)
-local ptA2 = mist.projectPoint(ptA, 100, heading)
-env.info("line segment from "..frontlinePoints[1])
-local ptB, ptB2
-for i = 2, #frontlinePoints do
-    ptB = cz:getZone(frontlinePoints[i]).point
-    heading = mist.utils.getHeadingPoints(ctrPerim, ptB)
-    ptB = mist.projectPoint(ptB, 2200, heading)
-    ptB2 = mist.projectPoint(ptB, 100, heading)
-    trigger.action.lineToAll(-1, 1700+i, ptA, ptB, {0,0.3,1,1}, 1)
-    trigger.action.lineToAll(-1, 1800+i, ptA2, ptB2, {0,0.3,1,1}, 1)
-    env.info("line segment from "..frontlinePoints[i])
-    ptA = ptB
-    ptA2 = ptB2
+local blueFrontline = cz:getPerimeterEdges("blue", "red")
+env.info("frontline "..mist.utils.tableShow(blueFrontline))
+for i, zonePoints in pairs(blueFrontline) do
+    local z1, z2 = cz:getZone(zonePoints.p1), cz:getZone(zonePoints.p2)
+    local heading = mist.utils.getHeadingPoints(centroid["blue"], centroid["red"])
+    local p1A, p1B = mist.projectPoint(z1.point, 2000, heading), mist.projectPoint(z1.point, 2200, heading)
+    local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
+    trigger.action.lineToAll(-1, 1700+i, p1A, p2A, {0,0.3,1,1}, 1)
+    trigger.action.lineToAll(-1, 1800+i, p1B, p2B, {0,0.3,1,1}, 1)
 end
