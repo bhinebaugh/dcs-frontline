@@ -9,6 +9,7 @@ function ControlZones.new(namedZones)
     if not namedZones then
         self.allZones = {}      --array of names of zones
         self.zonesByName = {}   --full zone details indexed by zone name
+        self.owner = {}
     else
         --self.zonesByName = namedZones
         --put keys into allZones
@@ -21,6 +22,43 @@ function ControlZones.new(namedZones)
     --     southmost = nil
     -- }
     return self
+end
+
+function ControlZones:setup(options)
+    options = options or {}
+    -- Voronoi distribution from two initial random points
+    local redSeed = self.allZones[math.random(#self.allZones)]
+    local blueSeed = self.allZones[math.random(#self.allZones)]
+    while blueSeed == redSeed do
+        blueSeed = self.allZones[math.random(#self.allZones)]
+    end
+
+    local initialRedZone = self.zonesByName[redSeed]
+    env.info("Red starting zone: "..redSeed)
+    local initialBlueZone = self.zonesByName[blueSeed]
+    env.info("Blue starting zone: "..blueSeed)
+
+    for name, zone in pairs(self.zonesByName) do
+        local redDistance = self:distance(zone, initialRedZone)
+        local blueDistance = self:distance(zone, initialBlueZone)
+        self.owner[name] = (redDistance < blueDistance) and "red" or "blue"
+    end
+end
+
+function ControlZones:getCluster(color)
+    local cluster = {}
+    for name, ownerColor in pairs(self.owner) do
+        if ownerColor == color then
+            table.insert(cluster, name)
+        end
+    end
+    return cluster
+end
+
+function ControlZones:distance(p1, p2)
+    local dx = p2.x - p1.x
+    local dy = p2.y - p1.y
+    return math.sqrt(dx * dx + dy * dy)
 end
 
 function ControlZones:getZone(name)
@@ -115,23 +153,6 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
-function findNearbyZones(startzone, zones, distance)
-    env.info("### looking for points "..distance.." from "..startzone.name)
-    local nearbyzones = {}
-    for i, zone in pairs(zones) do
-        if zone.name == startzone.name then
-            env.info("pass")
-        else
-            dist = mist.utils.get3DDist(startzone.point, zone.point)
-            env.info("distance to "..zone.name.." is "..dist)
-            if dist < distance then
-                table.insert(nearbyzones, zone)
-            end
-        end
-    end
-    return nearbyzones
-end
-
 function ControlZones:findZonesNearPoint(startPoint, zoneNames, maxDistance)
     env.info("### looking for points "..maxDistance.." from "..startPoint.x..", "..startPoint.y)
     local nearbyzones = {}
@@ -156,67 +177,33 @@ for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
     trigger.action.circleToAll(-1, 5000+zoneobj.zoneId, zoneobj.point, 500, {0.5,0.5,0.5,0.8}, {0.6,0.6,0.6,0.5}, 1)
   end
 end
+cz:setup()
 
 local perimIds = cz:findPerimeter(cz.allZones)
-env.info("Perim IDs"..mist.utils.tableShow(perimIds))
-env.info("length of table: "..#perimIds)
-
--- choose a few perimeter points for blue
--- requirements: adjacent, at least 2, not more than half the total
--- result will be ids (pos) of zones in controlzones table
-local blueOuterPerimIds = {}
-
-local startElem = math.random(#perimIds)
-local endElem = startElem + math.random(math.floor(#perimIds/2)) -- blue will start with at least 2, up to half the perimeter zones
-env.info("start, end: "..startElem..", "..endElem)
-
-for i = startElem, endElem do
-    local pos = i
-    if i > #perimIds then
-        pos = i - #perimIds
-    end
-    table.insert(blueOuterPerimIds, perimIds[pos])
-    env.info("i: "..i..", pos in perim table: "..pos)
-    env.info("perimeter zone #"..pos.." is value (zone) of "..perimIds[pos]..", which is CZ[_]")
-    -- mist.marker.drawZone(perimIds[pos], { fillColor = {0,0.5,1,0.5} })
-end
-env.info("Blue starts with "..#blueOuterPerimIds.." perimeter zones")
-env.info("They are "..mist.utils.tableShow(blueOuterPerimIds))
-
 cz:assignCompassMaxima()
 local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
 local height = cz.maxima.northmost.x - cz.maxima.southmost.x
 local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
 
---find centroid (averaged point, center of mass) of blue perimeter, and use that to find nearby (non-perimeter) zones to create a blue cluster
---this method could stand to be replaced with something better
+local blueZones = cz:getCluster("blue")
+--find centroid (averaged point, center of mass) of blue cluster
 local sumX = 0
 local sumY = 0
-for i, id in pairs(blueOuterPerimIds) do
+for _, id in pairs(blueZones) do
     sumX = sumX + cz.zonesByName[id].x
     sumY = sumY + cz.zonesByName[id].y
 end
-local ctrPerim = { x = sumX/#blueOuterPerimIds, y = sumY/#blueOuterPerimIds }
-local startDistance = math.min(width, height)/2
-local bluezoneIds = cz:findZonesNearPoint(ctrPerim, cz.allZones, startDistance)
--- make sure all previously chosen blue outer perim points are included
-for _, name in pairs(blueOuterPerimIds) do
-    if not table.contains(bluezoneIds, name) then
-        table.insert(bluezoneIds, name)
-    end
-end
-env.info("made nearby zones blue: "..#bluezoneIds)
 
-for i, zoneId in pairs(bluezoneIds) do
-    -- mist.marker.drawZone(zoneId, { color = {0,0,0,0}, fillColor = {0,0,0.7,0.3} })
-    trigger.action.circleToAll(-1, 6000+i, cz:getZone(zoneId).point, 510, {0.1,0.4,1,0.4}, {0.1,0.4,1,0.1}, 1)
+local rgb = {
+    blue = {0,0,1,0.5},
+    red = {1,0,0,0.5},
+    neutral = {0.1,0.1,0.1,0.5},
+}
+local i = 0
+for name, color in pairs(cz.owner) do
+    i = i + 1
+    trigger.action.circleToAll(-1, 6000+i, cz:getZone(name).point, 510, {0,0,0,0}, rgb[color], 1)
 end
-
---remove points that were elements of the whole perimeter
---so only 'internal' perimeter remains, i.e. points facing non-blue points
-local bluePerimIds = cz:findPerimeter(bluezoneIds)
-env.info(#bluePerimIds.." zones form the blue perimeter: "..mist.utils.tableShow(bluePerimIds))
-env.info("battlefront anchor zones "..blueOuterPerimIds[1]..", "..blueOuterPerimIds[#blueOuterPerimIds])
 
 --create a sequence of line segments that connect blue zones between first and last bluePerimIds
 --we have 3 sequences of points:
