@@ -226,7 +226,7 @@ function ControlZones:triangleHasEdge(tri, v1, v2)
 end
 
 -- Get perimeter edges facing another color
-function ControlZones:getPerimeterEdges(color, facingColor)
+function ControlZones:getPerimeterEdges(color)
     if not self.triangles then
         self:buildDelaunayIndex()
     end
@@ -254,7 +254,7 @@ function ControlZones:getPerimeterEdges(color, facingColor)
             -- Edge v1-v2 is part of perimeter if:
             -- - both v1 and v2 are 'color'
             -- - v3 is 'facingColor'
-            if colors[v1] == color and colors[v2] == color and colors[v3] == facingColor then
+            if colors[v1] == color and colors[v2] == color and colors[v3] ~= color then
                 local key1, key2 = tri[v1], tri[v2]
                 local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
                 
@@ -358,20 +358,6 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
-function ControlZones:findZonesNearPoint(startPoint, zoneNames, maxDistance)
-    env.info("### looking for points "..maxDistance.." from "..startPoint.x..", "..startPoint.y)
-    local nearbyzones = {}
-    for i, name in pairs(zoneNames) do
-        local zone = self:getZone(name)
-        local dist = mist.utils.get2DDist(startPoint, { x = zone.x, y = zone.y })
-        env.info("distance to "..zone.name.." is "..dist)
-        if dist < maxDistance then
-            table.insert(nearbyzones, name)
-        end
-    end
-    return nearbyzones
-end
-
 local cz = ControlZones.new()
 for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
   if string.sub(zonename,1,7) == 'control' then
@@ -379,7 +365,7 @@ for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
     -- zoneobj.owner = 0
     cz.zonesByName[zonename] = zoneobj --indexed by name of the trigger zone
     table.insert(cz.allZones, zoneobj.name) --list of all zone names / names of all zones
-    trigger.action.circleToAll(-1, 5000+zoneobj.zoneId, zoneobj.point, 500, {0.5,0.5,0.5,0.8}, {0.6,0.6,0.6,0.5}, 1)
+    -- trigger.action.circleToAll(-1, 5000+zoneobj.zoneId, zoneobj.point, 500, {0.5,0.5,0.5,0.8}, {0.6,0.6,0.6,0.5}, 1)
   end
 end
 cz:setup()
@@ -420,13 +406,23 @@ for name, color in pairs(cz.owner) do
     -- trigger.action.textToAll(-1, 6000+i, pt, {0,0,0,1}, {0,0,0,0}, 20, true, z.name)
 end
 
-local blueFrontline = cz:getPerimeterEdges("blue", "red")
-env.info("frontline "..mist.utils.tableShow(blueFrontline))
-for i, zonePoints in pairs(blueFrontline) do
-    local z1, z2 = cz:getZone(zonePoints.p1), cz:getZone(zonePoints.p2)
-    local heading = mist.utils.getHeadingPoints(centroid["blue"], centroid["red"])
-    local p1A, p1B = mist.projectPoint(z1.point, 2000, heading), mist.projectPoint(z1.point, 2200, heading)
-    local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
-    trigger.action.lineToAll(-1, 1700+i, p1A, p2A, {0,0.3,1,1}, 1)
-    trigger.action.lineToAll(-1, 1800+i, p1B, p2B, {0,0.3,1,1}, 1)
+function ControlZones:drawFrontline(color)
+    local startId = 5000
+    for i, zonePoints in pairs(self:getPerimeterEdges(color)) do
+        local heading
+        local z1, z2 = cz:getZone(zonePoints.p1), cz:getZone(zonePoints.p2)
+        if color == "blue" then
+            heading = mist.utils.getHeadingPoints(centroid["blue"], centroid["red"])
+        else
+            heading = mist.utils.getHeadingPoints(centroid["red"], centroid["blue"])
+        end
+        local p1A, p1B = mist.projectPoint(z1.point, 2000, heading), mist.projectPoint(z1.point, 2200, heading)
+        local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
+        local colorCode = color == "blue" and {0,0.3,1,1} or {1,0,0.3,1}
+        trigger.action.lineToAll(-1, startId+i, p1A, p2A, colorCode, 1)
+        trigger.action.lineToAll(-1, startId+100+i, p1B, p2B, colorCode, 1)
+    end
 end
+
+cz:drawFrontline("blue")
+cz:drawFrontline("red")
