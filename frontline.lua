@@ -1,6 +1,14 @@
 --[[ This is handy for development, so that you don't need to delete and re-add the individual scripts in the ME when you make a change.  These will not be packaged with the .miz, so you shouldn't use this script loader for packaging .miz files for other machines/users.  You'll want to add each script individually with a DO SCRIPT FILE ]]--
 --assert(loadfile("C:\\Users\\Kelvin\\Documents\\code\\RotorOps\\scripts\\RotorOps.lua"))()
 
+local rgb = {
+    blue = {0,0.1,0.8,0.8},
+    red = {0.5,0,0.1,0.8},
+    neutral = {0.1,0.1,0.1,0.5},
+}
+local lineId = 3000
+local colorFade = 0.3
+
 local ControlZones = {}
 ControlZones.__index = ControlZones
 
@@ -10,6 +18,10 @@ function ControlZones.new(namedZones)
         self.allZones = {}      --array of names of zones
         self.zonesByName = {}   --full zone details indexed by zone name
         self.owner = {}
+        self.front = {
+            blue = {},
+            red = {}
+        }
     else
         --self.zonesByName = namedZones
         --put keys into allZones
@@ -392,11 +404,6 @@ for color, zoneCluster in pairs({ blue = blueZones, red = redZones }) do
     centroid[color] = { x = sumX / #zoneCluster, y = sumY / #zoneCluster }
 end
 
-local rgb = {
-    blue = {0,0.1,0.8,0.8},
-    red = {0.5,0,0.1,0.8},
-    neutral = {0.1,0.1,0.1,0.5},
-}
 local i = 0
 for name, color in pairs(cz.owner) do
     i = i + 1
@@ -407,8 +414,9 @@ for name, color in pairs(cz.owner) do
 end
 
 function ControlZones:drawFrontline(color)
-    local startId = 5000
-    for i, zonePoints in pairs(self:getPerimeterEdges(color)) do
+    self.front[color] = self:getPerimeterEdges(color)
+    for i, zonePoints in pairs(self.front[color]) do
+        lineId = lineId + 1
         local heading
         local z1, z2 = cz:getZone(zonePoints.p1), cz:getZone(zonePoints.p2)
         if color == "blue" then
@@ -416,12 +424,14 @@ function ControlZones:drawFrontline(color)
         else
             heading = mist.utils.getHeadingPoints(centroid["red"], centroid["blue"])
         end
-        local p1A, p1B = mist.projectPoint(z1.point, 2000, heading), mist.projectPoint(z1.point, 2200, heading)
-        local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
-        local colorCode = color == "blue" and {0,0.3,1,1} or {1,0,0.3,1}
-        trigger.action.lineToAll(-1, startId+i, p1A, p2A, colorCode, 1)
-        trigger.action.lineToAll(-1, startId+100+i, p1B, p2B, colorCode, 1)
+        local p1A, p1B = mist.projectPoint(z1.point, 2000-colorFade*1000, heading), mist.projectPoint(z1.point, 2200, heading)
+        local p2A, p2B = mist.projectPoint(z2.point, 2000-colorFade*1000, heading), mist.projectPoint(z2.point, 2200, heading)
+        local colorCode = rgb[color]
+        colorCode[4] = math.min(colorFade, 1)
+        trigger.action.lineToAll(-1, lineId, p1A, p2A, colorCode, 1)
+        -- trigger.action.lineToAll(-1, self.startId+100+i, p1B, p2B, colorCode, 1) --double the line for better visibility
     end
+    colorFade = colorFade + 0.2
 end
 
 cz:drawFrontline("blue")
