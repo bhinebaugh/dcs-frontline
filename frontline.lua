@@ -7,7 +7,10 @@ local rgb = {
     neutral = {0.1,0.1,0.1,0.5},
 }
 local lineId = 3000
-local colorFade = 0.3
+local colorFade = {
+    red = 0.3,
+    blue = 0.3
+}
 
 local ControlZones = {}
 ControlZones.__index = ControlZones
@@ -75,6 +78,25 @@ end
 
 function ControlZones:getZone(name)
     return self.zonesByName[name]
+end
+
+function ControlZones:changeZoneOwner(name, newOwner)
+    local formerOwner = self.owner[name]
+    if newOwner == formerOwner then
+        env.info("Notice: zone not changed, "..newOwner.." already controls "..name)
+        return false
+    end
+    self.owner[name] = newOwner
+    env.info("Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
+
+    --redraw map zone and borders as needed
+    trigger.action.setMarkupColorFill(self:getZone(name).zoneId, rgb[newOwner])
+    if formerOwner ~= "neutral" then
+        self:drawFrontline(formerOwner)
+    end
+    if newOwner ~= "neutral" then
+        self:drawFrontline(newOwner)
+    end
 end
 
 function ControlZones:constructDelaunayIndex()
@@ -409,8 +431,8 @@ for name, color in pairs(cz.owner) do
     i = i + 1
     local z = cz:getZone(name)
     local pt = z.point
-    trigger.action.circleToAll(-1, 5000+i, pt, 510, {0,0,0,0.2}, rgb[color], 1)
-    -- trigger.action.textToAll(-1, 6000+i, pt, {0,0,0,1}, {0,0,0,0}, 20, true, z.name)
+    trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+    trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,1}, {0,0,0,0}, 15, true, z.name)
 end
 
 function ControlZones:drawFrontline(color)
@@ -424,15 +446,43 @@ function ControlZones:drawFrontline(color)
         else
             heading = mist.utils.getHeadingPoints(centroid["red"], centroid["blue"])
         end
-        local p1A, p1B = mist.projectPoint(z1.point, 2000-colorFade*1000, heading), mist.projectPoint(z1.point, 2200, heading)
-        local p2A, p2B = mist.projectPoint(z2.point, 2000-colorFade*1000, heading), mist.projectPoint(z2.point, 2200, heading)
+        local p1A, p1B = mist.projectPoint(z1.point, 2000-colorFade[color]*1000, heading), mist.projectPoint(z1.point, 2200, heading)
+        local p2A, p2B = mist.projectPoint(z2.point, 2000-colorFade[color]*1000, heading), mist.projectPoint(z2.point, 2200, heading)
         local colorCode = rgb[color]
-        colorCode[4] = math.min(colorFade, 1)
+        colorCode[4] = math.min(colorFade[color], 1)
         trigger.action.lineToAll(-1, lineId, p1A, p2A, colorCode, 1)
         -- trigger.action.lineToAll(-1, self.startId+100+i, p1B, p2B, colorCode, 1) --double the line for better visibility
     end
-    colorFade = colorFade + 0.2
+    colorFade[color] = colorFade[color] + 0.2
 end
 
 cz:drawFrontline("blue")
 cz:drawFrontline("red")
+
+--programmatically change border zone ownership to test map drawing
+env.info(">>>> Blue perimeter edges are"..mist.utils.tableShow(cz.front["blue"]))
+local function alterFrontline(color)
+    env.info("##### Altering controlled zones")
+    local chosenEdge = cz.front[color][math.random(1, #cz.front[color])]
+    local chosenZone = chosenEdge["p1"]
+    env.info("Selected "..chosenZone.." from "..color.." perimeter zones")
+    -- if math.random(0,1) == 0 then
+    if true then
+        local oppositeColor = color == "blue" and "red" or "blue"
+        cz:changeZoneOwner(chosenZone, oppositeColor)
+        env.info(chosenZone.." switched from "..color.." to "..oppositeColor)
+    else
+        cz:changeZoneOwner(chosenZone, "neutral")
+    env.info(color.." lost "..chosenZone)
+    end
+    return nil
+end
+
+-- update control of frontline zones to test calculation
+for j = 1, 3 do
+    local color = "red"
+    if mist.random(0,1) == 0 then
+        color = "blue"
+    end
+    timer.scheduleFunction(alterFrontline, color, timer.getTime() + 10*j)
+end
