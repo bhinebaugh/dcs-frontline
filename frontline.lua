@@ -117,6 +117,7 @@ function ControlZones:constructDelaunayIndex()
     local triangles = self:delaunayTriangulate(points)
 
     -- Convert back to key-based triangles
+    -- e.g. {3,15,7} to {"control-5","control-8","control-7"}
     self.triangles = {}
     for _, tri in ipairs(triangles) do
         table.insert(self.triangles, {
@@ -287,7 +288,7 @@ function ControlZones:getPerimeterEdges(color)
             
             -- Edge v1-v2 is part of perimeter if:
             -- - both v1 and v2 are 'color'
-            -- - v3 is 'facingColor'
+            -- - v3 is 'facingColor' or "neutral"
             if colors[v1] == color and colors[v2] == color and colors[v3] ~= color then
                 local key1, key2 = tri[v1], tri[v2]
                 local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
@@ -303,6 +304,42 @@ function ControlZones:getPerimeterEdges(color)
     return edges
 end
 
+function ControlZones:getAllEdges()
+    if not self.triangles then
+        self:buildDelaunayIndex()
+    end
+
+    local edges = {}
+    local edgeSet = {}  -- to avoid duplicates
+
+    --examine each triangle
+    for l, tri in ipairs(self.triangles) do
+        -- Check each edge of the triangle
+        local triPairs = {
+            {1, 2},
+            {2, 3},
+            {3, 1}
+        }
+        for m, pair in ipairs(triPairs) do
+            local v1, v2 = pair[1], pair[2]
+            local key1, key2 = tri[v1], tri[v2]
+            local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
+            
+            if not edgeSet[edgeKey] then
+                edgeSet[edgeKey] = true
+                table.insert(edges, {p1 = key1, p2 = key2})
+            end
+        end
+    end
+
+    return edges
+end
+function ControlZones:drawEdges()
+    for m, edge in pairs(self:getAllEdges()) do
+        --draw edge 
+        trigger.action.lineToAll(-1, 2000+m, self:getZone(edge.p1).point, self:getZone(edge.p2).point, {1,1,0.2,0.1}, 5)
+    end
+end
 
 --get zones whose names start with 'control'
 --get their coordinates
@@ -432,7 +469,7 @@ for name, color in pairs(cz.owner) do
     local z = cz:getZone(name)
     local pt = z.point
     trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
-    trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,1}, {0,0,0,0}, 15, true, z.name)
+    trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
 end
 
 function ControlZones:drawFrontline(color)
@@ -448,7 +485,7 @@ function ControlZones:drawFrontline(color)
         end
         local p1A, p1B = mist.projectPoint(z1.point, 2000-colorFade[color]*1000, heading), mist.projectPoint(z1.point, 2200, heading)
         local p2A, p2B = mist.projectPoint(z2.point, 2000-colorFade[color]*1000, heading), mist.projectPoint(z2.point, 2200, heading)
-        local colorCode = rgb[color]
+        local colorCode = mist.utils.deepCopy(rgb[color])
         colorCode[4] = math.min(colorFade[color], 1)
         trigger.action.lineToAll(-1, lineId, p1A, p2A, colorCode, 1)
         -- trigger.action.lineToAll(-1, self.startId+100+i, p1B, p2B, colorCode, 1) --double the line for better visibility
@@ -456,6 +493,7 @@ function ControlZones:drawFrontline(color)
     colorFade[color] = colorFade[color] + 0.2
 end
 
+cz:drawEdges()
 cz:drawFrontline("blue")
 cz:drawFrontline("red")
 
@@ -473,7 +511,7 @@ local function alterFrontline(color)
         env.info(chosenZone.." switched from "..color.." to "..oppositeColor)
     else
         cz:changeZoneOwner(chosenZone, "neutral")
-    env.info(color.." lost "..chosenZone)
+        env.info(color.." lost "..chosenZone)
     end
     return nil
 end
