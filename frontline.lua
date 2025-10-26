@@ -99,6 +99,31 @@ function ControlZones:changeZoneOwner(name, newOwner)
     end
 end
 
+function ControlZones:checkOwnership(time)
+    -- if owner units not in a color zone, lose control 
+    -- if units in a neutral zone, gain control 
+    -- if both colors in zone, no change
+    env.info("checking zone control......")
+    local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
+    local redGround = mist.makeUnitTable({'[red][vehicle]'})
+    for zoneName, ownerColor in pairs(self.owner) do
+        local groundInZone = {
+            blue = mist.getUnitsInZones(blueGround, zoneName),
+            red = mist.getUnitsInZones(redGround, zoneName)
+        }
+        if not ownerColor then
+            -- if blue not red, blue owns
+            -- if red not blue, red owns
+            -- if neither or both, stays neutral
+        elseif ownerColor and #groundInZone[ownerColor] <= 0 then
+            env.info("####### "..zoneName.." is no longer in hands of "..ownerColor)
+            self.owner[zoneName] = nil --"neutral"
+            self:drawFrontline(ownerColor)
+        end
+    end
+    return time + 30
+end
+
 function ControlZones:constructDelaunayIndex()
     local points = {}
     local keyToIndex = {}
