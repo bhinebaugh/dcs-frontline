@@ -111,14 +111,23 @@ function ControlZones:checkOwnership(time)
             blue = mist.getUnitsInZones(blueGround, zoneName),
             red = mist.getUnitsInZones(redGround, zoneName)
         }
-        if not ownerColor then
+        if ownerColor == "neutral" then
             -- if blue not red, blue owns
             -- if red not blue, red owns
             -- if neither or both, stays neutral
+            if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
+                self:changeZoneOwner(zoneName, "blue")
+            elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
+                self:changeZoneOwner(zoneName, "red")
+            end
         elseif ownerColor and #groundInZone[ownerColor] <= 0 then
-            env.info("####### "..zoneName.." is no longer in hands of "..ownerColor)
-            self.owner[zoneName] = nil --"neutral"
-            self:drawFrontline(ownerColor)
+            env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
+            local opponentColor = ownerColor == "blue" and "red" or "blue"
+            if #groundInZone[opponentColor] > 0 then
+                self:changeZoneOwner(zoneName, opponentColor)
+            else
+                self:changeZoneOwner(zoneName, "neutral")
+            end
         end
     end
     return time + 30
@@ -522,30 +531,22 @@ cz:drawEdges()
 cz:drawFrontline("blue")
 cz:drawFrontline("red")
 
---programmatically change border zone ownership to test map drawing
-env.info(">>>> Blue perimeter edges are"..mist.utils.tableShow(cz.front["blue"]))
-local function alterFrontline(color)
-    env.info("##### Altering controlled zones")
-    local chosenEdge = cz.front[color][math.random(1, #cz.front[color])]
-    local chosenZone = chosenEdge["p1"]
-    env.info("Selected "..chosenZone.." from "..color.." perimeter zones")
-    -- if math.random(0,1) == 0 then
-    if true then
-        local oppositeColor = color == "blue" and "red" or "blue"
-        cz:changeZoneOwner(chosenZone, oppositeColor)
-        env.info(chosenZone.." switched from "..color.." to "..oppositeColor)
-    else
-        cz:changeZoneOwner(chosenZone, "neutral")
-        env.info(color.." lost "..chosenZone)
+-- use groups placed in the mission as templates for zone defenders
+local groundTemplates = {
+    red = coalition.getGroups(coalition.side.RED, Group.Category.GROUND),
+    blue = coalition.getGroups(coalition.side.BLUE, Group.Category.GROUND)
+}
+for zoneName, color in pairs(cz.owner) do
+    if color == "blue" then
+        local r = math.random(#groundTemplates.blue)
+        local group = groundTemplates.blue[r]
+        local cloned = mist.cloneInZone(group, zoneName, nil, nil, nil)
+    elseif color == "red" then
+        local r = math.random(#groundTemplates.red)
+        local group = groundTemplates.red[r]
+        local cloned = mist.cloneInZone(group, zoneName, nil, nil, nil)
     end
-    return nil
+    env.info(color.." spawned in "..zoneName)
 end
 
--- update control of frontline zones to test calculation
-for j = 1, 3 do
-    local color = "red"
-    if mist.random(0,1) == 0 then
-        color = "blue"
-    end
-    timer.scheduleFunction(alterFrontline, color, timer.getTime() + 10*j)
-end
+timer.scheduleFunction(cz.checkOwnership, cz, timer.getTime() + 30)
