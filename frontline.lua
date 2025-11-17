@@ -3,8 +3,8 @@
 
 local FARP_NAME = "movable-FARP"
 local rgb = {
-    blue = {0,0.1,0.8,0.8},
-    red = {0.5,0,0.1,0.8},
+    blue = {0,0.1,0.8,0.5},
+    red = {0.5,0,0.1,0.5},
     neutral = {0.1,0.1,0.1,0.5},
 }
 local lineId = 3000
@@ -12,6 +12,19 @@ local colorFade = {
     red = 0.3,
     blue = 0.3
 }
+local groundTemplates = { --frontline, rear, farp
+    red = {
+        {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
+        {"BMP-2", "BTR-80", "GAZ-66", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
+        {"Ural-375", "Ural-375", "Ural-375", "GAZ-66", "Paratrooper RPG-16", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
+    },
+    blue = {
+        {"M 818", "M 818", "M 818", "Hummer"},
+        {"M 818", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M249" },
+        {"M-2 Bradley", "Hummer", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M4" },
+    }
+}
+
 
 local ControlZones = {}
 ControlZones.__index = ControlZones
@@ -551,21 +564,29 @@ end
 relocateFARP(FARP_NAME, mist.utils.makeVec3GL(centroid["blue"]))
 
 
--- use groups placed in the mission as templates for zone defenders
-local groundTemplates = {
-    red = coalition.getGroups(coalition.side.RED, Group.Category.GROUND),
-    blue = coalition.getGroups(coalition.side.BLUE, Group.Category.GROUND)
-}
 for zoneName, color in pairs(cz.owner) do
+    local zn = cz:getZone(zoneName)
+    local unitSet = {}
+    local xoff = math.random(-40, 40)
+    local yoff = math.random(-40, 40)
+    local group
     if color == "blue" then
         local r = math.random(#groundTemplates.blue)
-        local group = groundTemplates.blue[r]
-        local cloned = mist.cloneInZone(group, zoneName, nil, nil, nil)
+        group = groundTemplates.blue[r]
     elseif color == "red" then
         local r = math.random(#groundTemplates.red)
-        local group = groundTemplates.red[r]
-        local cloned = mist.cloneInZone(group, zoneName, nil, nil, nil)
+        group = groundTemplates.red[r]
     end
+    for i, unitName in pairs(group) do
+        table.insert(unitSet, i, { type = unitName, x = zn.x + xoff, y = zn.y + yoff})
+        xoff = xoff + math.random(-22, 22)
+        yoff = yoff + math.random(-22, 22)
+    end
+    mist.dynAdd({ -- mist.dynAddStatic()
+        units = unitSet,
+        country = color == "blue" and "USA" or "USSR",
+        category = "vehicle",
+    })
     env.info(color.." spawned in "..zoneName)
 end
 
