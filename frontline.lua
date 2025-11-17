@@ -1,7 +1,6 @@
 --[[ This is handy for development, so that you don't need to delete and re-add the individual scripts in the ME when you make a change.  These will not be packaged with the .miz, so you shouldn't use this script loader for packaging .miz files for other machines/users.  You'll want to add each script individually with a DO SCRIPT FILE ]]--
 --assert(loadfile("C:\\Users\\Kelvin\\Documents\\code\\RotorOps\\scripts\\RotorOps.lua"))()
 
-local FARP_NAME = "movable-FARP"
 local rgb = {
     blue = {0,0.1,0.8,0.5},
     red = {0.5,0,0.1,0.5},
@@ -546,23 +545,6 @@ cz:drawFrontline("blue")
 cz:drawFrontline("red")
 trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
 trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
-
---allows spawning at a dynamically chosen location but is a hack
---(causes Olympus to raise an error dialog that needs to be dismissed)
-local function relocateFARP(farpname, pt)
-    if StaticObject.getByName(farpname) == nil then
-        env.info("Could not find FARP to relocate it")
-        return
-    end
-    local options = {
-        action = "teleport",
-        gpName = farpname,
-        point = pt
-    }
-    mist.teleportToPoint(options)
-end
-relocateFARP(FARP_NAME, mist.utils.makeVec3GL(centroid["blue"]))
-
 
 for zoneName, color in pairs(cz.owner) do
     local zn = cz:getZone(zoneName)
