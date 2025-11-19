@@ -36,6 +36,7 @@ function ControlZones.new(namedZones)
         self.allZones = {}      --array of names of zones
         self.zonesByName = {}   --full zone details indexed by zone name
         self.owner = {}
+        self.neighbors = {}
         self.front = {
             blue = {},
             red = {}
@@ -152,6 +153,34 @@ function ControlZones:updateZoneOwner(zoneName)
         end
 end
 
+function ControlZones:addNeighbor(key1, key2) --bidirectional
+    if not self:hasNeighbor(key1, key2) then
+        table.insert(self.neighbors[key1], key2)
+    end
+    if not self:hasNeighbor(key2, key1) then
+        table.insert(self.neighbors[key2], key1)
+    end
+end
+function ControlZones:hasNeighbor(key, neighborKey)
+    for _, n in ipairs(self.neighbors[key]) do
+        if n == neighborKey then return true end
+    end
+    return false
+end
+function ControlZones:getNeighbors(key, color)
+    local color = color or nil
+    if not color then
+        return self.neighbors[key] or {}
+    end
+    local different = {}
+    for _, n in ipairs(self.neighbors[key]) do
+        if self.owner[n] == color then
+            table.insert(different, n)
+        end
+    end
+    return different
+end
+
 function ControlZones:constructDelaunayIndex()
     local points = {}
     local keyToIndex = {}
@@ -165,6 +194,7 @@ function ControlZones:constructDelaunayIndex()
         keyToIndex[key] = index
         indexToKey[index] = key
         index = index + 1
+        self.neighbors[key] = {}
     end
 
     local triangles = self:delaunayTriangulate(points)
@@ -178,6 +208,11 @@ function ControlZones:constructDelaunayIndex()
             indexToKey[tri[2]],
             indexToKey[tri[3]]
         })
+    end
+    for _, tri in ipairs(self.triangles) do
+        self:addNeighbor(tri[1], tri[2])
+        self:addNeighbor(tri[2], tri[3])
+        self:addNeighbor(tri[3], tri[1])
     end
 
     self.keyToIndex = keyToIndex
@@ -553,7 +588,7 @@ trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(centroid["red"]), 420
 trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 
 -- populate zones
-for zoneName, color in pairs(cz.owner) do
+function SpawnGroupInZone(zoneName, color)
     local zn = cz:getZone(zoneName)
     local unitSet = {}
     local xoff = math.random(-40, 40)
@@ -588,6 +623,9 @@ for zoneName, color in pairs(cz.owner) do
         color = color,
         template = r,
     }
+end
+for zoneName, color in pairs(cz.owner) do
+    SpawnGroupInZone(zoneName, color)
 end
 
 local unitLostHandler = {}
