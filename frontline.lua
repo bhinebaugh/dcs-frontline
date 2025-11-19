@@ -24,6 +24,8 @@ local groundTemplates = { --frontline, rear, farp
     }
 }
 
+local groupOfUnit = {} -- exists solely to check which group a unit belonged to before it died
+local groundGroups = {}
 
 local ControlZones = {}
 ControlZones.__index = ControlZones
@@ -117,16 +119,22 @@ function ControlZones:checkOwnership(time)
     -- if units in a neutral zone, gain control 
     -- if both colors in zone, no change
     env.info("checking zone control......")
+    for zoneName, _ in pairs(self.zoneByName) do
+        self:updateZoneOwner(zoneName)
+    end
+    return time + 30
+end
+function ControlZones:updateZoneOwner(zoneName)
+    local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
-    for zoneName, ownerColor in pairs(self.owner) do
         local groundInZone = {
             blue = mist.getUnitsInZones(blueGround, zoneName),
             red = mist.getUnitsInZones(redGround, zoneName)
         }
         if ownerColor == "neutral" then
-            -- if blue not red, blue owns
-            -- if red not blue, red owns
+        -- if blue and no red, blue now owns
+        -- if red and no blue, red now owns
             -- if neither or both, stays neutral
             if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
                 self:changeZoneOwner(zoneName, "blue")
@@ -142,8 +150,6 @@ function ControlZones:checkOwnership(time)
                 self:changeZoneOwner(zoneName, "neutral")
             end
         end
-    end
-    return time + 30
 end
 
 function ControlZones:constructDelaunayIndex()
@@ -546,30 +552,63 @@ cz:drawFrontline("red")
 trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
 trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 
+-- populate zones
 for zoneName, color in pairs(cz.owner) do
     local zn = cz:getZone(zoneName)
     local unitSet = {}
     local xoff = math.random(-40, 40)
     local yoff = math.random(-40, 40)
     local group
+    local r
     if color == "blue" then
-        local r = math.random(#groundTemplates.blue)
+        r = math.random(#groundTemplates.blue)
         group = groundTemplates.blue[r]
     elseif color == "red" then
-        local r = math.random(#groundTemplates.red)
+        r = math.random(#groundTemplates.red)
         group = groundTemplates.red[r]
     end
-    for i, unitName in pairs(group) do
-        table.insert(unitSet, i, { type = unitName, x = zn.x + xoff, y = zn.y + yoff})
+    for j, unitName in pairs(group) do
+        table.insert(unitSet, j, { type = unitName, x = zn.x + xoff, y = zn.y + yoff})
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    mist.dynAdd({ -- mist.dynAddStatic()
+    local groupName = zoneName.."-ground1"
+    local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
+        groupName = groupName,
         units = unitSet,
         country = color == "blue" and "USA" or "USSR",
         category = "vehicle",
     })
-    env.info(color.." spawned in "..zoneName)
+    for _, unit in pairs(Group.getByName(groupName):getUnits()) do
+        local unitName = unit:getName()
+        if unitName then groupOfUnit[unitName] = newGroup.name end
+    end
+    groundGroups[newGroup.name] = {
+        origin = zoneName,
+        color = color,
+        template = r,
+    }
 end
 
-timer.scheduleFunction(cz.checkOwnership, cz, timer.getTime() + 30)
+local unitLostHandler = {}
+function unitLostHandler:onEvent(e)
+    -- ground unit sequence seems to always be: world.event.S_EVENT_KILL then S_EVENT_DEAD (but no S_EVENT_LOST)
+    -- however it needs a workaround for the dead unit not having a group,
+    -- likely due to https://forum.dcs.world/topic/295922-scripting-api-eventdead-not-called-if-an-object-isnt-immediately-dead/
+    if not e then return end
+    if world.event.S_EVENT_KILL == e.id then
+        local unitName = e.target:getName()
+        if unitName and not e.target:getPlayerName() then
+            local grpName = groupOfUnit[unitName]
+            if mist.groupIsDead(grpName) then --error if player
+                env.info(grpName.." is all dead now")
+                env.info(mist.utils.tableShow(groundGroups[grpName]))
+                local originZone = groundGroups[grpName].origin
+                env.info("updating ownership of "..originZone)
+                cz:updateZoneOwner(originZone)
+            end
+        end
+        --register reduced strength or loss with coalition command
+    end
+end
+world.addEventHandler(unitLostHandler)
