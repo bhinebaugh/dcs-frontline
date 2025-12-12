@@ -581,6 +581,27 @@ function ControlZones:drawFrontline(color)
     colorFade[color] = colorFade[color] + 0.2
 end
 
+function ControlZones:drawDirective(fromZone, toZone)
+    local side = -1
+    local nextId = 9990
+    local color = {1,1,0.2,1}
+    local fill = color
+    local originPoint = self:getZone(fromZone).point
+    local targetPoint = self:getZone(toZone).point
+    env.info("origin point")
+    env.info(mist.utils.tableShow(originPoint))
+    local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
+    local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
+    env.info("heading")
+    env.info(heading)
+
+    local distance = 1000
+    local lineStart = mist.projectPoint(originPoint, distance, heading)
+    local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
+    trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, color, fill, 1)
+    return true
+end
+
 cz:drawEdges()
 cz:drawFrontline("blue")
 cz:drawFrontline("red")
@@ -650,3 +671,37 @@ function unitLostHandler:onEvent(e)
     end
 end
 world.addEventHandler(unitLostHandler)
+
+local CoalitionCommander = {}
+CoalitionCommander.__index = CoalitionCommander
+
+function CoalitionCommander:new(config)
+    local obj = {
+        coalition = config.color,
+        opponent = config.color == "blue" and "red" or "blue",
+        groups = {},
+        operations = {
+            active = {},
+            history = {}
+        }
+        -- reference to zone "map", to ask for the state of things
+        -- attitude/aggressiveness = offensive, defensive, cautious, etc
+    }
+    setmetatable(obj, self)
+    return obj
+end
+
+function CoalitionCommander:chooseTarget()
+    local r = math.random(#cz.front[self.coalition])
+    local randomBorderEdge = cz.front[self.coalition][r]
+    local origin = randomBorderEdge.p1
+    local enemyNeighbors = cz:getNeighbors(origin, self.opponent)
+
+    local target = enemyNeighbors[math.random(#enemyNeighbors)]
+    -- SpawnGroupInZone(origin, self.coalition)
+    table.insert(self.operations.active, {origin = origin, target = target})
+    cz:drawDirective(origin, target)
+end
+
+local blueLeader = CoalitionCommander:new{color = "blue"}
+blueLeader:chooseTarget()
