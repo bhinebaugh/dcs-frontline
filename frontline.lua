@@ -47,6 +47,7 @@ function ControlZones.new(namedZones)
     end
     self.maxima = nil
     self.unitCounter = 1
+    self.markerCounter = 9990
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -561,10 +562,16 @@ for name, color in pairs(cz.owner) do
     trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
 end
 
+function ControlZones:getNewMarker()
+    self.markerCounter = self.markerCounter + 1
+    return self.markerCounter
+end
+
 function ControlZones:drawFrontline(color)
     self.front[color] = self:getPerimeterEdges(color)
-    for i, zonePoints in pairs(self.front[color]) do
-        lineId = lineId + 1
+    for _, zonePoints in pairs(self.front[color]) do
+        local lineId = self:getNewMarker()
+        local lineColor = rgb[color]
         local heading
         local z1, z2 = cz:getZone(zonePoints.p1), cz:getZone(zonePoints.p2)
         if color == "blue" then
@@ -572,19 +579,17 @@ function ControlZones:drawFrontline(color)
         else
             heading = mist.utils.getHeadingPoints(centroid["red"], centroid["blue"])
         end
-        local p1A, p1B = mist.projectPoint(z1.point, 2000-colorFade[color]*1000, heading), mist.projectPoint(z1.point, 2200, heading)
-        local p2A, p2B = mist.projectPoint(z2.point, 2000-colorFade[color]*1000, heading), mist.projectPoint(z2.point, 2200, heading)
-        local colorCode = mist.utils.deepCopy(rgb[color])
-        colorCode[4] = math.min(colorFade[color], 1)
-        trigger.action.lineToAll(-1, lineId, p1A, p2A, colorCode, 1)
-        -- trigger.action.lineToAll(-1, self.startId+100+i, p1B, p2B, colorCode, 1) --double the line for better visibility
+        local p1A, p1B = mist.projectPoint(z1.point, 2000, heading), mist.projectPoint(z1.point, 2200, heading)
+        local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
+        trigger.action.lineToAll(-1, lineId, p1A, p2A, lineColor, 1)
+        lineId = self:getNewMarker()
+        trigger.action.lineToAll(-1, lineId, p1B, p2B, lineColor, 1) --double the line for better visibility
     end
-    colorFade[color] = colorFade[color] + 0.2
 end
 
 function ControlZones:drawDirective(fromZone, toZone)
-    local side = -1
-    local nextId = 9990
+    local side = -1 --which coalition the arrow is visible to
+    local nextId = self:getNewMarker()
     local color = {1,1,0.2,1}
     local fill = color
     local originPoint = self:getZone(fromZone).point
