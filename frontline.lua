@@ -46,6 +46,7 @@ function ControlZones.new(namedZones)
         --put keys into allZones
     end
     self.maxima = nil
+    self.unitCounter = 1
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -609,26 +610,18 @@ trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(centroid["red"]), 420
 trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 
 -- populate zones
-function SpawnGroupInZone(zoneName, color)
-    local zn = cz:getZone(zoneName)
+function ControlZones:spawnGroupInZone(zoneName, color, template)
+    local zn = self:getZone(zoneName)
     local unitSet = {}
     local xoff = math.random(-40, 40)
     local yoff = math.random(-40, 40)
-    local group
-    local r
-    if color == "blue" then
-        r = math.random(#groundTemplates.blue)
-        group = groundTemplates.blue[r]
-    elseif color == "red" then
-        r = math.random(#groundTemplates.red)
-        group = groundTemplates.red[r]
-    end
-    for j, unitName in pairs(group) do
+    for j, unitName in pairs(template) do
         table.insert(unitSet, j, { type = unitName, x = zn.x + xoff, y = zn.y + yoff})
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground1"
+    local groupName = zoneName.."-ground-"..self.unitCounter
+    self.unitCounter = self.unitCounter + 1
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
@@ -642,11 +635,26 @@ function SpawnGroupInZone(zoneName, color)
     groundGroups[newGroup.name] = {
         origin = zoneName,
         color = color,
-        template = r,
     }
+    return groupName
 end
-for zoneName, color in pairs(cz.owner) do
-    SpawnGroupInZone(zoneName, color)
+
+function ControlZones:populateZones()
+    --first sort zones into clusters
+    --provide details about cluster
+    --for each side 
+    for _, color in pairs({"blue","red"}) do
+        local zones = self:getCluster(color)
+        local edgeZones = self:getPerimeterEdges(color)
+        -- more info about zone connections, proximity, support 
+        -- pass to commander
+
+        for _, zoneName in pairs(zones) do
+            local r = math.random(#groundTemplates[color])
+            local group = groundTemplates[color][r]
+            self:spawnGroupInZone(zoneName, color, group)
+        end
+    end
 end
 
 local unitLostHandler = {}
@@ -675,10 +683,12 @@ world.addEventHandler(unitLostHandler)
 local CoalitionCommander = {}
 CoalitionCommander.__index = CoalitionCommander
 
-function CoalitionCommander:new(config)
+function CoalitionCommander:new(parent, config)
     local obj = {
+        map = parent,
         coalition = config.color,
         opponent = config.color == "blue" and "red" or "blue",
+        templates = groundTemplates[self.coalition],
         groups = {},
         operations = {
             active = {},
@@ -692,16 +702,21 @@ function CoalitionCommander:new(config)
 end
 
 function CoalitionCommander:chooseTarget()
-    local r = math.random(#cz.front[self.coalition])
-    local randomBorderEdge = cz.front[self.coalition][r]
+    local r = math.random(#self.map.front[self.coalition])
+    local randomBorderEdge = self.map.front[self.coalition][r]
     local origin = randomBorderEdge.p1
-    local enemyNeighbors = cz:getNeighbors(origin, self.opponent)
+    local enemyNeighbors = self.map:getNeighbors(origin, self.opponent)
 
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
     -- SpawnGroupInZone(origin, self.coalition)
     table.insert(self.operations.active, {origin = origin, target = target})
-    cz:drawDirective(origin, target)
+    self.map:drawDirective(origin, target)
 end
 
-local blueLeader = CoalitionCommander:new{color = "blue"}
-blueLeader:chooseTarget()
+cz.commanders = {
+    blue = CoalitionCommander:new(cz, {color = "blue"}),
+    red  = CoalitionCommander:new(cz, {color = "red"})
+}
+cz.commanders.blue:chooseTarget()
+cz.commanders.red:chooseTarget()
+cz:populateZones()
