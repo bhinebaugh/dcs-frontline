@@ -6,12 +6,11 @@ local rgb = {
     red = {0.5,0,0.1,0.5},
     neutral = {0.1,0.1,0.1,0.5},
 }
-local lineId = 3000
-local colorFade = {
-    red = 0.3,
-    blue = 0.3
-}
 local groundTemplates = { --frontline, rear, farp
+    -- name
+    -- type
+    -- rank/difficulty
+    -- side/coalition
     red = {
         {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
         {"BMP-2", "BTR-80", "GAZ-66", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
@@ -46,8 +45,9 @@ function ControlZones.new(namedZones)
         --put keys into allZones
     end
     self.maxima = nil
-    self.unitCounter = 1
+    self.groupCounter = 1
     self.markerCounter = 9990
+    self.commanders = {}
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -76,6 +76,10 @@ function ControlZones:setup(options)
         local blueDistance = self:distance(zone, initialBlueZone)
         self.owner[name] = (redDistance < blueDistance) and "red" or "blue"
     end
+end
+
+function ControlZones:addCommander(side, c)
+    self.commanders[side] = c
 end
 
 function ControlZones:getCluster(color)
@@ -562,6 +566,10 @@ for name, color in pairs(cz.owner) do
     trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
 end
 
+function ControlZones:getNewGroupId()
+    self.groupCounter = self.groupCounter + 1
+    return self.groupCounter
+end
 function ControlZones:getNewMarker()
     self.markerCounter = self.markerCounter + 1
     return self.markerCounter
@@ -625,8 +633,7 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self.unitCounter
-    self.unitCounter = self.unitCounter + 1
+    local groupName = zoneName.."-ground-"..self:getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
@@ -688,22 +695,19 @@ world.addEventHandler(unitLostHandler)
 local CoalitionCommander = {}
 CoalitionCommander.__index = CoalitionCommander
 
-function CoalitionCommander:new(parent, config)
-    local obj = {
-        map = parent,
-        coalition = config.color,
-        opponent = config.color == "blue" and "red" or "blue",
-        templates = groundTemplates[self.coalition],
-        groups = {},
-        operations = {
+function CoalitionCommander.new(parent, config)
+    local self = setmetatable({}, CoalitionCommander)
+    self.map = parent
+    self.coalition = config.color
+    self.opponent = config.color == "blue" and "red" or "blue"
+    self.templates = groundTemplates[self.coalition]
+    self.groups = {}
+    self.operations = {
             active = {},
             history = {}
         }
-        -- reference to zone "map", to ask for the state of things
         -- attitude/aggressiveness = offensive, defensive, cautious, etc
-    }
-    setmetatable(obj, self)
-    return obj
+    return self
 end
 
 function CoalitionCommander:chooseTarget()
@@ -718,10 +722,8 @@ function CoalitionCommander:chooseTarget()
     self.map:drawDirective(origin, target)
 end
 
-cz.commanders = {
-    blue = CoalitionCommander:new(cz, {color = "blue"}),
-    red  = CoalitionCommander:new(cz, {color = "red"})
-}
+cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}))
+cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}))
 cz.commanders.blue:chooseTarget()
 cz.commanders.red:chooseTarget()
 cz:populateZones()
