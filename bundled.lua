@@ -90,7 +90,7 @@ trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]),
 
 -- populate zones
 
-local unitLostHandler = UnitLostHandler:new(cz)
+local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
 cz.commanders = {
@@ -137,14 +137,15 @@ end)
 __bundle_register("handlers", function(require, _LOADED, __bundle_register, __bundle_modules)
 local UnitLostHandler = {}
 UnitLostHandler.__index = UnitLostHandler
-function UnitLostHandler:new(cz)
-    local o = {}
-    setmetatable(o, self)
-    o.cz = cz
-    o.groupOfUnit = cz.groupOfUnit
-    o.groundGroups = cz.groundGroups
-    return o
+
+function UnitLostHandler.new(cz)
+    local self = setmetatable({}, UnitLostHandler)
+    self.cz = cz
+    self.groupOfUnit = cz.groupOfUnit
+    self.groundGroups = cz.groundGroups
+    return self
 end
+
 function UnitLostHandler:onEvent(e)
     -- ground unit sequence seems to always be: world.event.S_EVENT_KILL then S_EVENT_DEAD (but no S_EVENT_LOST)
     -- however it needs a workaround for the dead unit not having a group,
