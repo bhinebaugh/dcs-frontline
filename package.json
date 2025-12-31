@@ -1,0 +1,13 @@
+{
+    "version": "0.1.0",
+    "scripts": {
+        "build": "./build",
+        "watch": "./watch"
+    },
+    "author": "Jason Hinebaugh",
+    "license": "ISC",
+    "dependencies": {
+        "luabundler": "^1.2.3",
+        "nodemon": "^2.0.22"
+    }
+}
