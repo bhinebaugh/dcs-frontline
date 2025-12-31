@@ -1,214 +1,3 @@
--- Bundled by luabundle {"version":"1.7.0"}
-local __bundle_require, __bundle_loaded, __bundle_register, __bundle_modules = (function(superRequire)
-	local loadingPlaceholder = {[{}] = true}
-
-	local register
-	local modules = {}
-
-	local require
-	local loaded = {}
-
-	register = function(name, body)
-		if not modules[name] then
-			modules[name] = body
-		end
-	end
-
-	require = function(name)
-		local loadedModule = loaded[name]
-
-		if loadedModule then
-			if loadedModule == loadingPlaceholder then
-				return nil
-			end
-		else
-			if not modules[name] then
-				if not superRequire then
-					local identifier = type(name) == 'string' and '\"' .. name .. '\"' or tostring(name)
-					error('Tried to require ' .. identifier .. ', but no such module has been registered')
-				else
-					return superRequire(name)
-				end
-			end
-
-			loaded[name] = loadingPlaceholder
-			loadedModule = modules[name](require, loaded, register, modules)
-			loaded[name] = loadedModule
-		end
-
-		return loadedModule
-	end
-
-	return require, loaded, register, modules
-end)(require)
-__bundle_register("__root", function(require, _LOADED, __bundle_register, __bundle_modules)
---[[ This is handy for development, so that you don't need to delete and re-add the individual scripts in the ME when you make a change.  These will not be packaged with the .miz, so you shouldn't use this script loader for packaging .miz files for other machines/users.  You'll want to add each script individually with a DO SCRIPT FILE ]]--
---assert(loadfile("C:\\Users\\Kelvin\\Documents\\code\\RotorOps\\scripts\\RotorOps.lua"))()
-
-require("table") --Load modified standard libraries
-
-local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
-local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
-
-local UnitLostHandler = require("handlers").UnitLostHandler --Load event handlers
-
-local constants = require("constants") --Load constants
-
---get zones whose names start with 'control'
---get their coordinates
---grow from opposing start points somehow
---or split the cluster
--- choose a start zone
--- add a connected zone (one of closest zones)
-
-
-local cz = ControlZones.new(nil, constants.groundTemplates)
-
-cz:setup()
-cz:constructDelaunayIndex()
-
-local perimIds = cz:findPerimeter(cz.allZones)
-cz:assignCompassMaxima()
-local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
-local height = cz.maxima.northmost.x - cz.maxima.southmost.x
-local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
-
-local i = 0
-for name, color in pairs(cz.owner) do
-    i = i + 1
-    local z = cz:getZone(name)
-    local pt = z.point
-    trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, constants.rgb[color], 1)
-    trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
-end
-
-cz:drawEdges()
-cz:drawFrontline("blue")
-cz:drawFrontline("red")
-trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(cz.centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
-trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
-
--- populate zones
-
-local unitLostHandler = UnitLostHandler:new(cz)
-world.addEventHandler(unitLostHandler)
-
-cz.commanders = {
-    blue = CoalitionCommander:new(cz, {color = "blue"}, constants.groundTemplates),
-    red  = CoalitionCommander:new(cz, {color = "red"}, constants.groundTemplates)
-}
-cz.commanders.blue:chooseTarget()
-cz.commanders.red:chooseTarget()
-cz:populateZones()
-
-end)
-__bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
-local rgb = {
-    blue = {0,0.1,0.8,0.5},
-    red = {0.5,0,0.1,0.5},
-    neutral = {0.1,0.1,0.1,0.5},
-}
-local lineId = 3000
-local colorFade = {
-    red = 0.3,
-    blue = 0.3
-}
-local groundTemplates = { --frontline, rear, farp
-    red = {
-        {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
-        {"BMP-2", "BTR-80", "GAZ-66", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
-        {"Ural-375", "Ural-375", "Ural-375", "GAZ-66", "Paratrooper RPG-16", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
-    },
-    blue = {
-        {"M 818", "M 818", "M 818", "Hummer"},
-        {"M 818", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M249" },
-        {"M-2 Bradley", "Hummer", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M4" },
-    }
-}
-
-return {
-    rgb = rgb,
-    lineId = lineId,
-    colorFade = colorFade,
-    groundTemplates = groundTemplates
-}
-
-end)
-__bundle_register("handlers", function(require, _LOADED, __bundle_register, __bundle_modules)
-local UnitLostHandler = {}
-UnitLostHandler.__index = UnitLostHandler
-function UnitLostHandler:new(cz)
-    local o = {}
-    setmetatable(o, self)
-    o.cz = cz
-    o.groupOfUnit = cz.groupOfUnit
-    o.groundGroups = cz.groundGroups
-    return o
-end
-function UnitLostHandler:onEvent(e)
-    -- ground unit sequence seems to always be: world.event.S_EVENT_KILL then S_EVENT_DEAD (but no S_EVENT_LOST)
-    -- however it needs a workaround for the dead unit not having a group,
-    -- likely due to https://forum.dcs.world/topic/295922-scripting-api-eventdead-not-called-if-an-object-isnt-immediately-dead/
-    if not e then return end
-    if world.event.S_EVENT_KILL == e.id then
-        local unitName = e.target:getName()
-        if unitName and not e.target:getPlayerName() then
-            local grpName = self.groupOfUnit[unitName]
-            if mist.groupIsDead(grpName) then --error if player
-                env.info(grpName.." is all dead now")
-                env.info(mist.utils.tableShow(self.groundGroups[grpName]))
-                local originZone = self.groundGroups[grpName].origin
-                env.info("updating ownership of "..originZone)
-                self.cz:updateZoneOwner(originZone)
-            end
-        end
-        --register reduced strength or loss with coalition command
-    end
-end
-
-return {
-    UnitLostHandler = UnitLostHandler
-}
-
-end)
-__bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
-local CoalitionCommander = {}
-CoalitionCommander.__index = CoalitionCommander
-
-function CoalitionCommander:new(parent, config, groundTemplates)
-    local obj = {
-        map = parent,
-        coalition = config.color,
-        opponent = config.color == "blue" and "red" or "blue",
-        templates = groundTemplates[self.coalition],
-        groups = {},
-        operations = {
-            active = {},
-            history = {}
-        }
-        -- reference to zone "map", to ask for the state of things
-        -- attitude/aggressiveness = offensive, defensive, cautious, etc
-    }
-    setmetatable(obj, self)
-    return obj
-end
-
-function CoalitionCommander:chooseTarget()
-    local r = math.random(#self.map.front[self.coalition])
-    local randomBorderEdge = self.map.front[self.coalition][r]
-    local origin = randomBorderEdge.p1
-    local enemyNeighbors = self.map:getNeighbors(origin, self.opponent)
-
-    local target = enemyNeighbors[math.random(#enemyNeighbors)]
-    -- SpawnGroupInZone(origin, self.coalition)
-    table.insert(self.operations.active, {origin = origin, target = target})
-    self.map:drawDirective(origin, target)
-end
-
-return CoalitionCommander
-
-end)
-__bundle_register("control-zones", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = require("constants").rgb
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 
@@ -231,7 +20,8 @@ function ControlZones.new(namedZones, groundTemplates)
         --put keys into allZones
     end
     self.maxima = nil
-    self.unitCounter = 1
+    self.groupCounter = 1
+    self.commanders = {}
     self.markerCounter = 9990
     -- self.maxima = {
     --     westmost = nil,
@@ -247,6 +37,10 @@ function ControlZones.new(namedZones, groundTemplates)
     self.groundGroups = {}
     self.centroid = {}
     return self
+end
+
+function ControlZones:addCommander(side, c)
+    self.commanders[side] = c
 end
 
 function ControlZones:setup(options)
@@ -711,6 +505,10 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
+function ControlZones:getNewGroupId()
+    self.groupCounter = self.groupCounter + 1
+    return self.groupCounter
+end
 
 function ControlZones:getNewMarker()
     self.markerCounter = self.markerCounter + 1
@@ -768,8 +566,7 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self.unitCounter
-    self.unitCounter = self.unitCounter + 1
+    local groupName = zoneName.."-ground-"..self.getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
@@ -806,39 +603,3 @@ function ControlZones:populateZones()
 end
 
 return ControlZones
-
-end)
-__bundle_register("helpers", function(require, _LOADED, __bundle_register, __bundle_modules)
-local function isCounterClockwise(p1, p2, p3)
-    -- swapped to account for DCS coordinate weirdness
-    return (p2.y - p1.y) * (p3.x - p1.x) - (p2.x - p1.x) * (p3.y - p1.y) > 0
-    -- standard (x,y) as (N/S,E/W) version:
-    -- return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x) > 0
-end
-
-return {
-    isCounterClockwise = isCounterClockwise
-}
-
-end)
-__bundle_register("table", function(require, _LOADED, __bundle_register, __bundle_modules)
-function table.contains(table, el)
-    for _, v in pairs(table) do
-        if v == el then
-            return true
-        end
-    end
-    return false
-end
-
-function table.findIndex(table, needle)
-    for i, v in pairs(table) do
-        if v == needle then
-            return i
-        end
-    end
-    return nil
-end
-
-end)
-return __bundle_require("__root")
