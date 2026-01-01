@@ -44,13 +44,12 @@ cz:drawFrontline("red")
 trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(cz.centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
 trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 
--- populate zones
-
 local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
-cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates))
-cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates))
+cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates.blue))
+cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates.red))
 cz.commanders.blue:chooseTarget()
 cz.commanders.red:chooseTarget()
 cz:populateZones()
+cz:reinforceZones()

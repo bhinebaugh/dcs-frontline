@@ -5,15 +5,29 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     local self = setmetatable({}, CoalitionCommander)
     self.map = parent
     self.coalition = config.color
+    self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
-    self.templates = groundTemplates[self.coalition]
+    self.templates = groundTemplates
     self.groups = {}
     self.operations = {
         active = {},
-        history = {}
+        history = {},
+        group = nil,
+        status = nil,
     }
     -- attitude/aggressiveness = offensive, defensive, cautious, etc
     return self
+end
+
+function CoalitionCommander:chooseZoneReinforcements()
+    local reinforcements = {}
+    local frontZones = self.map:getPerimeterZones(self.color)
+    for _, zoneName in pairs(frontZones) do
+        local r = math.random(#self.templates)
+        local group = self.templates[r]
+        reinforcements[zoneName] = group
+    end
+    return reinforcements
 end
 
 function CoalitionCommander:chooseTarget()

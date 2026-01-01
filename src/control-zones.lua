@@ -366,6 +366,51 @@ function ControlZones:triangleHasEdge(tri, v1, v2)
 end
 
 -- Get perimeter edges facing another color
+function ControlZones:getPerimeterZones(color)
+    if not self.triangles then
+        self:buildDelaunayIndex()
+    end
+    
+    local frontZones = {}
+    local frontSet = {}
+    
+    for _, tri in ipairs(self.triangles) do
+        local colors = {
+            self.owner[tri[1]],
+            self.owner[tri[2]],
+            self.owner[tri[3]]
+        }
+        
+        -- Check each edge of the triangle
+        local edgePairs = {
+            {1, 2, 3},
+            {2, 3, 1},
+            {3, 1, 2}
+        }
+        
+        for _, pair in ipairs(edgePairs) do
+            local v1, v2, v3 = pair[1], pair[2], pair[3]
+            
+            -- Edge v1-v2 is part of perimeter if:
+            -- - both v1 and v2 are 'color'
+            -- - v3 is 'facingColor' or "neutral"
+            if colors[v1] == color and colors[v2] == color and colors[v3] ~= color then
+                local key1, key2 = tri[v1], tri[v2]
+                if not frontSet[key1] then
+                    frontSet[key1] = true
+                    table.insert(frontZones, key1)
+                end
+                if not frontSet[key2] then
+                    frontSet[key2] = true
+                    table.insert(frontZones, key2)
+                end
+            end
+        end
+    end
+    
+    return frontZones
+end
+
 function ControlZones:getPerimeterEdges(color)
     if not self.triangles then
         self:buildDelaunayIndex()
@@ -585,21 +630,23 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
 end
 
 function ControlZones:populateZones()
-    --first sort zones into clusters
-    --provide details about cluster
-    --for each side 
+    -- on first pass spawn basic template to hold zone,
+    -- later reinforce zones prioritized by each commander
     for _, color in pairs({"blue","red"}) do
         local zones = self:getCluster(color)
-        local edgeZones = self:getPerimeterEdges(color)
-        -- more info about zone connections, proximity, support 
-        -- pass to commander
-
         for _, zoneName in pairs(zones) do
             local r = math.random(#self.groundTemplates[color])
             local group = self.groundTemplates[color][r]
             self:spawnGroupInZone(zoneName, color, group)
         end
     end
+end
+
+function ControlZones:reinforceZones()
+        local selectedZones = self.commanders.blue:chooseZoneReinforcements()
+        for zoneName, template in pairs(selectedZones) do
+            self:spawnGroupInZone(zoneName, "blue", template)
+        end
 end
 
 return ControlZones

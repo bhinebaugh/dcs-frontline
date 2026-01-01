@@ -88,16 +88,15 @@ cz:drawFrontline("red")
 trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(cz.centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
 trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 
--- populate zones
-
 local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
-cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates))
-cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates))
+cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates.blue))
+cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates.red))
 cz.commanders.blue:chooseTarget()
 cz.commanders.red:chooseTarget()
 cz:populateZones()
+cz:reinforceZones()
 
 end)
 __bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -172,15 +171,29 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     local self = setmetatable({}, CoalitionCommander)
     self.map = parent
     self.coalition = config.color
+    self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
-    self.templates = groundTemplates[self.coalition]
+    self.templates = groundTemplates
     self.groups = {}
     self.operations = {
         active = {},
-        history = {}
+        history = {},
+        group = nil,
+        status = nil,
     }
     -- attitude/aggressiveness = offensive, defensive, cautious, etc
     return self
+end
+
+function CoalitionCommander:chooseZoneReinforcements()
+    local reinforcements = {}
+    local frontZones = self.map:getPerimeterZones(self.color)
+    for _, zoneName in pairs(frontZones) do
+        local r = math.random(#self.templates)
+        local group = self.templates[r]
+        reinforcements[zoneName] = group
+    end
+    return reinforcements
 end
 
 function CoalitionCommander:chooseTarget()
@@ -191,8 +204,25 @@ function CoalitionCommander:chooseTarget()
 
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
     -- SpawnGroupInZone(origin, self.coalition)
-    table.insert(self.operations.active, {origin = origin, target = target})
+    table.insert(self.operations.active, {origin = origin, target = target, group = nil})
     self.map:drawDirective(origin, target)
+end
+
+function CoalitionCommander:launchAssault()
+    -- match available groups with active operation
+    if next(self.operations.active) == nil then
+        env.info("NO ACTIVE OPERATIONS no units tasks")
+        return false
+    end
+    local op = self.operations.active[1]
+    env.info(mist.utils.tableShow(op))
+    op.group = self.map:spawnGroupInZone(op.origin, self.color, groundTemplates[self.color][1])
+    env.info("spawned group "..op.group)
+    local zn = self.map:getZone(op.target)
+    env.info("destination "..zn.x..", "..zn.y)
+
+    -- local targetCord = getGroupPos('Ground-Target')
+    local targetCord = self.map:getZone('control-42').point
 end
 
 return CoalitionCommander
@@ -567,6 +597,51 @@ function ControlZones:triangleHasEdge(tri, v1, v2)
 end
 
 -- Get perimeter edges facing another color
+function ControlZones:getPerimeterZones(color)
+    if not self.triangles then
+        self:buildDelaunayIndex()
+    end
+    
+    local frontZones = {}
+    local frontSet = {}
+    
+    for _, tri in ipairs(self.triangles) do
+        local colors = {
+            self.owner[tri[1]],
+            self.owner[tri[2]],
+            self.owner[tri[3]]
+        }
+        
+        -- Check each edge of the triangle
+        local edgePairs = {
+            {1, 2, 3},
+            {2, 3, 1},
+            {3, 1, 2}
+        }
+        
+        for _, pair in ipairs(edgePairs) do
+            local v1, v2, v3 = pair[1], pair[2], pair[3]
+            
+            -- Edge v1-v2 is part of perimeter if:
+            -- - both v1 and v2 are 'color'
+            -- - v3 is 'facingColor' or "neutral"
+            if colors[v1] == color and colors[v2] == color and colors[v3] ~= color then
+                local key1, key2 = tri[v1], tri[v2]
+                if not frontSet[key1] then
+                    frontSet[key1] = true
+                    table.insert(frontZones, key1)
+                end
+                if not frontSet[key2] then
+                    frontSet[key2] = true
+                    table.insert(frontZones, key2)
+                end
+            end
+        end
+    end
+    
+    return frontZones
+end
+
 function ControlZones:getPerimeterEdges(color)
     if not self.triangles then
         self:buildDelaunayIndex()
@@ -786,21 +861,23 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
 end
 
 function ControlZones:populateZones()
-    --first sort zones into clusters
-    --provide details about cluster
-    --for each side 
+    -- on first pass spawn basic template to hold zone,
+    -- later reinforce zones prioritized by each commander
     for _, color in pairs({"blue","red"}) do
         local zones = self:getCluster(color)
-        local edgeZones = self:getPerimeterEdges(color)
-        -- more info about zone connections, proximity, support 
-        -- pass to commander
-
         for _, zoneName in pairs(zones) do
             local r = math.random(#self.groundTemplates[color])
             local group = self.groundTemplates[color][r]
             self:spawnGroupInZone(zoneName, color, group)
         end
     end
+end
+
+function ControlZones:reinforceZones()
+        local selectedZones = self.commanders.blue:chooseZoneReinforcements()
+        for zoneName, template in pairs(selectedZones) do
+            self:spawnGroupInZone(zoneName, "blue", template)
+        end
 end
 
 return ControlZones
