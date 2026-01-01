@@ -566,7 +566,7 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self.getNewGroupId()
+    local groupName = zoneName.."-ground-"..self:getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,

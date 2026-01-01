@@ -1,4 +1,5 @@
 {
+    "name": "dcs-frontline",
     "version": "0.1.0",
     "scripts": {
         "build": "./build",

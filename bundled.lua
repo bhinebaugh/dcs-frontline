@@ -79,7 +79,7 @@ for name, color in pairs(cz.owner) do
     local z = cz:getZone(name)
     local pt = z.point
     trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, constants.rgb[color], 1)
-    trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
+    trigger.action.textToAll(-1, 2000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
 end
 
 cz:drawEdges()
@@ -93,10 +93,8 @@ trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]),
 local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
-cz.commanders = {
-    blue = CoalitionCommander:new(cz, {color = "blue"}, constants.groundTemplates),
-    red  = CoalitionCommander:new(cz, {color = "red"}, constants.groundTemplates)
-}
+cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates))
+cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates))
 cz.commanders.blue:chooseTarget()
 cz.commanders.red:chooseTarget()
 cz:populateZones()
@@ -108,11 +106,7 @@ local rgb = {
     red = {0.5,0,0.1,0.5},
     neutral = {0.1,0.1,0.1,0.5},
 }
-local lineId = 3000
-local colorFade = {
-    red = 0.3,
-    blue = 0.3
-}
+
 local groundTemplates = { --frontline, rear, farp
     red = {
         {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
@@ -128,8 +122,6 @@ local groundTemplates = { --frontline, rear, farp
 
 return {
     rgb = rgb,
-    lineId = lineId,
-    colorFade = colorFade,
     groundTemplates = groundTemplates
 }
 
@@ -176,22 +168,19 @@ __bundle_register("coalition-commander", function(require, _LOADED, __bundle_reg
 local CoalitionCommander = {}
 CoalitionCommander.__index = CoalitionCommander
 
-function CoalitionCommander:new(parent, config, groundTemplates)
-    local obj = {
-        map = parent,
-        coalition = config.color,
-        opponent = config.color == "blue" and "red" or "blue",
-        templates = groundTemplates[self.coalition],
-        groups = {},
-        operations = {
-            active = {},
-            history = {}
-        }
-        -- reference to zone "map", to ask for the state of things
-        -- attitude/aggressiveness = offensive, defensive, cautious, etc
+function CoalitionCommander.new(parent, config, groundTemplates)
+    local self = setmetatable({}, CoalitionCommander)
+    self.map = parent
+    self.coalition = config.color
+    self.opponent = config.color == "blue" and "red" or "blue"
+    self.templates = groundTemplates[self.coalition]
+    self.groups = {}
+    self.operations = {
+        active = {},
+        history = {}
     }
-    setmetatable(obj, self)
-    return obj
+    -- attitude/aggressiveness = offensive, defensive, cautious, etc
+    return self
 end
 
 function CoalitionCommander:chooseTarget()
@@ -232,7 +221,8 @@ function ControlZones.new(namedZones, groundTemplates)
         --put keys into allZones
     end
     self.maxima = nil
-    self.unitCounter = 1
+    self.groupCounter = 1
+    self.commanders = {}
     self.markerCounter = 9990
     -- self.maxima = {
     --     westmost = nil,
@@ -248,6 +238,10 @@ function ControlZones.new(namedZones, groundTemplates)
     self.groundGroups = {}
     self.centroid = {}
     return self
+end
+
+function ControlZones:addCommander(side, c)
+    self.commanders[side] = c
 end
 
 function ControlZones:setup(options)
@@ -712,6 +706,10 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
+function ControlZones:getNewGroupId()
+    self.groupCounter = self.groupCounter + 1
+    return self.groupCounter
+end
 
 function ControlZones:getNewMarker()
     self.markerCounter = self.markerCounter + 1
@@ -769,8 +767,7 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self.unitCounter
-    self.unitCounter = self.unitCounter + 1
+    local groupName = zoneName.."-ground-"..self:getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,

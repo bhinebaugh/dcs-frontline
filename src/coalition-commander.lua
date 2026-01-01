@@ -12,7 +12,6 @@ function CoalitionCommander.new(parent, config, groundTemplates)
         active = {},
         history = {}
     }
-    -- reference to zone "map", to ask for the state of things
     -- attitude/aggressiveness = offensive, defensive, cautious, etc
     return self
 end

@@ -10,11 +10,11 @@ while getopts "c" opt; do
 done
 shift $((OPTIND-1))
 
-INPUT_PATH=frontline.lua
+INPUT_PATH=src/frontline.lua
 # TEMP_PATH=".temp.lua"
 TEMP_PATH=bundled.lua
 
-npx luabundler bundle -p "./?.lua" -o $TEMP_PATH $INPUT_PATH
+npx luabundler bundle -p "./src/?.lua" -o $TEMP_PATH $INPUT_PATH
 
 if [ "$COPY_TO_CLIPBOARD" = true ]; then
   cat $TEMP_PATH | clip

@@ -35,7 +35,7 @@ for name, color in pairs(cz.owner) do
     local z = cz:getZone(name)
     local pt = z.point
     trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, constants.rgb[color], 1)
-    trigger.action.textToAll(-1, 1000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
+    trigger.action.textToAll(-1, 2000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
 end
 
 cz:drawEdges()
