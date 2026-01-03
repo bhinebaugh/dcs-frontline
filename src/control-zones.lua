@@ -23,6 +23,7 @@ function ControlZones.new(namedZones, groundTemplates)
     self.groupCounter = 1
     self.commanders = {}
     self.markerCounter = 9990
+    self.frontlineMarkers = {blue = {}, red = {}} --should really be connected to :addCommander
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -567,8 +568,17 @@ end
 
 function ControlZones:drawFrontline(color)
     self.front[color] = self:getPerimeterEdges(color)
+    --first erase any existing lines
+    if self.frontlineMarkers[color] then
+        for _, id in pairs(self.frontlineMarkers[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.frontlineMarkers[color] = {}
+    end
+    --then draw a line for each edge of the current color's front
     for _, zonePoints in pairs(self.front[color]) do
         local lineId = self:getNewMarker()
+        table.insert(self.frontlineMarkers[color], lineId)
         local lineColor = rgb[color]
         local heading
         local z1, z2 = self:getZone(zonePoints.p1), self:getZone(zonePoints.p2)
@@ -581,6 +591,7 @@ function ControlZones:drawFrontline(color)
         local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
         trigger.action.lineToAll(-1, lineId, p1A, p2A, lineColor, 1)
         lineId = self:getNewMarker()
+        table.insert(self.frontlineMarkers[color], lineId)
         trigger.action.lineToAll(-1, lineId, p1B, p2B, lineColor, 1) --double the line for better visibility
     end
 end
