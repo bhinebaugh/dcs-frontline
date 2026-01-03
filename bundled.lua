@@ -98,6 +98,7 @@ cz.commanders.red:chooseTarget()
 cz:populateZones()
 cz:reinforceZones()
 
+cz:kickoff()
 end)
 __bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = {
@@ -109,13 +110,15 @@ local rgb = {
 local groundTemplates = { --frontline, rear, farp
     red = {
         {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
-        {"BMP-2", "BTR-80", "GAZ-66", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
-        {"Ural-375", "Ural-375", "Ural-375", "GAZ-66", "Paratrooper RPG-16", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
+        {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
+        {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
+        {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
     },
     blue = {
-        {"M 818", "M 818", "M 818", "Hummer"},
-        {"M 818", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M249" },
-        {"M-2 Bradley", "Hummer", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M4" },
+        {"Hummer", "M 818", "M 818", "M 818"},
+        {"M-113", "Hummer", "M 818", "M 818"},
+        {"M-113", "M-113", "Hummer", "Hummer"},
+        {"M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament", "Hummer"},
     }
 }
 
@@ -203,8 +206,7 @@ function CoalitionCommander:chooseTarget()
     local enemyNeighbors = self.map:getNeighbors(origin, self.opponent)
 
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
-    -- SpawnGroupInZone(origin, self.coalition)
-    table.insert(self.operations.active, {origin = origin, target = target, group = nil})
+    table.insert(self.operations.active, {type = "assault", origin = origin, destination = target, group = nil})
     self.map:drawDirective(origin, target)
 end
 
@@ -215,14 +217,26 @@ function CoalitionCommander:launchAssault()
         return false
     end
     local op = self.operations.active[1]
+    env.info("active operations for "..self.coalition)
     env.info(mist.utils.tableShow(op))
-    op.group = self.map:spawnGroupInZone(op.origin, self.color, groundTemplates[self.color][1])
-    env.info("spawned group "..op.group)
-    local zn = self.map:getZone(op.target)
-    env.info("destination "..zn.x..", "..zn.y)
+    local tgt = self.map:getZone(op.destination)
+    env.info("destination "..tgt.x..", "..tgt.y)
 
-    -- local targetCord = getGroupPos('Ground-Target')
-    local targetCord = self.map:getZone('control-42').point
+    local zoneGroups = self.map:getGroupsInZone(op.origin)
+    env.info("groups available ")
+    env.info(mist.utils.tableShow(zoneGroups))
+
+    --select a group from zone, randomly at first
+    if #zoneGroups > 1 then
+        op.group = zoneGroups[math.random(#zoneGroups)]
+    else
+        op.group = zoneGroups[1] --self.map:spawnGroupInZone(op.origin, self.color, groundTemplates[self.color][1])
+    end
+
+    return {
+        group = op.group,
+        destination = tgt.point
+    }
 end
 
 return CoalitionCommander
@@ -266,6 +280,7 @@ function ControlZones.new(namedZones, groundTemplates)
     }
     self.groupOfUnit = {}
     self.groundGroups = {}
+    self.groupsByZone = {}
     self.centroid = {}
     return self
 end
@@ -341,6 +356,10 @@ function ControlZones:getZone(name)
     return self.zonesByName[name]
 end
 
+function ControlZones:getGroupsInZone(zoneName)
+    return self.groupsByZone[zoneName]
+end
+
 function ControlZones:changeZoneOwner(name, newOwner)
     local formerOwner = self.owner[name]
     if newOwner == formerOwner then
@@ -365,7 +384,7 @@ function ControlZones:checkOwnership(time)
     -- if units in a neutral zone, gain control 
     -- if both colors in zone, no change
     env.info("checking zone control......")
-    for zoneName, _ in pairs(self.zoneByName) do
+    for zoneName, _ in pairs(self.zonesByName) do
         self:updateZoneOwner(zoneName)
     end
     return time + 30
@@ -857,7 +876,60 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         origin = zoneName,
         color = color,
     }
+    if not self.groupsByZone[zoneName] then
+        self.groupsByZone[zoneName] = { groupName }
+    else
+        table.insert(self.groupsByZone[zoneName], groupName)
+    end
     return groupName
+end
+
+function ControlZones:constructTask(params)
+    local task = {}
+    local pt = params.destination
+
+    local route = {
+        ["points"] = {
+            [1] = {
+                type= AI.Task.WaypointType.TURNING_POINT,
+                x = pt.x,
+                y = pt.z,
+                speed = 100,
+                -- action = AI.Task.VehicleFormation.VEE
+                action = AI.Task.VehicleFormation.OFF_ROAD,
+            },
+            [2] = {
+                type= AI.Task.WaypointType.TURNING_POINT,
+                x = pt.x,
+                y = pt.z,
+                speed = 100,
+                -- action = AI.Task.VehicleFormation.VEE
+                action = AI.Task.VehicleFormation.OFF_ROAD,
+            },
+        }
+    }
+
+    local taskMove = {
+        id = 'Mission',
+        params = {
+            route = route,
+        }
+    }
+
+    task = taskMove
+    return task
+end
+
+function ControlZones:setGroupTask(groupName, task)
+    local group = Group.getByName(groupName)
+    if not group then
+        env.info("Not assigning task: no group "..groupName)
+        return false
+    end
+
+    group:getController():setTask(task)
+    --remove group from self.groupsByZone[]
+    return true
 end
 
 function ControlZones:populateZones()
@@ -874,10 +946,41 @@ function ControlZones:populateZones()
 end
 
 function ControlZones:reinforceZones()
-        local selectedZones = self.commanders.blue:chooseZoneReinforcements()
+    for _, cmd in pairs(self.commanders) do
+        local selectedZones = cmd:chooseZoneReinforcements()
         for zoneName, template in pairs(selectedZones) do
-            self:spawnGroupInZone(zoneName, "blue", template)
+            self:spawnGroupInZone(zoneName, cmd.color, template)
         end
+    end
+end
+
+function ControlZones:getOrders()
+    for _, cmd in pairs(self.commanders) do
+        local params = cmd:launchAssault()
+        if not params then
+            return nil
+        end
+        env.info(cmd.color..": constructing task for "..params.group)
+        local task = self:constructTask(params)
+        env.info("task for "..params.group)
+        env.info(mist.utils.tableShow(task))
+    
+        self:setGroupTask(params.group, task)
+        
+    end
+
+    return nil
+end
+
+function ControlZones:kickoff()
+    timer.scheduleFunction(
+        function(params)
+            params.context:getOrders()
+            return nil
+        end,
+        {context = self},
+        timer.getTime() + 8
+    )
 end
 
 return ControlZones

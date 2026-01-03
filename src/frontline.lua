@@ -53,3 +53,5 @@ cz.commanders.blue:chooseTarget()
 cz.commanders.red:chooseTarget()
 cz:populateZones()
 cz:reinforceZones()
+
+cz:kickoff()

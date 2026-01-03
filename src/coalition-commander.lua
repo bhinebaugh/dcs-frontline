@@ -37,9 +37,37 @@ function CoalitionCommander:chooseTarget()
     local enemyNeighbors = self.map:getNeighbors(origin, self.opponent)
 
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
-    -- SpawnGroupInZone(origin, self.coalition)
-    table.insert(self.operations.active, {origin = origin, target = target})
+    table.insert(self.operations.active, {type = "assault", origin = origin, destination = target, group = nil})
     self.map:drawDirective(origin, target)
+end
+
+function CoalitionCommander:launchAssault()
+    -- match available groups with active operation
+    if next(self.operations.active) == nil then
+        env.info("NO ACTIVE OPERATIONS no units tasks")
+        return false
+    end
+    local op = self.operations.active[1]
+    env.info("active operations for "..self.coalition)
+    env.info(mist.utils.tableShow(op))
+    local tgt = self.map:getZone(op.destination)
+    env.info("destination "..tgt.x..", "..tgt.y)
+
+    local zoneGroups = self.map:getGroupsInZone(op.origin)
+    env.info("groups available ")
+    env.info(mist.utils.tableShow(zoneGroups))
+
+    --select a group from zone, randomly at first
+    if #zoneGroups > 1 then
+        op.group = zoneGroups[math.random(#zoneGroups)]
+    else
+        op.group = zoneGroups[1] --self.map:spawnGroupInZone(op.origin, self.color, groundTemplates[self.color][1])
+    end
+
+    return {
+        group = op.group,
+        destination = tgt.point
+    }
 end
 
 return CoalitionCommander
