@@ -617,7 +617,7 @@ function ControlZones:drawDirective(fromZone, toZone)
     return true
 end
 
-function ControlZones:spawnGroupInZone(zoneName, color, template)
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
     local zn = self:getZone(zoneName)
     local unitSet = {}
     local xoff = math.random(-40, 40)
@@ -627,7 +627,6 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self:getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
@@ -652,7 +651,7 @@ end
 
 function ControlZones:constructTask(params)
     local task = {}
-    local pt = params.destination
+    local pt = params.destination.point
 
     local route = {
         ["points"] = {
@@ -701,48 +700,41 @@ end
 function ControlZones:populateZones()
     -- on first pass spawn basic template to hold zone,
     -- later reinforce zones prioritized by each commander
-    for _, color in pairs({"blue","red"}) do
-        local zones = self:getCluster(color)
-        for _, zoneName in pairs(zones) do
-            local r = math.random(#self.groundTemplates[color])
-            local group = self.groundTemplates[color][r]
-            self:spawnGroupInZone(zoneName, color, group)
+    for _, cmd in pairs(self.commanders) do
+        --a single group for each zone to start
+        local zones = self:getCluster(cmd.color)
+        local reinforcements = cmd:chooseZoneReinforcements(zones)
+        for zoneName, data in pairs(reinforcements) do
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+        end
+
+        --front zones get an additional group
+        local frontlineZones = self:getPerimeterZones(cmd.color)
+        reinforcements = cmd:chooseZoneReinforcements(frontlineZones)
+        for zoneName, data in pairs(reinforcements) do
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
         end
     end
 end
 
-function ControlZones:reinforceZones()
+function ControlZones:requestOrders()
     for _, cmd in pairs(self.commanders) do
-        local selectedZones = cmd:chooseZoneReinforcements()
-        for zoneName, template in pairs(selectedZones) do
-            self:spawnGroupInZone(zoneName, cmd.color, template)
+        local params = cmd:issueOrders()
+        if params then
+            env.info(cmd.color..": constructing task for "..params.group)
+            local task = self:constructTask(params)
+            self:setGroupTask(params.group, task)
+            self:drawDirective(params.origin.name, params.destination.name)
         end
     end
-end
-
-function ControlZones:getOrders()
-    for _, cmd in pairs(self.commanders) do
-        local params = cmd:launchAssault()
-        if not params then
-            return nil
-        end
-        env.info(cmd.color..": constructing task for "..params.group)
-        local task = self:constructTask(params)
-        env.info("task for "..params.group)
-        env.info(mist.utils.tableShow(task))
-    
-        self:setGroupTask(params.group, task)
-        
-    end
-
-    return nil
 end
 
 function ControlZones:kickoff()
+    self:populateZones()
     timer.scheduleFunction(
         function(params)
-            params.context:getOrders()
-            return nil
+            params.context:requestOrders()
+            return timer.getTime() + 30
         end,
         {context = self},
         timer.getTime() + 8

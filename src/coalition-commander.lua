@@ -1,3 +1,5 @@
+local taskTypes = require("constants").taskTypes
+
 local CoalitionCommander = {}
 CoalitionCommander.__index = CoalitionCommander
 
@@ -8,7 +10,15 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
     self.templates = groundTemplates
-    self.groups = {}
+    self.groups = {} -- e.g. name location task
+    self.groupsByZone = {}
+    for _, name in pairs(self.map.allZones) do
+        self.groupsByZone[name] = {}
+    end
+    self.groupsByTask = {}
+    for i,j in pairs(taskTypes) do
+        self.groupsByTask[j] = {}
+    end
     self.operations = {
         active = {},
         history = {},
@@ -19,55 +29,98 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     return self
 end
 
-function CoalitionCommander:chooseZoneReinforcements()
+function CoalitionCommander:registerGroup(groupName, templateID, task, target, zoneName)
+    self.groups[groupName] = {
+        name = groupName,
+        template = templateID,
+        task = task or taskTypes.DEFEND,
+        -- location: zone or en route or point or nearest zone
+        -- status: hold, preparing, en route, complete/at destination
+        target = target or nil,
+        origin = zoneName, --or point, or other value
+    }
+    table.insert(self.groupsByTask[task], groupName)
+    if zoneName then
+        table.insert(self.groupsByZone[zoneName], groupName)
+    end
+end
+
+function CoalitionCommander:chooseZoneReinforcements(zones)
     local reinforcements = {}
-    local frontZones = self.map:getPerimeterZones(self.color)
-    for _, zoneName in pairs(frontZones) do
+    for _, zoneName in pairs(zones) do
         local r = math.random(#self.templates)
         local group = self.templates[r]
-        reinforcements[zoneName] = group
+        local groupName = zoneName.."-"..self.map:getNewGroupId()
+        reinforcements[zoneName] = {
+            groupName = groupName,
+            template = group
+        }
+        self:registerGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
     end
     return reinforcements
 end
 
-function CoalitionCommander:chooseTarget()
-    local r = math.random(#self.map.front[self.coalition])
-    local randomBorderEdge = self.map.front[self.coalition][r]
-    local origin = randomBorderEdge.p1
-    local enemyNeighbors = self.map:getNeighbors(origin, self.opponent)
+function CoalitionCommander:designateAssault()
+    local frontlineForces = {}
+    local frontZones = self.map:getPerimeterZones(self.color)
 
+    for _, zoneName in pairs(frontZones) do
+        local zoneGroups = self.groupsByZone[zoneName]
+        if #zoneGroups > 1 then
+            local defensive = 0
+            for _, groupName in pairs(zoneGroups) do
+                if self.groups[groupName].task == taskTypes.DEFEND then defensive = defensive + 1 end
+            end
+            if defensive > 1 then
+                table.insert(frontlineForces, {zone = zoneName, count = #zoneGroups})
+            end
+        end
+    end
+
+    if #frontlineForces < 1 then
+        env.info("...no frontline zones have groups available for offensive tasking")
+        return nil
+    end
+    local tasked = frontlineForces[math.random(#frontlineForces)]
+    local enemyNeighbors = self.map:getNeighbors(tasked.zone, self.opponent)
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
-    table.insert(self.operations.active, {type = "assault", origin = origin, destination = target, group = nil})
-    self.map:drawDirective(origin, target)
-end
 
-function CoalitionCommander:launchAssault()
-    -- match available groups with active operation
-    if next(self.operations.active) == nil then
-        env.info("NO ACTIVE OPERATIONS no units tasks")
-        return false
+    local zoneGroups = self.groupsByZone[tasked.zone]
+    local availableGroups = {}
+    for _, grp in pairs(zoneGroups) do
+        if self.groups[grp].task == taskTypes.DEFEND then
+            table.insert(availableGroups, grp)
+        end
     end
-    local op = self.operations.active[1]
-    env.info("active operations for "..self.coalition)
-    env.info(mist.utils.tableShow(op))
-    local tgt = self.map:getZone(op.destination)
-    env.info("destination "..tgt.x..", "..tgt.y)
+    local taskedGroup = availableGroups[math.random(#availableGroups)]
 
-    local zoneGroups = self.map:getGroupsInZone(op.origin)
-    env.info("groups available ")
-    env.info(mist.utils.tableShow(zoneGroups))
-
-    --select a group from zone, randomly at first
-    if #zoneGroups > 1 then
-        op.group = zoneGroups[math.random(#zoneGroups)]
-    else
-        op.group = zoneGroups[1] --self.map:spawnGroupInZone(op.origin, self.color, groundTemplates[self.color][1])
-    end
+    --update group
+    self.groups[taskedGroup].task = taskTypes.ASSAULT
+    table.insert(self.operations.active, {type = "assault", origin = tasked.zone, destination = target, group = taskedGroup})
+    env.info("...tasking "..taskedGroup.." to assault "..target)
 
     return {
-        group = op.group,
-        destination = tgt.point
+        group = taskedGroup,
+        origin = self.map:getZone(tasked.zone),
+        destination = self.map:getZone(target),
     }
+
+end
+
+function CoalitionCommander:issueOrders()
+    env.info(self.color.." generating orders")
+    if #self.operations.active > 4 then --limit number of active operations
+        env.info("...operations at capacity")
+        return nil
+    end
+    if math.random() < 0.5 then
+        env.info("...(random) refrain from launching new offensive")
+        return nil
+    end
+
+    local params = self:designateAssault()
+
+    return params
 end
 
 return CoalitionCommander

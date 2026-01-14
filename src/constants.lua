@@ -19,7 +19,18 @@ local groundTemplates = { --frontline, rear, farp
     }
 }
 
+local taskTypes = {
+    DEFEND = 1,
+    REINFORCE = 2,
+    RECON = 3,
+    ASSAULT = 4,
+    RESERVE = 5,
+    INDIRECT = 6,
+    AA = 7,
+}
+
 return {
     rgb = rgb,
+    taskTypes = taskTypes,
     groundTemplates = groundTemplates
 }
