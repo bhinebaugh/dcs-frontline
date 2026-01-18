@@ -147,6 +147,7 @@ function ControlZones:checkOwnership(time)
 end
 
 function ControlZones:updateZoneOwner(zoneName)
+    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
@@ -603,13 +604,8 @@ function ControlZones:drawDirective(fromZone, toZone)
     local fill = color
     local originPoint = self:getZone(fromZone).point
     local targetPoint = self:getZone(toZone).point
-    env.info("origin point")
-    env.info(mist.utils.tableShow(originPoint))
     local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
     local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-    env.info("heading")
-    env.info(heading)
-
     local distance = 1000
     local lineStart = mist.projectPoint(originPoint, distance, heading)
     local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
@@ -647,6 +643,21 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
         table.insert(self.groupsByZone[zoneName], groupName)
     end
     return groupName
+end
+
+function ControlZones:processDeadUnit(unitName)
+    env.info("control zone: unit "..unitName.." is dead")
+    local grpName = self.groupOfUnit[unitName]
+    local grpColor = self.groundGroups[grpName].color
+    env.info("    from group "..grpName.." of "..grpColor)
+    if mist.groupIsDead(grpName) then --error if player
+        env.info("    >>> GROUP LOST all units of "..grpName.." are dead")
+        self.commanders[grpColor]:registerGroupLost(grpName)
+        local originZone = self.groundGroups[grpName].origin
+        self:updateZoneOwner(originZone)
+    else
+        self.commanders[grpColor]:registerUnitLost(unitName, grpName)
+    end
 end
 
 function ControlZones:constructTask(params)
@@ -721,7 +732,7 @@ function ControlZones:requestOrders()
     for _, cmd in pairs(self.commanders) do
         local params = cmd:issueOrders()
         if params then
-            env.info(cmd.color..": constructing task for "..params.group)
+            env.info("    constructing task for "..params.group)
             local task = self:constructTask(params)
             self:setGroupTask(params.group, task)
             self:drawDirective(params.origin.name, params.destination.name)

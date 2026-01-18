@@ -29,10 +29,11 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     return self
 end
 
-function CoalitionCommander:registerGroup(groupName, templateID, task, target, zoneName)
+function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneName)
     self.groups[groupName] = {
         name = groupName,
         template = templateID,
+        strength = #self.templates[templateID],
         task = task or taskTypes.DEFEND,
         -- location: zone or en route or point or nearest zone
         -- status: hold, preparing, en route, complete/at destination
@@ -42,6 +43,44 @@ function CoalitionCommander:registerGroup(groupName, templateID, task, target, z
     table.insert(self.groupsByTask[task], groupName)
     if zoneName then
         table.insert(self.groupsByZone[zoneName], groupName)
+    end
+end
+function CoalitionCommander:updateGroup(groupName, params)
+    --stub
+end
+function CoalitionCommander:removeGroup(groupName)
+    local task = self.groups[groupName].task
+    -- remove from self.groupsByTask[task]
+    -- self.groups[groupName].origin/target
+    -- self.groupsByZone
+    self.groups[groupName] = nil
+end
+
+function CoalitionCommander:registerUnitLost(unitName, groupName)
+    env.info(self.coalition.." command: receiving report on "..unitName.." of "..groupName)
+    local grp = self.groups[groupName]
+    env.info("    "..self.coalition.." command lost "..unitName.." in assault on "..grp.target)
+    grp.strength = grp.strength - 1
+    env.info("    group strength is now "..grp.strength)
+end
+function CoalitionCommander:registerGroupLost(groupName)
+    env.info(self.coalition.." command: receiving report on "..groupName)
+    local grp = self.groups[groupName]
+    if grp then
+        env.info("    lost "..grp.name.." - assault on "..grp.target.." failed")
+        for i, op in pairs(self.operations.active) do
+            if op.group == groupName then
+                table.insert(self.operations.history, op)
+                self.operations.active[i] = nil
+                env.info("+++ updated operations list")
+                env.info(mist.utils.tableShow(self.operations.active))
+                env.info("--- past operations list")
+                env.info(mist.utils.tableShow(self.operations.history))
+            end
+        end
+        self:removeGroup(groupName)
+    else
+        env.info("    ("..groupName.." was already reported lost)")
     end
 end
 
@@ -55,7 +94,7 @@ function CoalitionCommander:chooseZoneReinforcements(zones)
             groupName = groupName,
             template = group
         }
-        self:registerGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
+        self:addGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
     end
     return reinforcements
 end
@@ -96,8 +135,9 @@ function CoalitionCommander:designateAssault()
 
     --update group
     self.groups[taskedGroup].task = taskTypes.ASSAULT
+    self.groups[taskedGroup].target = target
     table.insert(self.operations.active, {type = "assault", origin = tasked.zone, destination = target, group = taskedGroup})
-    env.info("...tasking "..taskedGroup.." to assault "..target)
+    env.info("    tasking "..taskedGroup.." to assault "..target)
 
     return {
         group = taskedGroup,
@@ -110,11 +150,11 @@ end
 function CoalitionCommander:issueOrders()
     env.info(self.color.." generating orders")
     if #self.operations.active > 4 then --limit number of active operations
-        env.info("...operations at capacity")
+        env.info("    operations at capacity")
         return nil
     end
     if math.random() < 0.5 then
-        env.info("...(random) refrain from launching new offensive")
+        env.info("    (random) refrain from launching new offensive")
         return nil
     end
 

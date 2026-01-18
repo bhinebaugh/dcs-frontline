@@ -141,8 +141,6 @@ UnitLostHandler.__index = UnitLostHandler
 function UnitLostHandler.new(cz)
     local self = setmetatable({}, UnitLostHandler)
     self.cz = cz
-    self.groupOfUnit = cz.groupOfUnit
-    self.groundGroups = cz.groundGroups
     return self
 end
 
@@ -153,17 +151,11 @@ function UnitLostHandler:onEvent(e)
     if not e then return end
     if world.event.S_EVENT_KILL == e.id then
         local unitName = e.target:getName()
+        --event initiator
         if unitName and not e.target:getPlayerName() then
-            local grpName = self.groupOfUnit[unitName]
-            if mist.groupIsDead(grpName) then --error if player
-                env.info(grpName.." is all dead now")
-                env.info(mist.utils.tableShow(self.groundGroups[grpName]))
-                local originZone = self.groundGroups[grpName].origin
-                env.info("updating ownership of "..originZone)
-                self.cz:updateZoneOwner(originZone)
-            end
+            --register reduced strength or loss with coalition command
+            self.cz:processDeadUnit(unitName)
         end
-        --register reduced strength or loss with coalition command
     end
 end
 
@@ -204,10 +196,11 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     return self
 end
 
-function CoalitionCommander:registerGroup(groupName, templateID, task, target, zoneName)
+function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneName)
     self.groups[groupName] = {
         name = groupName,
         template = templateID,
+        strength = #self.templates[templateID],
         task = task or taskTypes.DEFEND,
         -- location: zone or en route or point or nearest zone
         -- status: hold, preparing, en route, complete/at destination
@@ -217,6 +210,45 @@ function CoalitionCommander:registerGroup(groupName, templateID, task, target, z
     table.insert(self.groupsByTask[task], groupName)
     if zoneName then
         table.insert(self.groupsByZone[zoneName], groupName)
+    end
+end
+function CoalitionCommander:updateGroup(groupName, params)
+    --stub
+end
+function CoalitionCommander:removeGroup(groupName)
+    local task = self.groups[groupName].task
+    -- TODO
+    -- remove from self.groupsByTask[task]
+    -- self.groups[groupName].origin/target
+    -- self.groupsByZone
+    self.groups[groupName] = nil
+end
+
+function CoalitionCommander:registerUnitLost(unitName, groupName)
+    env.info(self.coalition.." command: receiving report on "..unitName.." of "..groupName)
+    local grp = self.groups[groupName]
+    env.info("    "..self.coalition.." command lost "..unitName.." in assault on "..grp.target)
+    grp.strength = grp.strength - 1
+    env.info("    group strength is now "..grp.strength)
+end
+function CoalitionCommander:registerGroupLost(groupName)
+    env.info(self.coalition.." command: receiving report on "..groupName)
+    local grp = self.groups[groupName]
+    if grp then
+        env.info("    lost "..grp.name.." - assault on "..grp.target.." failed")
+        for i, op in pairs(self.operations.active) do
+            if op.group == groupName then
+                table.insert(self.operations.history, op)
+                self.operations.active[i] = nil
+                env.info("+++ updated operations list")
+                env.info(mist.utils.tableShow(self.operations.active))
+                env.info("--- past operations list")
+                env.info(mist.utils.tableShow(self.operations.history))
+            end
+        end
+        self:removeGroup(groupName)
+    else
+        env.info("    ("..groupName.." was already reported lost)")
     end
 end
 
@@ -230,7 +262,7 @@ function CoalitionCommander:chooseZoneReinforcements(zones)
             groupName = groupName,
             template = group
         }
-        self:registerGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
+        self:addGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
     end
     return reinforcements
 end
@@ -271,8 +303,10 @@ function CoalitionCommander:designateAssault()
 
     --update group
     self.groups[taskedGroup].task = taskTypes.ASSAULT
+    self.groups[taskedGroup].target = target
+    --group should include a ref to operation it is furthering 
     table.insert(self.operations.active, {type = "assault", origin = tasked.zone, destination = target, group = taskedGroup})
-    env.info("...tasking "..taskedGroup.." to assault "..target)
+    env.info("    tasking "..taskedGroup.." to assault "..target)
 
     return {
         group = taskedGroup,
@@ -285,15 +319,16 @@ end
 function CoalitionCommander:issueOrders()
     env.info(self.color.." generating orders")
     if #self.operations.active > 4 then --limit number of active operations
-        env.info("...operations at capacity")
+        env.info("    pass (at capacity)")
         return nil
     end
     if math.random() < 0.5 then
-        env.info("...(random) refrain from launching new offensive")
+        env.info("    pass (random)")
         return nil
     end
 
     local params = self:designateAssault()
+    --timer check mist getUnitsInZones to monitor potential success?
 
     return params
 end
@@ -451,6 +486,7 @@ function ControlZones:checkOwnership(time)
 end
 
 function ControlZones:updateZoneOwner(zoneName)
+    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
@@ -907,13 +943,8 @@ function ControlZones:drawDirective(fromZone, toZone)
     local fill = color
     local originPoint = self:getZone(fromZone).point
     local targetPoint = self:getZone(toZone).point
-    env.info("origin point")
-    env.info(mist.utils.tableShow(originPoint))
     local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
     local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-    env.info("heading")
-    env.info(heading)
-
     local distance = 1000
     local lineStart = mist.projectPoint(originPoint, distance, heading)
     local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
@@ -951,6 +982,21 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
         table.insert(self.groupsByZone[zoneName], groupName)
     end
     return groupName
+end
+
+function ControlZones:processDeadUnit(unitName)
+    env.info("control zone: unit "..unitName.." is dead")
+    local grpName = self.groupOfUnit[unitName]
+    local grpColor = self.groundGroups[grpName].color
+    env.info("    from group "..grpName.." of "..grpColor)
+    if mist.groupIsDead(grpName) then --error if player
+        env.info("    >>> GROUP LOST all units of "..grpName.." are dead")
+        self.commanders[grpColor]:registerGroupLost(grpName)
+        local originZone = self.groundGroups[grpName].origin
+        self:updateZoneOwner(originZone)
+    else
+        self.commanders[grpColor]:registerUnitLost(unitName, grpName)
+    end
 end
 
 function ControlZones:constructTask(params)
@@ -1025,7 +1071,9 @@ function ControlZones:requestOrders()
     for _, cmd in pairs(self.commanders) do
         local params = cmd:issueOrders()
         if params then
-            env.info(cmd.color..": constructing task for "..params.group)
+            env.info("    constructing task for "..params.group)
+            --mist.groupToPoint(groupName, zoneName, ...)
+            --also mist.ground.buildWP
             local task = self:constructTask(params)
             self:setGroupTask(params.group, task)
             self:drawDirective(params.origin.name, params.destination.name)
