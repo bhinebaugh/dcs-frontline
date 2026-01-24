@@ -15,6 +15,10 @@ local groupB = GroupCommander.new("Bravo", {
     color = "red",
     stratcom = stratRed
 })
+local groupC = GroupCommander.new("Charlie", {
+    color = "red",
+    stratcom = stratRed
+})
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
@@ -30,14 +34,14 @@ local redRepositionPosition = coord.LLtoLO(lat, lon)
 
 -- Ideally, the strategic commander would issue these orders
 -- Delay the move order until mission is fully loaded
-mist.scheduleFunction(
-    function()
-        env.info("Delayed move order execution for Bravo")
-        groupB:issueMoveOrder(redRepositionPosition)
-    end,
-    {},
-    timer.getTime() + 5  -- Wait 5 seconds after mission start
-)
+-- mist.scheduleFunction(
+--     function()
+--         env.info("Delayed move order execution for Bravo")
+--         groupB:issueMoveOrder(redRepositionPosition)
+--     end,
+--     {},
+--     timer.getTime() + 5  -- Wait 5 seconds after mission start
+-- )
 
 stratBlue.objectives = {
     {

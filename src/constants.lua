@@ -49,6 +49,13 @@ local taskTypes = {
     AA = 7,
 }
 
+local threatStatus = {
+    OBSERVED = "Observed",      -- Currently in LOS
+    SUSPECTED = "Suspected",    -- Not currently visible but believed present
+    UNCONFIRMED = "Unconfirmed", -- Expected position checked, not found
+    ELIMINATED = "Eliminated"   -- Confirmed destroyed or departed
+}
+
 local statusTypes = {
     HOLD = 1,
     EN_ROUTE = 2,
