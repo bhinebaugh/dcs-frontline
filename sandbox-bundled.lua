@@ -59,6 +59,10 @@ local groupB = GroupCommander.new("Bravo", {
     color = "red",
     stratcom = stratRed
 })
+local groupC = GroupCommander.new("Charlie", {
+    color = "red",
+    stratcom = stratRed
+})
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
@@ -74,14 +78,14 @@ local redRepositionPosition = coord.LLtoLO(lat, lon)
 
 -- Ideally, the strategic commander would issue these orders
 -- Delay the move order until mission is fully loaded
-mist.scheduleFunction(
-    function()
-        env.info("Delayed move order execution for Bravo")
-        groupB:issueMoveOrder(redRepositionPosition)
-    end,
-    {},
-    timer.getTime() + 5  -- Wait 5 seconds after mission start
-)
+-- mist.scheduleFunction(
+--     function()
+--         env.info("Delayed move order execution for Bravo")
+--         groupB:issueMoveOrder(redRepositionPosition)
+--     end,
+--     {},
+--     timer.getTime() + 5  -- Wait 5 seconds after mission start
+-- )
 
 stratBlue.objectives = {
     {
@@ -113,8 +117,10 @@ end)
 __bundle_register("strategic-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local GroupCommander = require("group-commander")
+local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
+local dispositionTypes = constants.dispositionTypes
 local oodaStates = constants.oodaStates
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
@@ -130,7 +136,7 @@ function StrategicCommander.new(config)
     self.color = config.color or "white"
     self.oodaState = oodaStates.OBSERVE
     self.oodaOffset = math.random() * oodaInterval
-    self.threats = {}
+    self.threatTracker = ThreatTracker.new(self.color .. "StrategicCommander")
     self.objectives = {}
     
     mist.scheduleFunction(
@@ -162,7 +168,7 @@ function StrategicCommander:observe()
     env.info(self.color .. "StrategicCommander: OBSERVE")
     -- Known own force positions, status, and times
     -- Known enemy force positions, status, and times
-    self.threats = self:getKnownThreats()
+    self:aggregateThreatsFromGroups()
     -- Control zone statuses
     -- Existing objectives and their statuses
     -- Historical objectives and outcomes
@@ -189,11 +195,15 @@ function StrategicCommander:decide()
     self.retreatingGroups = {}
     for _, commander in pairs(ownGroupCommanders) do
         local status = commander:getStatus()
-        if status.roe == roe.RETREAT then
+        if status.disposition == dispositionTypes.RETREAT then
             table.insert(self.retreatingGroups, commander)
             table.remove(ownGroupCommanders, _)
         end
     end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #self.retreatingGroups .. " retreating groups."
+    )
 
     -- Reserves to reinforce threatened forces
     self.reinforcementGroups = {}
@@ -224,25 +234,23 @@ function StrategicCommander:decide()
             end
         end
     end
+    env.info(
+        self.color .. "StrategicCommander: Assigned " ..
+        #self.reinforcementGroups .. " reinforcement groups."
+    )
 
     -- Low supply groups to resupply points
     -- Reconnaissance to gather needed intelligence
     -- Reposition for coordinated action on objectives
+    self.repositioningGroups = {}
     for _, commander in pairs(ownGroupCommanders) do
-        -- Assign each remaining commander to act on primary objective
-        if self.prioirtyObjective then
-            env.info(
-                self.color .. "StrategicCommander: ordering " ..
-                commander.name .. " to act on objective " ..
-                self.prioirtyObjective.type
-            )
-            commander:issueOrder({
-                alr = alr.MEDIUM,
-                position = self.prioirtyObjective.position,
-                type = self.prioirtyObjective.type,
-            })
-        end
+        table.insert(self.repositioningGroups, commander)
+        table.remove(ownGroupCommanders, _)
     end
+    env.info(
+        self.color .. "StrategicCommander: Assigned " ..
+        #self.repositioningGroups .. " repositioning groups."
+    )
 
     -- Offensive actions on objectives
     -- Logistics to resupply points needing replenishment
@@ -269,6 +277,33 @@ function StrategicCommander:act()
             type = taskTypes.REINFORCE,
         })
     end
+
+    for _, commander in pairs(self.repositioningGroups) do
+        -- Assign each remaining commander to act on primary objective
+        if self.prioirtyObjective then
+            env.info(
+                self.color .. "StrategicCommander: ordering " ..
+                commander.groupName .. " to act on objective " ..
+                self.prioirtyObjective.type
+            )
+            
+            -- Push relevant threat intel before issuing order
+            local relevantThreats = self:getThreatsNearPosition(
+                self.prioirtyObjective.position, 
+                3000  -- 3km radius
+            )
+            if relevantThreats then
+                commander:updateThreatIntel(relevantThreats)
+            end
+            
+            commander:issueOrder({
+                alr = alr.MEDIUM,
+                position = self.prioirtyObjective.position,
+                radius = self.prioirtyObjective.radius,
+                type = self.prioirtyObjective.type,
+            })
+        end
+    end
 end
 
 function StrategicCommander:assesObjective(objective)
@@ -286,7 +321,7 @@ end
 
 function StrategicCommander:assessObjectives()
     local highestProbabilityObjective = nil
-    local highestProbability = 0
+    local highestProbability = -math.huge
     for _, objective in pairs(self.objectives) do
         -- Evaluate each objective's likelihood of success
         -- Update objective status accordingly
@@ -304,19 +339,15 @@ function StrategicCommander:assessObjectives()
     return highestProbabilityObjective
 end
 
-function StrategicCommander:getKnownThreats()
+function StrategicCommander:aggregateThreatsFromGroups()
+    -- Aggregate threats from all group commanders using mergeThreatIntel
     local groupCommanders = self:getOwnGroupCommanders()
-    local threats = {}
-
+    
     for _, commander in pairs(groupCommanders) do
         local status = commander:getStatus()
-        for _, threat in pairs(status.threats) do
-            threat.sightedAt = timer.getTime()
-            threats[threat.name] = threat
-        end
+        -- Merge each group's threats into strategic view
+        self.threatTracker:mergeThreatIntel(status.threats)
     end
-
-    return threats
 end
 
 function StrategicCommander:getOwnGroupCommanders()
@@ -340,20 +371,365 @@ end
 
 function StrategicCommander:getThreatsNearPosition(position, radius)
     local nearbyThreats = {}
-    for _, threat in pairs(self.threats) do
+    local allThreats = self.threatTracker:getThreats()
+    
+    for unitName, threat in pairs(allThreats) do
         local dist = mist.vec.mag(mist.vec.sub(threat.position, position))
         if dist <= radius then
-            table.insert(nearbyThreats, threat)
+            nearbyThreats[unitName] = threat
         end
     end
+    
     return nearbyThreats
 end
 
 return StrategicCommander
 
 end)
+__bundle_register("threat-tracker", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local threatStatus = constants.threatStatus
+
+-- Threat tracking helper for managing observed enemy units with timestamps
+-- Threats are stored in a table indexed by unit name
+-- Each threat has multiple sightings from different observers with timestamps
+-- This allows threats to persist and be shared even when temporarily out of sight
+
+local ThreatTracker = {}
+ThreatTracker.__index = ThreatTracker
+
+function ThreatTracker.new(observerName)
+    local self = setmetatable({}, ThreatTracker)
+    self.threats = {}
+    self.observerName = observerName  -- Name of the commander using this tracker
+    return self
+end
+
+-- Update threats with newly observed units
+-- observedUnits: array of {name, position} for units with LOS
+function ThreatTracker:updateThreats(observedUnits)
+    local currentTime = timer.getTime()
+    
+    -- Update or add observed threats
+    for _, unitData in ipairs(observedUnits) do
+        local threat = self.threats[unitData.name]
+        
+        if not threat then
+            -- New threat
+            self.threats[unitData.name] = {
+                name = unitData.name,
+                position = unitData.position,
+                status = threatStatus.OBSERVED,
+                sightings = {
+                    {
+                        observedBy = self.observerName,
+                        observedAt = currentTime,
+                        position = unitData.position
+                    }
+                },
+                lastSighting = currentTime
+            }
+        else
+            -- Update existing threat
+            threat.position = unitData.position
+            threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
+            threat.lastSighting = currentTime
+            
+            -- Add new sighting
+            table.insert(threat.sightings, {
+                observedBy = self.observerName,
+                observedAt = currentTime,
+                position = unitData.position
+            })
+        end
+    end
+end
+
+-- Get the threats table
+-- Returns: table indexed by unit name
+function ThreatTracker:getThreats()
+    return self.threats
+end
+
+-- Merge threat intel from external source (e.g., strategic commander)
+-- threatIntel: partial threat table with updates to merge
+function ThreatTracker:mergeThreatIntel(threatIntel)
+    for unitName, incomingThreat in pairs(threatIntel) do
+        local existingThreat = self.threats[unitName]
+        
+        if not existingThreat then
+            -- New threat from external intel
+            self.threats[unitName] = incomingThreat
+        else
+            -- Merge with existing threat
+            -- Update position if incoming is more recent
+            if incomingThreat.lastSighting > existingThreat.lastSighting then
+                existingThreat.position = incomingThreat.position
+                existingThreat.lastSighting = incomingThreat.lastSighting
+            end
+            
+            -- Update status (prefer more definitive states)
+            if incomingThreat.status then
+                existingThreat.status = incomingThreat.status
+            end
+            
+            -- Merge sightings
+            if incomingThreat.sightings then
+                for _, sighting in ipairs(incomingThreat.sightings) do
+                    -- Avoid duplicate sightings from same observer at same time
+                    local isDuplicate = false
+                    for _, existingSighting in ipairs(existingThreat.sightings) do
+                        if existingSighting.observedBy == sighting.observedBy and
+                           existingSighting.observedAt == sighting.observedAt then
+                            isDuplicate = true
+                            break
+                        end
+                    end
+                    if not isDuplicate then
+                        table.insert(existingThreat.sightings, sighting)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Mark a threat with a specific status
+-- unitName: name of the threat unit
+-- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, ELIMINATED)
+function ThreatTracker:markThreatStatus(unitName, status)
+    local threat = self.threats[unitName]
+    if threat then
+        threat.status = status
+    end
+end
+
+-- Get threats we would expect to see in an area
+-- position: {x, y, z} position to check
+-- radius: search radius in meters
+-- Returns: array of threat names that are in area but not ELIMINATED
+function ThreatTracker:expectedThreats(position, radius)
+    local expected = {}
+    
+    for unitName, threat in pairs(self.threats) do
+        if threat.status ~= threatStatus.ELIMINATED then
+            local dx = threat.position.x - position.x
+            local dz = threat.position.z - position.z
+            local distance = math.sqrt(dx * dx + dz * dz)
+            
+            if distance <= radius then
+                table.insert(expected, unitName)
+            end
+        end
+    end
+    
+    return expected
+end
+
+-- Count threats in memory
+-- Returns: number of threats stored
+function ThreatTracker:count()
+    local count = 0
+    for _ in pairs(self.threats) do
+        count = count + 1
+    end
+    return count
+end
+
+-- Cull threats that haven't been observed recently (for future use)
+-- maxAge: maximum age in seconds (threats older than this will be removed)
+function ThreatTracker:cullOldThreats(maxAge)
+    local currentTime = timer.getTime()
+    local culledThreats = {}
+    
+    for unitName, threatData in pairs(self.threats) do
+        local age = currentTime - threatData.observedAt
+        if age <= maxAge then
+            culledThreats[unitName] = threatData
+        end
+    end
+    
+    self.threats = culledThreats
+end
+
+return ThreatTracker
+
+end)
+__bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
+local acceptableLevelsOfRisk = {
+    LOW = "Low", -- Accept favorable engagements only; withdraw to preserve forces
+    MEDIUM = "Medium", -- Accept neutral/favorable engagements; withdraw to avoid heavy losses
+    HIGH = "High", -- Accept major losses to achieve objectives
+}
+
+local dispositionTypes = {
+    ADVANCE = "Advance",
+    ASSAULT = "Assault",
+    DEFEND = "Defend",
+    EVADE = "Evade",
+    HOLD = "Hold Position",
+    RETREAT = "Retreat",
+}
+
+local formationTypes = {
+    OFF_ROAD = "Off Road", -- moving off-road in Column formation 
+    ON_ROAD = "On Road", -- moving on road in Column formation 
+    RANK = "Rank", -- moving off road in Row formation 
+    CONE = "Cone", -- moving in Wedge formation 
+    VEE = "Vee", -- moving in Vee formation 
+    DIAMOND = "Diamond", -- moving in Diamond formation 
+    ECHELONL = "EchelonL", -- moving in Echelon Left formation 
+    ECHELONR = "EchelonR", -- moving in Echelon Right formation  
+}
+
+local groundTemplates = { --frontline, rear, farp
+    red = {
+        {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
+        {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
+        {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
+        {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
+    },
+    blue = {
+        {"Hummer", "M 818", "M 818", "M 818"},
+        {"M-113", "Hummer", "M 818", "M 818"},
+        {"M-113", "M-113", "Hummer", "Hummer"},
+        {"M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament", "Hummer"},
+    }
+}
+
+local taskTypes = {
+    DEFEND = 1,
+    REINFORCE = 2,
+    RECON = 3,
+    ASSAULT = 4,
+    RESERVE = 5,
+    INDIRECT = 6,
+    AA = 7,
+}
+
+local threatStatus = {
+    OBSERVED = "Observed",      -- Currently in LOS
+    SUSPECTED = "Suspected",    -- Not currently visible but believed present
+    UNCONFIRMED = "Unconfirmed", -- Expected position checked, not found
+    ELIMINATED = "Eliminated"   -- Confirmed destroyed or departed
+}
+
+local statusTypes = {
+    HOLD = 1,
+    EN_ROUTE = 2,
+}
+
+local oodaStates = {
+    OBSERVE = "Observe",
+    ORIENT = "Orient",
+    DECIDE = "Decide",
+    ACT = "Act",
+}
+
+local rgb = {
+    blue = {0,0.1,0.8,0.5},
+    red = {0.5,0,0.1,0.5},
+    neutral = {0.1,0.1,0.1,0.5},
+}
+
+local rulesOfEngagement = {
+    WEAPON_FREE = 0, -- Engage targets at will
+    RETURN_FIRE = 3, -- Engage only if fired upon
+    WEAPON_HOLD = 4, -- Hold fire, do not engage
+}
+
+-- Unit classification and threat ratings
+-- Each unit type has threat values against infantry, armor, and air
+local unitClassification = {
+    -- Infantry units
+    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
+    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, armor = 0.5, air = 0}, strength = 1.2},
+    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
+    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, armor = 4, air = 0}, strength = 1.5},
+    
+    -- Light vehicles / Trucks
+    ["Hummer"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
+    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
+    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 0.8},
+    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    
+    -- Scout vehicles
+    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 3, armor = 2, air = 0}, strength = 2},
+    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, armor = 1.5, air = 0}, strength = 2},
+    
+    -- Light armor / IFVs
+    ["M-113"] = {category = "armor", threats = {infantry = 3, armor = 1, air = 0}, strength = 2.5},
+    ["M-2 Bradley"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+    ["BMP-2"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+    ["BTR-80"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
+    
+    -- Medium armor
+    ["M-1 Abrams"] = {category = "armor", threats = {infantry = 3, armor = 8, air = 0}, strength = 8},
+    ["T-72B"] = {category = "armor", threats = {infantry = 3, armor = 7, air = 0}, strength = 7},
+    ["T-80U"] = {category = "armor", threats = {infantry = 3, armor = 7.5, air = 0}, strength = 7.5},
+    
+    -- Air defense
+    ["Avenger"] = {category = "armor", threats = {infantry = 1, armor = 0, air = 6}, strength = 3},
+    ["Vulcan"] = {category = "armor", threats = {infantry = 2, armor = 1, air = 5}, strength = 3},
+    ["Strela-10M3"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
+    ["Strela-1 9P31"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
+    
+    -- Artillery
+    ["M-109"] = {category = "armor", threats = {infantry = 6, armor = 4, air = 0}, strength = 5},
+    ["2S9 Nona"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+}
+
+-- Vulnerability modifiers based on unit category
+local vulnerabilityMatrix = {
+    infantry = {
+        infantry = 1.0,  -- Infantry vs infantry weapons
+        armor = 0.3,     -- Infantry vs armor weapons (takes cover, dispersed)
+        air = 0.2,        -- Infantry vs air weapons (small target)
+        antiair = 0.4     -- Infantry vs anti-air weapons
+    },
+    armor = {
+        infantry = 0.5,  -- Armor vs infantry weapons (some resistance)
+        armor = 1.2,     -- Armor vs armor weapons (vulnerable to AT)
+        air = 0.8,        -- Armor vs air weapons
+        antiair = 0.6     -- Armor vs anti-air weapons
+    },
+    air = {
+        infantry = 0.4,  -- Air vs infantry weapons (less effective)
+        armor = 0.7,     -- Air vs armor weapons
+        air = 1.0,        -- Air vs air weapons
+        antiair = 1.5     -- Air vs anti-air weapons (highly vulnerable)
+    },
+    antiair = {
+        infantry = 0.6,  -- AA vs infantry weapons
+        armor = 0.9,     -- AA vs armor weapons
+        air = 1.3,        -- AA vs air weapons (highly effective)
+        antiair = 1.0     -- AA vs anti-air weapons
+    }
+}
+
+return {
+    acceptableLevelsOfRisk = acceptableLevelsOfRisk,
+    dispositionTypes = dispositionTypes,
+    formationTypes = formationTypes,
+    groundTemplates = groundTemplates,
+    rulesOfEngagement = rulesOfEngagement,
+    oodaStates = oodaStates,
+    rgb = rgb,
+    taskTypes = taskTypes,
+    statusTypes = statusTypes,
+    unitClassification = unitClassification,
+    vulnerabilityMatrix = vulnerabilityMatrix
+}
+
+end)
 __bundle_register("group-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
+local ThreatTracker = require("threat-tracker")
 local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
@@ -385,7 +761,7 @@ function GroupCommander.new(groupName, config)
     self.orders = nil
     self.ownForceStrength = nil
     self.roe = roe.WEAPON_HOLD
-    self.threats = {}
+    self.threatTracker = ThreatTracker.new(groupName)
     self.threatAnalysis = nil
 
     self.oodaOffset = math.random() * oodaInterval
@@ -428,10 +804,42 @@ function GroupCommander:observe()
     
     env.info(self.groupName .. " OBSERVE: " .. #visibleThreatNames .. " threats with LOS")
     
-    -- Build threat table with unit object references
-    self.threats = self:buildThreatTable(visibleThreatNames)
+    -- Build observed unit data for threats we can see (no unit refs stored)
+    local observedThreats = {}
+    for _, unitName in ipairs(visibleThreatNames) do
+        local unit = Unit.getByName(unitName)
+        -- Only add if unit exists (error guard, not intel cheat)
+        if unit and unit:isExist() then
+            table.insert(observedThreats, {
+                name = unitName,
+                position = unit:getPosition().p
+            })
+        end
+    end
     
-    env.info(self.groupName .. " OBSERVE: " .. #self.threats .. " final threats after validation")
+    -- Update threat table with newly observed threats (keeping old ones)
+    self.threatTracker:updateThreats(observedThreats)
+    
+    -- Check for expected threats we didn't see (mark as UNCONFIRMED)
+    local ownPos = self:getOwnPosition()
+    if ownPos then
+        local expectedInArea = self.threatTracker:expectedThreats(ownPos, detectionRadius)
+        for _, threatName in ipairs(expectedInArea) do
+            -- If we expected to see it but didn't, mark unconfirmed
+            local wasSeen = false
+            for _, observed in ipairs(observedThreats) do
+                if observed.name == threatName then
+                    wasSeen = true
+                    break
+                end
+            end
+            if not wasSeen then
+                self.threatTracker:markThreatStatus(threatName, "Unconfirmed")
+            end
+        end
+    end
+    
+    env.info(self.groupName .. " OBSERVE: " .. self.threatTracker:count() .. " threats in memory")
 end
 
 function GroupCommander:orient()
@@ -499,6 +907,7 @@ function GroupCommander:decide()
     -- If we have orders, use them as the basis for decisions
     if self.orders then
         local orderedPosition = self.orders.position
+        local orderedRadius = self.orders.radius or 500
         local orderedALR = self.orders.alr or alr.LOW
         
         -- Adjust thresholds based on ordered ALR
@@ -510,19 +919,29 @@ function GroupCommander:decide()
             maxAcceptableVulnerability = 30.0
         end
         
-        -- If no threats, move to ordered position
+        -- If no threats, check if we need to move to ordered position
         if threatCount == 0 then
-            env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (no threats)")
-            self:setDisposition(dispositionTypes.ADVANCE)
-            self.destination = orderedPosition
+            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+            if self.destination then
+                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (no threats)")
+                self:setDisposition(dispositionTypes.ADVANCE)
+            else
+                env.info(self.groupName .. " DECIDE: DEFEND (at objective, no threats)")
+                self:setDisposition(dispositionTypes.DEFEND)
+            end
             return
         end
         
         local threatCenter = self:calculateThreatCenter()
         if not threatCenter then
-            env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (threats eliminated)")
-            self:setDisposition(dispositionTypes.ADVANCE)
-            self.destination = orderedPosition
+            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+            if self.destination then
+                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (threats eliminated)")
+                self:setDisposition(dispositionTypes.ADVANCE)
+            else
+                env.info(self.groupName .. " DECIDE: DEFEND (at objective, threats eliminated)")
+                self:setDisposition(dispositionTypes.DEFEND)
+            end
             return
         end
         
@@ -547,21 +966,35 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.ADVANCE)
                     self.destination = self:calculateDestinationRelativeToThreats(threatCenter, false)
                 else
-                    env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
-                    self:setDisposition(dispositionTypes.ADVANCE)
-                    self.destination = orderedPosition
+                    self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    if self.destination then
+                        env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                    else
+                        env.info(self.groupName .. " DECIDE: DEFEND (at objective, too far to advance)")
+                        self:setDisposition(dispositionTypes.DEFEND)
+                    end
                 end
             else
-                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
-                self:setDisposition(dispositionTypes.ADVANCE)
-                self.destination = orderedPosition
+                self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                if self.destination then
+                    env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
+                    self:setDisposition(dispositionTypes.ADVANCE)
+                else
+                    env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
+                    self:setDisposition(dispositionTypes.DEFEND)
+                end
             end
             
         else
             -- Default to moving toward or defending ordered position
-            env.info(self.groupName .. " DECIDE: DEFEND/MOVE TO ORDERED POSITION")
             self:setDisposition(dispositionTypes.DEFEND)
-            self.destination = orderedPosition
+            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+            if self.destination then
+                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
+            else
+                env.info(self.groupName .. " DECIDE: DEFEND (within objective radius)")
+            end
         end
         
     else
@@ -695,11 +1128,13 @@ function GroupCommander:analyzeThreatCapabilities()
         composition = {infantry = 0, armor = 0, air = 0}
     }
     
-    for _, threatData in ipairs(self.threats) do
-        local unit = threatData.unit
+    local threats = self.threatTracker:getThreats()
+    for unitName, threatData in pairs(threats) do
+        -- Look up unit by name when needed
+        local unit = Unit.getByName(unitName)
         
-        -- Skip dead units
-        if unit and unit:isExist() then
+        -- Only guard against nil/invalid references, not checking if unit still exists
+        if unit then
             local typeName = self:getUnitTypeName(unit)
             local classification = self:classifyUnit(typeName)
             
@@ -720,21 +1155,6 @@ function GroupCommander:analyzeThreatCapabilities()
     end
     
     return threatCapabilities
-end
-
-function GroupCommander:buildThreatTable(threatNames)
-    local threats = {}
-    for _, unitName in ipairs(threatNames) do
-        local unit = Unit.getByName(unitName)
-        if unit and unit:isExist() then
-            table.insert(threats, {
-                name = unitName,
-                unit = unit,
-                position = unit:getPosition().p
-            })
-        end
-    end
-    return threats
 end
 
 function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retreat)
@@ -766,13 +1186,27 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
         local retreatDistance = 2000  -- 2km retreat
         return {
             x = ownPos.x + (dirX * retreatDistance),
+            y = ownPos.y,
             z = ownPos.z + (dirZ * retreatDistance)
         }
     else
         -- Move toward threats (advance) - position at weapon range from threat center
         local weaponRange = 1000  -- 1km weapon range
+        
+        -- Check if we're already within weapon range
+        local currentDistance = math.sqrt(
+            (ownPos.x - threatCenter.x)^2 + 
+            (ownPos.z - threatCenter.z)^2
+        )
+        
+        -- If already within weapon range, don't move away
+        if currentDistance <= weaponRange then
+            return nil
+        end
+        
         return {
             x = threatCenter.x + (dirX * weaponRange),
+            y = threatCenter.y or ownPos.y,
             z = threatCenter.z + (dirZ * weaponRange)
         }
     end
@@ -833,22 +1267,38 @@ function GroupCommander:calculateForceStrength(units)
     return strength
 end
 
-function GroupCommander:calculateThreatCenter()
-    -- Calculate the average position of all threats
-    if #self.threats == 0 then
-        return nil
+function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRadius)
+    -- Check if we're within objective radius. If so, return nil (stay put).
+    -- If not, return the objective position to move toward.
+    local ownPos = self:getOwnPosition()
+    if not ownPos then
+        return objectivePosition  -- Can't determine position, default to moving
     end
     
+    local distanceToObjective = math.sqrt(
+        (ownPos.x - objectivePosition.x)^2 + 
+        (ownPos.z - objectivePosition.z)^2
+    )
+    
+    if distanceToObjective <= objectiveRadius then
+        return nil  -- Within radius, stay put
+    else
+        return objectivePosition  -- Outside radius, move to objective
+    end
+end
+
+function GroupCommander:calculateThreatCenter()
+    -- Calculate the average position of all threats based on last known positions
     local sumX = 0
     local sumZ = 0
     local validCount = 0
     
-    for _, threatData in ipairs(self.threats) do
-        -- Check if unit still exists (may have been destroyed since observe)
-        if threatData.unit and threatData.unit:isExist() then
-            local pos = threatData.unit:getPosition().p
-            sumX = sumX + pos.x
-            sumZ = sumZ + pos.z
+    local threats = self.threatTracker:getThreats()
+    for unitName, threatData in pairs(threats) do
+        -- Use stored position from last observation
+        if threatData.position then
+            sumX = sumX + threatData.position.x
+            sumZ = sumZ + threatData.position.z
             validCount = validCount + 1
         end
     end
@@ -1034,7 +1484,7 @@ function GroupCommander:getCollectiveStatus()
         return 0
     end
 
-    local totalCount = #self.ownUnitNames
+    local totalCount = #self.initialUnitNames
     if totalCount == 0 then
         return 0
     end
@@ -1046,27 +1496,37 @@ function GroupCommander:getCollectiveStatus()
     local fuelLowState = nil
     local healthPool = 0
     local healthLowState = nil
-    for _, unitName in ipairs(self.ownUnitNames) do
+    for _, unitName in ipairs(self.initialUnitNames) do
         local unit = Unit.getByName(unitName)
         if unit and unit:isExist() then
-            local unitAmmo = unit:getAmmo()
+            local unitAmmoTable = unit:getAmmo()
             local unitFuel = unit:getFuel()
             local unitHealth = unit:getLife()
+            
+            -- Sum up all ammo counts from the table
+            local unitAmmoTotal = 0
+            if unitAmmoTable then
+                for _, ammoEntry in ipairs(unitAmmoTable) do
+                    if ammoEntry.count then
+                        unitAmmoTotal = unitAmmoTotal + ammoEntry.count
+                    end
+                end
+            end
 
             aliveCount = aliveCount + 1
-            ammoCount = ammoCount + unitAmmo
+            ammoCount = ammoCount + unitAmmoTotal
             fuelQuantity = fuelQuantity + unitFuel
             healthPool = healthPool + unitHealth
 
-            if unitAmmo < ammmoLowState or not ammmoLowState then
-                ammmoLowState = unitAmmo
+            if not ammmoLowState or unitAmmoTotal < ammmoLowState then
+                ammmoLowState = unitAmmoTotal
             end
 
-            if unitFuel < fuelLowState or not fuelLowState then
+            if not fuelLowState or unitFuel < fuelLowState then
                 fuelLowState = unitFuel
             end
 
-            if unitHealth < healthLowState or not healthLowState then
+            if not healthLowState or unitHealth < healthLowState then
                 healthLowState = unitHealth
             end
         end
@@ -1126,8 +1586,9 @@ function GroupCommander:getStatus()
         destination = self.destination,
         disposition = self.disposition,
         groupName = self.groupName,
+        position = self:getOwnPosition(),
         status = collectiveStatus,
-        threats = self.threats,
+        threats = self.threatTracker:getThreats(),
     }
     return status
 end
@@ -1170,6 +1631,15 @@ function GroupCommander:issueMoveOrder(point)
         return
     end
     
+    -- Ensure point has y coordinate for MIST
+    if not point.y then
+        point = {
+            x = point.x,
+            y = land.getHeight({x = point.x, y = point.z}),
+            z = point.z
+        }
+    end
+    
     local destination = {
         point = point,
         radius = 100
@@ -1191,6 +1661,11 @@ end
 
 function GroupCommander:issueOrder(order)
     self.orders = order
+end
+
+function GroupCommander:updateThreatIntel(threatIntel)
+    -- Receive threat intel from strategic commander
+    self.threatTracker:mergeThreatIntel(threatIntel)
 end
 
 function GroupCommander:setALR(riskLevel)
@@ -1221,171 +1696,6 @@ function GroupCommander:setROE(roeLevel)
 end
 
 return GroupCommander
-
-end)
-__bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
-local acceptableLevelsOfRisk = {
-    LOW = "Low", -- Accept favorable engagements only; withdraw to preserve forces
-    MEDIUM = "Medium", -- Accept neutral/favorable engagements; withdraw to avoid heavy losses
-    HIGH = "High", -- Accept major losses to achieve objectives
-}
-
-local dispositionTypes = {
-    ADVANCE = "Advance",
-    ASSAULT = "Assault",
-    DEFEND = "Defend",
-    EVADE = "Evade",
-    HOLD = "Hold Position",
-    RETREAT = "Retreat",
-}
-
-local formationTypes = {
-    OFF_ROAD = "Off Road", -- moving off-road in Column formation 
-    ON_ROAD = "On Road", -- moving on road in Column formation 
-    RANK = "Rank", -- moving off road in Row formation 
-    CONE = "Cone", -- moving in Wedge formation 
-    VEE = "Vee", -- moving in Vee formation 
-    DIAMOND = "Diamond", -- moving in Diamond formation 
-    ECHELONL = "EchelonL", -- moving in Echelon Left formation 
-    ECHELONR = "EchelonR", -- moving in Echelon Right formation  
-}
-
-local groundTemplates = { --frontline, rear, farp
-    red = {
-        {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
-        {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
-        {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
-        {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
-    },
-    blue = {
-        {"Hummer", "M 818", "M 818", "M 818"},
-        {"M-113", "Hummer", "M 818", "M 818"},
-        {"M-113", "M-113", "Hummer", "Hummer"},
-        {"M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament", "Hummer"},
-    }
-}
-
-local taskTypes = {
-    DEFEND = 1,
-    REINFORCE = 2,
-    RECON = 3,
-    ASSAULT = 4,
-    RESERVE = 5,
-    INDIRECT = 6,
-    AA = 7,
-}
-
-local statusTypes = {
-    HOLD = 1,
-    EN_ROUTE = 2,
-}
-
-local oodaStates = {
-    OBSERVE = "Observe",
-    ORIENT = "Orient",
-    DECIDE = "Decide",
-    ACT = "Act",
-}
-
-local rgb = {
-    blue = {0,0.1,0.8,0.5},
-    red = {0.5,0,0.1,0.5},
-    neutral = {0.1,0.1,0.1,0.5},
-}
-
-local rulesOfEngagement = {
-    WEAPON_FREE = 0, -- Engage targets at will
-    RETURN_FIRE = 3, -- Engage only if fired upon
-    WEAPON_HOLD = 4, -- Hold fire, do not engage
-}
-
--- Unit classification and threat ratings
--- Each unit type has threat values against infantry, armor, and air
-local unitClassification = {
-    -- Infantry units
-    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
-    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, armor = 0.5, air = 0}, strength = 1.2},
-    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
-    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, armor = 4, air = 0}, strength = 1.5},
-    
-    -- Light vehicles / Trucks
-    ["Hummer"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
-    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
-    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 0.8},
-    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    
-    -- Scout vehicles
-    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 3, armor = 2, air = 0}, strength = 2},
-    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, armor = 1.5, air = 0}, strength = 2},
-    
-    -- Light armor / IFVs
-    ["M-113"] = {category = "armor", threats = {infantry = 3, armor = 1, air = 0}, strength = 2.5},
-    ["M-2 Bradley"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
-    ["BMP-2"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
-    ["BTR-80"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
-    
-    -- Medium armor
-    ["M-1 Abrams"] = {category = "armor", threats = {infantry = 3, armor = 8, air = 0}, strength = 8},
-    ["T-72B"] = {category = "armor", threats = {infantry = 3, armor = 7, air = 0}, strength = 7},
-    ["T-80U"] = {category = "armor", threats = {infantry = 3, armor = 7.5, air = 0}, strength = 7.5},
-    
-    -- Air defense
-    ["Avenger"] = {category = "armor", threats = {infantry = 1, armor = 0, air = 6}, strength = 3},
-    ["Vulcan"] = {category = "armor", threats = {infantry = 2, armor = 1, air = 5}, strength = 3},
-    ["Strela-10M3"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
-    ["Strela-1 9P31"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
-    
-    -- Artillery
-    ["M-109"] = {category = "armor", threats = {infantry = 6, armor = 4, air = 0}, strength = 5},
-    ["2S9 Nona"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
-}
-
--- Vulnerability modifiers based on unit category
-local vulnerabilityMatrix = {
-    infantry = {
-        infantry = 1.0,  -- Infantry vs infantry weapons
-        armor = 0.3,     -- Infantry vs armor weapons (takes cover, dispersed)
-        air = 0.2,        -- Infantry vs air weapons (small target)
-        antiair = 0.4     -- Infantry vs anti-air weapons
-    },
-    armor = {
-        infantry = 0.5,  -- Armor vs infantry weapons (some resistance)
-        armor = 1.2,     -- Armor vs armor weapons (vulnerable to AT)
-        air = 0.8,        -- Armor vs air weapons
-        antiair = 0.6     -- Armor vs anti-air weapons
-    },
-    air = {
-        infantry = 0.4,  -- Air vs infantry weapons (less effective)
-        armor = 0.7,     -- Air vs armor weapons
-        air = 1.0,        -- Air vs air weapons
-        antiair = 1.5     -- Air vs anti-air weapons (highly vulnerable)
-    },
-    antiair = {
-        infantry = 0.6,  -- AA vs infantry weapons
-        armor = 0.9,     -- AA vs armor weapons
-        air = 1.3,        -- AA vs air weapons (highly effective)
-        antiair = 1.0     -- AA vs anti-air weapons
-    }
-}
-
-return {
-    acceptableLevelsOfRisk = acceptableLevelsOfRisk,
-    dispositionTypes = dispositionTypes,
-    formationTypes = formationTypes,
-    groundTemplates = groundTemplates,
-    rulesOfEngagement = rulesOfEngagement,
-    oodaStates = oodaStates,
-    rgb = rgb,
-    taskTypes = taskTypes,
-    statusTypes = statusTypes,
-    unitClassification = unitClassification,
-    vulnerabilityMatrix = vulnerabilityMatrix
-}
 
 end)
 return __bundle_require("__root")

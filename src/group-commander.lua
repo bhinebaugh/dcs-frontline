@@ -1,4 +1,5 @@
 local constants = require("constants")
+local ThreatTracker = require("threat-tracker")
 local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
@@ -30,7 +31,7 @@ function GroupCommander.new(groupName, config)
     self.orders = nil
     self.ownForceStrength = nil
     self.roe = roe.WEAPON_HOLD
-    self.threats = {}
+    self.threatTracker = ThreatTracker.new(groupName)
     self.threatAnalysis = nil
 
     self.oodaOffset = math.random() * oodaInterval
@@ -73,10 +74,42 @@ function GroupCommander:observe()
     
     env.info(self.groupName .. " OBSERVE: " .. #visibleThreatNames .. " threats with LOS")
     
-    -- Build threat table with unit object references
-    self.threats = self:buildThreatTable(visibleThreatNames)
+    -- Build observed unit data for threats we can see (no unit refs stored)
+    local observedThreats = {}
+    for _, unitName in ipairs(visibleThreatNames) do
+        local unit = Unit.getByName(unitName)
+        -- Only add if unit exists (error guard, not intel cheat)
+        if unit and unit:isExist() then
+            table.insert(observedThreats, {
+                name = unitName,
+                position = unit:getPosition().p
+            })
+        end
+    end
     
-    env.info(self.groupName .. " OBSERVE: " .. #self.threats .. " final threats after validation")
+    -- Update threat table with newly observed threats (keeping old ones)
+    self.threatTracker:updateThreats(observedThreats)
+    
+    -- Check for expected threats we didn't see (mark as UNCONFIRMED)
+    local ownPos = self:getOwnPosition()
+    if ownPos then
+        local expectedInArea = self.threatTracker:expectedThreats(ownPos, detectionRadius)
+        for _, threatName in ipairs(expectedInArea) do
+            -- If we expected to see it but didn't, mark unconfirmed
+            local wasSeen = false
+            for _, observed in ipairs(observedThreats) do
+                if observed.name == threatName then
+                    wasSeen = true
+                    break
+                end
+            end
+            if not wasSeen then
+                self.threatTracker:markThreatStatus(threatName, "Unconfirmed")
+            end
+        end
+    end
+    
+    env.info(self.groupName .. " OBSERVE: " .. self.threatTracker:count() .. " threats in memory")
 end
 
 function GroupCommander:orient()
@@ -144,6 +177,7 @@ function GroupCommander:decide()
     -- If we have orders, use them as the basis for decisions
     if self.orders then
         local orderedPosition = self.orders.position
+        local orderedRadius = self.orders.radius or 500
         local orderedALR = self.orders.alr or alr.LOW
         
         -- Adjust thresholds based on ordered ALR
@@ -155,19 +189,29 @@ function GroupCommander:decide()
             maxAcceptableVulnerability = 30.0
         end
         
-        -- If no threats, move to ordered position
+        -- If no threats, check if we need to move to ordered position
         if threatCount == 0 then
-            env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (no threats)")
-            self:setDisposition(dispositionTypes.ADVANCE)
-            self.destination = orderedPosition
+            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+            if self.destination then
+                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (no threats)")
+                self:setDisposition(dispositionTypes.ADVANCE)
+            else
+                env.info(self.groupName .. " DECIDE: DEFEND (at objective, no threats)")
+                self:setDisposition(dispositionTypes.DEFEND)
+            end
             return
         end
         
         local threatCenter = self:calculateThreatCenter()
         if not threatCenter then
-            env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (threats eliminated)")
-            self:setDisposition(dispositionTypes.ADVANCE)
-            self.destination = orderedPosition
+            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+            if self.destination then
+                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (threats eliminated)")
+                self:setDisposition(dispositionTypes.ADVANCE)
+            else
+                env.info(self.groupName .. " DECIDE: DEFEND (at objective, threats eliminated)")
+                self:setDisposition(dispositionTypes.DEFEND)
+            end
             return
         end
         
@@ -192,21 +236,35 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.ADVANCE)
                     self.destination = self:calculateDestinationRelativeToThreats(threatCenter, false)
                 else
-                    env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
-                    self:setDisposition(dispositionTypes.ADVANCE)
-                    self.destination = orderedPosition
+                    self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    if self.destination then
+                        env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                    else
+                        env.info(self.groupName .. " DECIDE: DEFEND (at objective, too far to advance)")
+                        self:setDisposition(dispositionTypes.DEFEND)
+                    end
                 end
             else
-                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
-                self:setDisposition(dispositionTypes.ADVANCE)
-                self.destination = orderedPosition
+                self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                if self.destination then
+                    env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
+                    self:setDisposition(dispositionTypes.ADVANCE)
+                else
+                    env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
+                    self:setDisposition(dispositionTypes.DEFEND)
+                end
             end
             
         else
             -- Default to moving toward or defending ordered position
-            env.info(self.groupName .. " DECIDE: DEFEND/MOVE TO ORDERED POSITION")
             self:setDisposition(dispositionTypes.DEFEND)
-            self.destination = orderedPosition
+            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+            if self.destination then
+                env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
+            else
+                env.info(self.groupName .. " DECIDE: DEFEND (within objective radius)")
+            end
         end
         
     else
@@ -340,11 +398,13 @@ function GroupCommander:analyzeThreatCapabilities()
         composition = {infantry = 0, armor = 0, air = 0}
     }
     
-    for _, threatData in ipairs(self.threats) do
-        local unit = threatData.unit
+    local threats = self.threatTracker:getThreats()
+    for unitName, threatData in pairs(threats) do
+        -- Look up unit by name when needed
+        local unit = Unit.getByName(unitName)
         
-        -- Skip dead units
-        if unit and unit:isExist() then
+        -- Only guard against nil/invalid references, not checking if unit still exists
+        if unit then
             local typeName = self:getUnitTypeName(unit)
             local classification = self:classifyUnit(typeName)
             
@@ -365,21 +425,6 @@ function GroupCommander:analyzeThreatCapabilities()
     end
     
     return threatCapabilities
-end
-
-function GroupCommander:buildThreatTable(threatNames)
-    local threats = {}
-    for _, unitName in ipairs(threatNames) do
-        local unit = Unit.getByName(unitName)
-        if unit and unit:isExist() then
-            table.insert(threats, {
-                name = unitName,
-                unit = unit,
-                position = unit:getPosition().p
-            })
-        end
-    end
-    return threats
 end
 
 function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retreat)
@@ -411,13 +456,27 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
         local retreatDistance = 2000  -- 2km retreat
         return {
             x = ownPos.x + (dirX * retreatDistance),
+            y = ownPos.y,
             z = ownPos.z + (dirZ * retreatDistance)
         }
     else
         -- Move toward threats (advance) - position at weapon range from threat center
         local weaponRange = 1000  -- 1km weapon range
+        
+        -- Check if we're already within weapon range
+        local currentDistance = math.sqrt(
+            (ownPos.x - threatCenter.x)^2 + 
+            (ownPos.z - threatCenter.z)^2
+        )
+        
+        -- If already within weapon range, don't move away
+        if currentDistance <= weaponRange then
+            return nil
+        end
+        
         return {
             x = threatCenter.x + (dirX * weaponRange),
+            y = threatCenter.y or ownPos.y,
             z = threatCenter.z + (dirZ * weaponRange)
         }
     end
@@ -478,22 +537,38 @@ function GroupCommander:calculateForceStrength(units)
     return strength
 end
 
-function GroupCommander:calculateThreatCenter()
-    -- Calculate the average position of all threats
-    if #self.threats == 0 then
-        return nil
+function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRadius)
+    -- Check if we're within objective radius. If so, return nil (stay put).
+    -- If not, return the objective position to move toward.
+    local ownPos = self:getOwnPosition()
+    if not ownPos then
+        return objectivePosition  -- Can't determine position, default to moving
     end
     
+    local distanceToObjective = math.sqrt(
+        (ownPos.x - objectivePosition.x)^2 + 
+        (ownPos.z - objectivePosition.z)^2
+    )
+    
+    if distanceToObjective <= objectiveRadius then
+        return nil  -- Within radius, stay put
+    else
+        return objectivePosition  -- Outside radius, move to objective
+    end
+end
+
+function GroupCommander:calculateThreatCenter()
+    -- Calculate the average position of all threats based on last known positions
     local sumX = 0
     local sumZ = 0
     local validCount = 0
     
-    for _, threatData in ipairs(self.threats) do
-        -- Check if unit still exists (may have been destroyed since observe)
-        if threatData.unit and threatData.unit:isExist() then
-            local pos = threatData.unit:getPosition().p
-            sumX = sumX + pos.x
-            sumZ = sumZ + pos.z
+    local threats = self.threatTracker:getThreats()
+    for unitName, threatData in pairs(threats) do
+        -- Use stored position from last observation
+        if threatData.position then
+            sumX = sumX + threatData.position.x
+            sumZ = sumZ + threatData.position.z
             validCount = validCount + 1
         end
     end
@@ -679,7 +754,7 @@ function GroupCommander:getCollectiveStatus()
         return 0
     end
 
-    local totalCount = #self.ownUnitNames
+    local totalCount = #self.initialUnitNames
     if totalCount == 0 then
         return 0
     end
@@ -691,27 +766,37 @@ function GroupCommander:getCollectiveStatus()
     local fuelLowState = nil
     local healthPool = 0
     local healthLowState = nil
-    for _, unitName in ipairs(self.ownUnitNames) do
+    for _, unitName in ipairs(self.initialUnitNames) do
         local unit = Unit.getByName(unitName)
         if unit and unit:isExist() then
-            local unitAmmo = unit:getAmmo()
+            local unitAmmoTable = unit:getAmmo()
             local unitFuel = unit:getFuel()
             local unitHealth = unit:getLife()
+            
+            -- Sum up all ammo counts from the table
+            local unitAmmoTotal = 0
+            if unitAmmoTable then
+                for _, ammoEntry in ipairs(unitAmmoTable) do
+                    if ammoEntry.count then
+                        unitAmmoTotal = unitAmmoTotal + ammoEntry.count
+                    end
+                end
+            end
 
             aliveCount = aliveCount + 1
-            ammoCount = ammoCount + unitAmmo
+            ammoCount = ammoCount + unitAmmoTotal
             fuelQuantity = fuelQuantity + unitFuel
             healthPool = healthPool + unitHealth
 
-            if unitAmmo < ammmoLowState or not ammmoLowState then
-                ammmoLowState = unitAmmo
+            if not ammmoLowState or unitAmmoTotal < ammmoLowState then
+                ammmoLowState = unitAmmoTotal
             end
 
-            if unitFuel < fuelLowState or not fuelLowState then
+            if not fuelLowState or unitFuel < fuelLowState then
                 fuelLowState = unitFuel
             end
 
-            if unitHealth < healthLowState or not healthLowState then
+            if not healthLowState or unitHealth < healthLowState then
                 healthLowState = unitHealth
             end
         end
@@ -771,8 +856,9 @@ function GroupCommander:getStatus()
         destination = self.destination,
         disposition = self.disposition,
         groupName = self.groupName,
+        position = self:getOwnPosition(),
         status = collectiveStatus,
-        threats = self.threats,
+        threats = self.threatTracker:getThreats(),
     }
     return status
 end
@@ -815,6 +901,15 @@ function GroupCommander:issueMoveOrder(point)
         return
     end
     
+    -- Ensure point has y coordinate for MIST
+    if not point.y then
+        point = {
+            x = point.x,
+            y = land.getHeight({x = point.x, y = point.z}),
+            z = point.z
+        }
+    end
+    
     local destination = {
         point = point,
         radius = 100
@@ -836,6 +931,11 @@ end
 
 function GroupCommander:issueOrder(order)
     self.orders = order
+end
+
+function GroupCommander:updateThreatIntel(threatIntel)
+    -- Receive threat intel from strategic commander
+    self.threatTracker:mergeThreatIntel(threatIntel)
 end
 
 function GroupCommander:setALR(riskLevel)
