@@ -73,21 +73,6 @@ local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
 local height = cz.maxima.northmost.x - cz.maxima.southmost.x
 local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
 
-local i = 0
-for name, color in pairs(cz.owner) do
-    i = i + 1
-    local z = cz:getZone(name)
-    local pt = z.point
-    trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, constants.rgb[color], 1)
-    trigger.action.textToAll(-1, 2000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
-end
-
-cz:drawEdges()
-cz:drawFrontline("blue")
-cz:drawFrontline("red")
-trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(cz.centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
-trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
-
 local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
@@ -96,10 +81,30 @@ cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.gro
 cz:kickoff()
 end)
 __bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
-local rgb = {
-    blue = {0,0.1,0.8,0.5},
-    red = {0.5,0,0.1,0.5},
-    neutral = {0.1,0.1,0.1,0.5},
+local acceptableLevelsOfRisk = {
+    LOW = "Low", -- Accept favorable engagements only; withdraw to preserve forces
+    MEDIUM = "Medium", -- Accept neutral/favorable engagements; withdraw to avoid heavy losses
+    HIGH = "High", -- Accept major losses to achieve objectives
+}
+
+local dispositionTypes = {
+    ADVANCE = "Advance",
+    ASSAULT = "Assault",
+    DEFEND = "Defend",
+    EVADE = "Evade",
+    HOLD = "Hold Position",
+    RETREAT = "Retreat",
+}
+
+local formationTypes = {
+    OFF_ROAD = "Off Road", -- moving off-road in Column formation 
+    ON_ROAD = "On Road", -- moving on road in Column formation 
+    RANK = "Rank", -- moving off road in Row formation 
+    CONE = "Cone", -- moving in Wedge formation 
+    VEE = "Vee", -- moving in Vee formation 
+    DIAMOND = "Diamond", -- moving in Diamond formation 
+    ECHELONL = "EchelonL", -- moving in Echelon Left formation 
+    ECHELONR = "EchelonR", -- moving in Echelon Right formation  
 }
 
 local groundTemplates = { --frontline, rear, farp
@@ -126,16 +131,117 @@ local taskTypes = {
     INDIRECT = 6,
     AA = 7,
 }
+
 local statusTypes = {
     HOLD = 1,
     EN_ROUTE = 2,
 }
 
+local oodaStates = {
+    OBSERVE = "Observe",
+    ORIENT = "Orient",
+    DECIDE = "Decide",
+    ACT = "Act",
+}
+
+local rgb = {
+    blue = {0,0.1,0.8,0.5},
+    red = {0.5,0,0.1,0.5},
+    neutral = {0.1,0.1,0.1,0.5},
+}
+
+local rulesOfEngagement = {
+    WEAPON_FREE = 0, -- Engage targets at will
+    RETURN_FIRE = 3, -- Engage only if fired upon
+    WEAPON_HOLD = 4, -- Hold fire, do not engage
+}
+
+-- Unit classification and threat ratings
+-- Each unit type has threat values against infantry, armor, and air
+local unitClassification = {
+    -- Infantry units
+    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
+    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, armor = 0.5, air = 0}, strength = 1.2},
+    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
+    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, armor = 4, air = 0}, strength = 1.5},
+    
+    -- Light vehicles / Trucks
+    ["Hummer"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
+    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
+    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 0.8},
+    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    
+    -- Scout vehicles
+    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 3, armor = 2, air = 0}, strength = 2},
+    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, armor = 1.5, air = 0}, strength = 2},
+    
+    -- Light armor / IFVs
+    ["M-113"] = {category = "armor", threats = {infantry = 3, armor = 1, air = 0}, strength = 2.5},
+    ["M-2 Bradley"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+    ["BMP-2"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+    ["BTR-80"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
+    
+    -- Medium armor
+    ["M-1 Abrams"] = {category = "armor", threats = {infantry = 3, armor = 8, air = 0}, strength = 8},
+    ["T-72B"] = {category = "armor", threats = {infantry = 3, armor = 7, air = 0}, strength = 7},
+    ["T-80U"] = {category = "armor", threats = {infantry = 3, armor = 7.5, air = 0}, strength = 7.5},
+    
+    -- Air defense
+    ["Avenger"] = {category = "armor", threats = {infantry = 1, armor = 0, air = 6}, strength = 3},
+    ["Vulcan"] = {category = "armor", threats = {infantry = 2, armor = 1, air = 5}, strength = 3},
+    ["Strela-10M3"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
+    ["Strela-1 9P31"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
+    
+    -- Artillery
+    ["M-109"] = {category = "armor", threats = {infantry = 6, armor = 4, air = 0}, strength = 5},
+    ["2S9 Nona"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+}
+
+-- Vulnerability modifiers based on unit category
+local vulnerabilityMatrix = {
+    infantry = {
+        infantry = 1.0,  -- Infantry vs infantry weapons
+        armor = 0.3,     -- Infantry vs armor weapons (takes cover, dispersed)
+        air = 0.2,        -- Infantry vs air weapons (small target)
+        antiair = 0.4     -- Infantry vs anti-air weapons
+    },
+    armor = {
+        infantry = 0.5,  -- Armor vs infantry weapons (some resistance)
+        armor = 1.2,     -- Armor vs armor weapons (vulnerable to AT)
+        air = 0.8,        -- Armor vs air weapons
+        antiair = 0.6     -- Armor vs anti-air weapons
+    },
+    air = {
+        infantry = 0.4,  -- Air vs infantry weapons (less effective)
+        armor = 0.7,     -- Air vs armor weapons
+        air = 1.0,        -- Air vs air weapons
+        antiair = 1.5     -- Air vs anti-air weapons (highly vulnerable)
+    },
+    antiair = {
+        infantry = 0.6,  -- AA vs infantry weapons
+        armor = 0.9,     -- AA vs armor weapons
+        air = 1.3,        -- AA vs air weapons (highly effective)
+        antiair = 1.0     -- AA vs anti-air weapons
+    }
+}
+
 return {
+    acceptableLevelsOfRisk = acceptableLevelsOfRisk,
+    dispositionTypes = dispositionTypes,
+    formationTypes = formationTypes,
+    groundTemplates = groundTemplates,
+    rulesOfEngagement = rulesOfEngagement,
+    oodaStates = oodaStates,
     rgb = rgb,
     taskTypes = taskTypes,
     statusTypes = statusTypes,
-    groundTemplates = groundTemplates
+    unitClassification = unitClassification,
+    vulnerabilityMatrix = vulnerabilityMatrix
 }
 
 end)
@@ -366,6 +472,7 @@ return CoalitionCommander
 end)
 __bundle_register("control-zones", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = require("constants").rgb
+local Map = require("map")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 
 local ControlZones = {}
@@ -389,8 +496,6 @@ function ControlZones.new(namedZones, groundTemplates)
     self.maxima = nil
     self.groupCounter = 1
     self.commanders = {}
-    self.markerCounter = 9990
-    self.frontlineMarkers = {blue = {}, red = {}} --should really be connected to :addCommander
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -421,7 +526,6 @@ function ControlZones:setup(options)
             -- zoneobj.owner = 0
             self.zonesByName[zonename] = zoneobj --indexed by name of the trigger zone
             table.insert(self.allZones, zoneobj.name) --list of all zone names / names of all zones
-            -- trigger.action.circleToAll(-1, 5000+zoneobj.zoneId, zoneobj.point, 500, {0.5,0.5,0.5,0.8}, {0.6,0.6,0.6,0.5}, 1)
         end
     end
 
@@ -457,6 +561,7 @@ function ControlZones:setup(options)
         end
         self.centroid[color] = { x = sumX / #zoneCluster, y = sumY / #zoneCluster }
     end
+    self.map = Map.new(self.centroid.blue, self.centroid.red)
 end
 
 function ControlZones:getCluster(color)
@@ -492,13 +597,12 @@ function ControlZones:changeZoneOwner(name, newOwner)
     self.owner[name] = newOwner
     env.info("Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
 
-    --redraw map zone and borders as needed
-    trigger.action.setMarkupColorFill(self:getZone(name).zoneId, rgb[newOwner])
+    self.map:redrawZone(name, rgb[newOwner])
     if formerOwner ~= "neutral" then
-        self:drawFrontline(formerOwner)
+        self.map:drawFrontline(self:getPerimeterEdges(formerOwner, true), formerOwner)
     end
     if newOwner ~= "neutral" then
-        self:drawFrontline(newOwner)
+        self.map:drawFrontline(self:getPerimeterEdges(newOwner, true), newOwner)
     end
 end
 
@@ -785,7 +889,7 @@ function ControlZones:getPerimeterZones(color)
     return frontZones
 end
 
-function ControlZones:getPerimeterEdges(color)
+function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table of pairs of zone names (default) or center points of those zones
     if not self.triangles then
         self:buildDelaunayIndex()
     end
@@ -819,7 +923,11 @@ function ControlZones:getPerimeterEdges(color)
                 
                 if not edgeSet[edgeKey] then
                     edgeSet[edgeKey] = true
-                    table.insert(edges, {p1 = key1, p2 = key2})
+                    if returnPoints then
+                        table.insert(edges, {p1 = self:getZone(key1).point, p2 = self:getZone(key2).point})
+                    else
+                        table.insert(edges, {p1 = key1, p2 = key2})
+                    end
                 end
             end
         end
@@ -828,7 +936,7 @@ function ControlZones:getPerimeterEdges(color)
     return edges
 end
 
-function ControlZones:getAllEdges()
+function ControlZones:getAllEdges(returnPoints)
     if not self.triangles then
         self:buildDelaunayIndex()
     end
@@ -851,19 +959,16 @@ function ControlZones:getAllEdges()
             
             if not edgeSet[edgeKey] then
                 edgeSet[edgeKey] = true
-                table.insert(edges, {p1 = key1, p2 = key2})
+                if returnPoints then
+                    table.insert(edges, {p1 = self:getZone(key1).point, p2 = self:getZone(key2).point})
+                else
+                    table.insert(edges, {p1 = key1, p2 = key2})
+                end
             end
         end
     end
 
     return edges
-end
-
-function ControlZones:drawEdges()
-    for m, edge in pairs(self:getAllEdges()) do
-        --draw edge 
-        trigger.action.lineToAll(-1, 2000+m, self:getZone(edge.p1).point, self:getZone(edge.p2).point, {1,1,0.2,0.1}, 5)
-    end
 end
 
 function ControlZones:assignCompassMaxima()
@@ -927,57 +1032,6 @@ end
 function ControlZones:getNewGroupId()
     self.groupCounter = self.groupCounter + 1
     return self.groupCounter
-end
-
-function ControlZones:getNewMarker()
-    self.markerCounter = self.markerCounter + 1
-    return self.markerCounter
-end
-
-function ControlZones:drawFrontline(color)
-    self.front[color] = self:getPerimeterEdges(color)
-    --first erase any existing lines
-    if self.frontlineMarkers[color] then
-        for _, id in pairs(self.frontlineMarkers[color]) do
-            trigger.action.removeMark(id)
-        end
-        self.frontlineMarkers[color] = {}
-    end
-    --then draw a line for each edge of the current color's front
-    for _, zonePoints in pairs(self.front[color]) do
-        local lineId = self:getNewMarker()
-        table.insert(self.frontlineMarkers[color], lineId)
-        local lineColor = rgb[color]
-        local heading
-        local z1, z2 = self:getZone(zonePoints.p1), self:getZone(zonePoints.p2)
-        if color == "blue" then
-            heading = mist.utils.getHeadingPoints(self.centroid["blue"], self.centroid["red"])
-        else
-            heading = mist.utils.getHeadingPoints(self.centroid["red"], self.centroid["blue"])
-        end
-        local p1A, p1B = mist.projectPoint(z1.point, 2000, heading), mist.projectPoint(z1.point, 2200, heading)
-        local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
-        trigger.action.lineToAll(-1, lineId, p1A, p2A, lineColor, 1)
-        lineId = self:getNewMarker()
-        table.insert(self.frontlineMarkers[color], lineId)
-        trigger.action.lineToAll(-1, lineId, p1B, p2B, lineColor, 1) --double the line for better visibility
-    end
-end
-
-function ControlZones:drawDirective(fromZone, toZone)
-    local side = -1 --which coalition the arrow is visible to
-    local nextId = self:getNewMarker()
-    local color = {1,1,0.2,1}
-    local fill = color
-    local originPoint = self:getZone(fromZone).point
-    local targetPoint = self:getZone(toZone).point
-    local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
-    local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-    local distance = 1000
-    local lineStart = mist.projectPoint(originPoint, distance, heading)
-    local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
-    trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, color, fill, 1)
-    return true
 end
 
 function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
@@ -1101,12 +1155,20 @@ function ControlZones:requestOrders()
             env.info("    constructing task for "..params.group)
             local task = self:constructTask(params)
             self:setGroupTask(params.group, task)
-            self:drawDirective(params.origin.name, params.destination.name)
+            self.map:drawDirective(self:getZone(params.origin.name).point, self:getZone(params.destination.name).point)
         end
     end
 end
 
 function ControlZones:kickoff()
+    local zoneInfo = {}
+    for name, color in pairs(self.owner) do
+        zoneInfo[name] = {color = color, point = self:getZone(name).point}
+    end
+    self.map:drawZones(zoneInfo)
+    self.map:drawEdges(self:getAllEdges(true))
+    self.map:drawFrontline(self:getPerimeterEdges("blue", true), "blue")
+    self.map:drawFrontline(self:getPerimeterEdges("red", true), "red")
     self:populateZones()
     timer.scheduleFunction(
         function(params)
@@ -1133,6 +1195,108 @@ return {
     isCounterClockwise = isCounterClockwise
 }
 
+end)
+__bundle_register("map", function(require, _LOADED, __bundle_register, __bundle_modules)
+local rgb = require("constants").rgb
+local Map = {}
+Map.__index = Map
+
+function Map.new(blueCenter, redCenter)
+    local self = setmetatable({}, Map)
+    self.markerCounter = 5000
+    self.markers = {
+        front = {
+            red = {},
+            blue = {}
+        },
+        zones = {},
+        zoneLabels = {},
+        edges = {},
+    }
+    self.center = {
+        blue = blueCenter,
+        red = redCenter
+    }
+    return self
+end
+
+function Map:getNewMarker()
+    self.markerCounter = self.markerCounter + 1
+    return self.markerCounter
+end
+
+function Map:drawZone(name, color, pt)
+    local zoneId = self:getNewMarker()
+    self.markers.zones[name] = zoneId
+    trigger.action.circleToAll(-1, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+    local labelId = self:getNewMarker()
+    self.markers.zoneLabels[name] = labelId
+    trigger.action.textToAll(-1, labelId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, name)
+end
+
+function Map:redrawZone(name, color)
+    trigger.action.setMarkupColorFill(self.markers.zones[name], rgb[color])
+end
+
+function Map:drawZones(zones)
+    for name, info in pairs(zones) do
+        self:drawZone(name, info.color, info.point)
+    end
+
+    trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(self.center["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
+    trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(self.center["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
+end
+
+function Map:drawEdges(edges)
+    for _, edge in pairs(edges) do
+        local lineId = self:getNewMarker()
+        table.insert(self.markers.edges, lineId)
+        trigger.action.lineToAll(-1, lineId, edge.p1, edge.p2, {1,1,0.2,0.1}, 5)
+    end
+end
+
+function Map:drawFrontline(edges, color)
+    local opponentColor = color == "blue" and "red" or "blue"
+    local heading = mist.utils.getHeadingPoints(self.center[color], self.center[opponentColor])
+
+    --first erase any existing lines
+    if self.markers.front[color] then
+        for _, id in pairs(self.markers.front[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.markers.front[color] = {}
+    end
+    --then draw a line for each edge of the current color's front
+    for _, zonePoints in pairs(edges) do
+        local lineId = self:getNewMarker()
+        table.insert(self.markers.front[color], lineId)
+        local lineColor = rgb[color]
+        --need zone points
+        local z1, z2 = zonePoints.p1, zonePoints.p2
+        local p1A, p1B = mist.projectPoint(z1, 2000, heading), mist.projectPoint(z1, 2200, heading)
+        local p2A, p2B = mist.projectPoint(z2, 2000, heading), mist.projectPoint(z2, 2200, heading)
+        trigger.action.lineToAll(-1, lineId, p1A, p2A, lineColor, 1)
+        lineId = self:getNewMarker()
+        table.insert(self.markers.front[color], lineId)
+        trigger.action.lineToAll(-1, lineId, p1B, p2B, lineColor, 1) --double the line for better visibility
+    end
+end
+
+function Map:drawDirective(originPoint, targetPoint)
+    local side = -1 --which coalition the arrow is visible to
+    local nextId = self:getNewMarker()
+    local color = {1,1,0.2,1}
+    local fill = color
+    local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
+    local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
+    local distance = 1000
+    local lineStart = mist.projectPoint(originPoint, distance, heading)
+    local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
+    trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, color, fill, 1)
+    return true
+end
+
+return Map
 end)
 __bundle_register("table", function(require, _LOADED, __bundle_register, __bundle_modules)
 function table.contains(table, el)

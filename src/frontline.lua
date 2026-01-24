@@ -29,21 +29,6 @@ local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
 local height = cz.maxima.northmost.x - cz.maxima.southmost.x
 local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
 
-local i = 0
-for name, color in pairs(cz.owner) do
-    i = i + 1
-    local z = cz:getZone(name)
-    local pt = z.point
-    trigger.action.circleToAll(-1, z.zoneId, pt, 510, {0,0,0,0.2}, constants.rgb[color], 1)
-    trigger.action.textToAll(-1, 2000+z.zoneId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, z.name)
-end
-
-cz:drawEdges()
-cz:drawFrontline("blue")
-cz:drawFrontline("red")
-trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(cz.centroid["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
-trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(cz.centroid["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
-
 local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
