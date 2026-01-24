@@ -671,20 +671,19 @@ function ControlZones:constructTask(params)
                 x = pt.x,
                 y = pt.z,
                 speed = 100,
-                -- action = AI.Task.VehicleFormation.VEE
-                action = AI.Task.VehicleFormation.OFF_ROAD,
+                action = AI.Task.VehicleFormation.RANK
             },
             [2] = {
                 type= AI.Task.WaypointType.TURNING_POINT,
                 x = pt.x,
                 y = pt.z,
                 speed = 100,
-                -- action = AI.Task.VehicleFormation.VEE
-                action = AI.Task.VehicleFormation.OFF_ROAD,
+                action = AI.Task.VehicleFormation.RANK
             },
         }
     }
 
+    --also mist.ground.buildWP or mist.groupToPoint(groupName, zoneName, ...)
     local taskMove = {
         id = 'Mission',
         params = {

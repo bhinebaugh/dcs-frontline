@@ -1,4 +1,5 @@
 local taskTypes = require("constants").taskTypes
+local statusTypes = require("constants").statusTypes
 
 local CoalitionCommander = {}
 CoalitionCommander.__index = CoalitionCommander
@@ -16,7 +17,7 @@ function CoalitionCommander.new(parent, config, groundTemplates)
         self.groupsByZone[name] = {}
     end
     self.groupsByTask = {}
-    for i,j in pairs(taskTypes) do
+    for i, j in pairs(taskTypes) do
         self.groupsByTask[j] = {}
     end
     self.operations = {
@@ -35,8 +36,8 @@ function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneNa
         template = templateID,
         strength = #self.templates[templateID],
         task = task or taskTypes.DEFEND,
-        -- location: zone or en route or point or nearest zone
-        -- status: hold, preparing, en route, complete/at destination
+        location = zoneName,
+        status = statusTypes.HOLD, -- preparing, en route, complete/at destination
         target = target or nil,
         origin = zoneName, --or point, or other value
     }
@@ -46,13 +47,38 @@ function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneNa
     end
 end
 function CoalitionCommander:updateGroup(groupName, params)
-    --stub
+    local grp = self.groups[groupName]
+    for k, v in pairs(params) do
+        if k == "task" then
+            local oldTask = grp.task
+            local newTask = v
+            for i, g in pairs(self.groupsByTask[oldTask]) do
+                if g == groupName then table.remove(self.groupsByTask[oldTask], i) end
+            end
+            table.insert(self.groupsByTask[newTask], groupName)
+            --if groups was not already EN_ROUTE...
+            if newTask == taskTypes.ASSAULT or newTask == taskTypes.REINFORCE or newTask == taskTypes.RECON then
+                grp.status = statusTypes.EN_ROUTE
+                for i, g in pairs(self.groupsByZone[grp.location]) do
+                    if g == groupName then table.remove(self.groupsByZone[grp.location], i) end
+                end
+            end
+        end
+        self.groups[groupName][k] = v
+    end
 end
 function CoalitionCommander:removeGroup(groupName)
     local task = self.groups[groupName].task
-    -- remove from self.groupsByTask[task]
-    -- self.groups[groupName].origin/target
-    -- self.groupsByZone
+    local zone = self.groups[groupName].location
+    local status = self.groups[groupName].status
+    for i, g in pairs(self.groupsByTask[task]) do
+        if g == groupName then table.remove(self.groupsByTask[task], i) end
+    end
+    if zone and status == statusTypes.HOLD then
+        for i, g in pairs(self.groupsByZone[zone]) do
+            if g == groupName then table.remove(self.groupsByZone[zone], i) end
+        end
+    end
     self.groups[groupName] = nil
 end
 
@@ -100,48 +126,48 @@ function CoalitionCommander:chooseZoneReinforcements(zones)
 end
 
 function CoalitionCommander:designateAssault()
-    local frontlineForces = {}
+    local frontlineReserves = {}
     local frontZones = self.map:getPerimeterZones(self.color)
 
     for _, zoneName in pairs(frontZones) do
-        local zoneGroups = self.groupsByZone[zoneName]
-        if #zoneGroups > 1 then
+        local groupsInZone = self.groupsByZone[zoneName]
+        if #groupsInZone > 1 then
             local defensive = 0
-            for _, groupName in pairs(zoneGroups) do
-                if self.groups[groupName].task == taskTypes.DEFEND then defensive = defensive + 1 end
+            local zoneReserves = {}
+            for _, groupName in pairs(groupsInZone) do
+                if self.groups[groupName] and self.groups[groupName].task == taskTypes.DEFEND then
+                    defensive = defensive + 1
+                    table.insert(zoneReserves, groupName)
+                end
             end
-            if defensive > 1 then
-                table.insert(frontlineForces, {zone = zoneName, count = #zoneGroups})
+            if #zoneReserves > 1 then
+                table.insert(frontlineReserves, {zone = zoneName, groups = zoneReserves})
             end
         end
     end
 
-    if #frontlineForces < 1 then
-        env.info("...no frontline zones have groups available for offensive tasking")
+    if #frontlineReserves < 1 then
+        env.info("    no frontline zones have groups available for offensive tasking")
         return nil
     end
-    local tasked = frontlineForces[math.random(#frontlineForces)]
-    local enemyNeighbors = self.map:getNeighbors(tasked.zone, self.opponent)
+    local randomReserves = frontlineReserves[math.random(#frontlineReserves)]
+
+    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent)
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
 
-    local zoneGroups = self.groupsByZone[tasked.zone]
-    local availableGroups = {}
-    for _, grp in pairs(zoneGroups) do
-        if self.groups[grp].task == taskTypes.DEFEND then
-            table.insert(availableGroups, grp)
-        end
+    --for now, choose single group
+    if #randomReserves.groups > 1 then --can task multiple groups if available
+        env.info("    "..#randomReserves.groups.." groups available at "..randomReserves.zone)
     end
-    local taskedGroup = availableGroups[math.random(#availableGroups)]
+    local taskedGroup = randomReserves.groups[1]
 
-    --update group
-    self.groups[taskedGroup].task = taskTypes.ASSAULT
-    self.groups[taskedGroup].target = target
-    table.insert(self.operations.active, {type = "assault", origin = tasked.zone, destination = target, group = taskedGroup})
+    self:updateGroup(taskedGroup, {task = taskTypes.ASSAULT, target = target})
+    table.insert(self.operations.active, {type = "assault", origin = randomReserves.zone, destination = target, group = taskedGroup})
     env.info("    tasking "..taskedGroup.." to assault "..target)
 
     return {
         group = taskedGroup,
-        origin = self.map:getZone(tasked.zone),
+        origin = self.map:getZone(randomReserves.zone),
         destination = self.map:getZone(target),
     }
 
@@ -150,11 +176,11 @@ end
 function CoalitionCommander:issueOrders()
     env.info(self.color.." generating orders")
     if #self.operations.active > 4 then --limit number of active operations
-        env.info("    operations at capacity")
+        env.info("    pass (at capacity)")
         return nil
     end
     if math.random() < 0.5 then
-        env.info("    (random) refrain from launching new offensive")
+        env.info("    pass (random)")
         return nil
     end
 

@@ -28,9 +28,14 @@ local taskTypes = {
     INDIRECT = 6,
     AA = 7,
 }
+local statusTypes = {
+    HOLD = 1,
+    EN_ROUTE = 2,
+}
 
 return {
     rgb = rgb,
     taskTypes = taskTypes,
+    statusTypes = statusTypes,
     groundTemplates = groundTemplates
 }
