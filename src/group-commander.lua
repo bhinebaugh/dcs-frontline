@@ -22,10 +22,11 @@ function GroupCommander.new(groupName, config)
     self.formationType = formationTypes.OFF_ROAD
     self.groupName = groupName
     self.oodaState = oodaStates.OBSERVE
+    self.ownForceStrength = nil
+    self.ownUnitNames = self:getOwnUnitNames()
     self.roe = roe.WEAPON_HOLD
     self.threats = {}
     self.threatAnalysis = nil
-    self.ownForceStrength = nil
 
     self.oodaOffset = math.random() * oodaInterval
     
@@ -36,187 +37,6 @@ function GroupCommander.new(groupName, config)
         oodaInterval
     )
     return self
-end
-
-function GroupCommander:detectNearbyUnits()
-    local leadUnitName = self.groupName .. "-1"
-    local leadUnit = Unit.getByName(leadUnitName)
-    
-    if not leadUnit or not leadUnit:isExist() then
-        return {allies = {}, threats = {}}
-    end
-    
-    local myCoalition = self.coalition
-    local enemyCoalition = myCoalition == "red" and "blue" or "red"
-    
-    -- Get all units in zone (can't filter by coalition in makeUnitTable or LOS breaks)
-    local allUnits = mist.makeUnitTable({"[all]"})
-    local unitsInZone = mist.getUnitsInMovingZones(
-        allUnits,
-        {leadUnitName},
-        detectionRadius,
-        "cylinder"
-    )
-    
-    -- Extract ally and threat names by filtering on coalition
-    local allies = {}
-    local threats = {}
-    for _, unitObject in ipairs(unitsInZone) do
-        if unitObject and unitObject.getName then
-            local name = unitObject:getName()
-            if name ~= leadUnitName then
-                local unit = Unit.getByName(name)
-                if unit and unit:isExist() then
-                    local unitCoalition = unit:getCoalition()
-                    -- Coalition: 0=neutral, 1=red, 2=blue
-                    local coalitionName = unitCoalition == 1 and "red" or (unitCoalition == 2 and "blue" or "neutral")
-                    
-                    if coalitionName == myCoalition then
-                        table.insert(allies, name)
-                    elseif coalitionName == enemyCoalition then
-                        table.insert(threats, name)
-                    end
-                end
-            end
-        end
-    end
-    
-    return {allies = allies, threats = threats}
-end
-
-function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
-    local pos1 = unit1:getPosition().p
-    local pos2 = unit2:getPosition().p
-    return mist.utils.get2DDist(pos1, pos2)
-end
-
-function GroupCommander:calculateDetectionCoefficient(distance)
-    -- At half detectionRadius (1000m): coefficient = 1.0
-    -- At full detectionRadius (2000m): coefficient = 0.2
-    -- Linear interpolation between these points
-    local halfRadius = detectionRadius / 2
-    
-    if distance <= halfRadius then
-        return 1.0
-    else
-        -- Linear interpolation from 1.0 at halfRadius to 0.2 at detectionRadius
-        local t = (distance - halfRadius) / (detectionRadius - halfRadius)
-        return 1.0 - (t * 0.8) -- 1.0 - 0.8 = 0.2 at full distance
-    end
-end
-
-function GroupCommander:filterThreatsWithLOS(threatNames)
-    if not threatNames or #threatNames == 0 then
-        return {}
-    end
-    
-    -- Get all units in our group to use as observers
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return {}
-    end
-    
-    local groupUnits = group:getUnits()
-    local observerNames = {}
-    for _, unit in ipairs(groupUnits) do
-        if unit and unit:isExist() then
-            table.insert(observerNames, unit:getName())
-        end
-    end
-    
-    if #observerNames == 0 then
-        return {}
-    end
-    
-    -- Use mist.getUnitsLOS: observers, observerAlt, targets, targetAlt
-    local losResults = mist.getUnitsLOS(
-        observerNames,  -- All observers, not just the first
-        2,              -- Observer altitude offset (2m above unit position)
-        threatNames,
-        2               -- Target altitude offset (2m above unit position)
-    )
-    
-    if not losResults or #losResults == 0 then
-        return {}
-    end
-    
-    -- Collect all visible units from all observers
-    -- losResults is an array where each element has ["unit"] (observer) and ["vis"] (array of visible threats)
-    local visibleThreatsSet = {}
-    for _, observerResult in ipairs(losResults) do
-        local observerUnit = observerResult.unit
-        
-        if observerUnit and observerUnit:isExist() and observerResult.vis then
-            for _, threatUnit in ipairs(observerResult.vis) do
-                if threatUnit and threatUnit:isExist() then
-                    local distance = self:calculateDistanceBetweenUnits(observerUnit, threatUnit)
-                    local coefficient = self:calculateDetectionCoefficient(distance)
-                    
-                    -- Use coefficient as probability to add unit to threats
-                    if math.random() < coefficient then
-                        visibleThreatsSet[threatUnit:getName()] = true
-                    end
-                end
-            end
-        end
-    end
-    
-    -- Convert set to array
-    local visibleThreats = {}
-    for unitName, _ in pairs(visibleThreatsSet) do
-        table.insert(visibleThreats, unitName)
-    end
-    
-    return visibleThreats
-end
-
-function GroupCommander:buildThreatTable(threatNames)
-    local threats = {}
-    for _, unitName in ipairs(threatNames) do
-        local unit = Unit.getByName(unitName)
-        if unit and unit:isExist() then
-            table.insert(threats, {
-                name = unitName,
-                unit = unit,
-                position = unit:getPosition().p
-            })
-        end
-    end
-    return threats
-end
-
-function GroupCommander:issueMoveOrder(point)
-    env.info("Issuing move order for " .. self.groupName .. " to x=" .. point.x .. " z=" .. point.z)
-    
-    -- Verify group exists
-    local group = Group.getByName(self.groupName)
-    if not group then
-        env.info("ERROR: Group " .. self.groupName .. " does not exist!")
-        return
-    end
-    
-    if not group:isExist() then
-        env.info("ERROR: Group " .. self.groupName .. " is not alive!")
-        return
-    end
-    
-    local destination = {
-        point = point,
-        radius = 100
-    }
-    local formation = "Cone"
-    local heading = 0
-    local speed = 100
-    local ignoreRoads = false
-    
-    mist.groupToPoint(
-        self.groupName,
-        destination,
-        formation,
-        heading,
-        speed,
-        ignoreRoads
-    )
 end
 
 function GroupCommander:oodaTick()
@@ -249,190 +69,6 @@ function GroupCommander:observe()
     self.threats = self:buildThreatTable(visibleThreatNames)
     
     env.info(self.groupName .. " OBSERVE: " .. #self.threats .. " final threats after validation")
-end
-
-function GroupCommander:getUnitTypeName(unit)
-    if not unit or not unit:isExist() then
-        return nil
-    end
-    
-    local typeName = unit:getTypeName()
-    return typeName
-end
-
-function GroupCommander:classifyUnit(unitTypeName)
-    if not unitTypeName then
-        return {category = "unknown", threats = {infantry = 0, armor = 0, air = 0}, strength = 0}
-    end
-    
-    local classification = unitClassification[unitTypeName]
-    if classification then
-        return classification
-    end
-    
-    -- Default classification for unknown units
-    return {category = "unknown", threats = {infantry = 1, armor = 1, air = 0}, strength = 1}
-end
-
-function GroupCommander:calculateForceStrength(units)
-    -- Calculate total strength broken down by category
-    local strength = {
-        infantry = 0,
-        armor = 0,
-        air = 0,
-        total = 0,
-        count = 0
-    }
-    
-    for _, unitData in ipairs(units) do
-        local unit = unitData.unit
-        
-        -- Skip dead units
-        if unit and unit:isExist() then
-            local typeName = self:getUnitTypeName(unit)
-            local classification = self:classifyUnit(typeName)
-            
-            strength.total = strength.total + classification.strength
-            strength.count = strength.count + 1
-            
-            if classification.category == "infantry" then
-                strength.infantry = strength.infantry + classification.strength
-            elseif classification.category == "armor" then
-                strength.armor = strength.armor + classification.strength
-            elseif classification.category == "air" then
-                strength.air = strength.air + classification.strength
-            end
-        end
-    end
-    
-    return strength
-end
-
-function GroupCommander:analyzeThreatCapabilities()
-    -- Analyze what the threats are armed with and their total threat rating
-    local threatCapabilities = {
-        vsInfantry = 0,
-        vsArmor = 0,
-        vsAir = 0,
-        totalStrength = 0,
-        count = 0,
-        composition = {infantry = 0, armor = 0, air = 0}
-    }
-    
-    for _, threatData in ipairs(self.threats) do
-        local unit = threatData.unit
-        
-        -- Skip dead units
-        if unit and unit:isExist() then
-            local typeName = self:getUnitTypeName(unit)
-            local classification = self:classifyUnit(typeName)
-            
-            threatCapabilities.vsInfantry = threatCapabilities.vsInfantry + classification.threats.infantry
-            threatCapabilities.vsArmor = threatCapabilities.vsArmor + classification.threats.armor
-            threatCapabilities.vsAir = threatCapabilities.vsAir + classification.threats.air
-            threatCapabilities.totalStrength = threatCapabilities.totalStrength + classification.strength
-            threatCapabilities.count = threatCapabilities.count + 1
-            
-            if classification.category == "infantry" then
-                threatCapabilities.composition.infantry = threatCapabilities.composition.infantry + 1
-            elseif classification.category == "armor" then
-                threatCapabilities.composition.armor = threatCapabilities.composition.armor + 1
-            elseif classification.category == "air" then
-                threatCapabilities.composition.air = threatCapabilities.composition.air + 1
-            end
-        end
-    end
-    
-    return threatCapabilities
-end
-
-function GroupCommander:analyzeOwnForce()
-    -- Get all units in our group
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return nil
-    end
-    
-    local groupUnits = group:getUnits()
-    local ownUnits = {}
-    
-    for _, unit in ipairs(groupUnits) do
-        if unit and unit:isExist() then
-            table.insert(ownUnits, {
-                unit = unit,
-                position = unit:getPosition().p
-            })
-        end
-    end
-    
-    local strength = self:calculateForceStrength(ownUnits)
-    
-    -- Calculate offensive capabilities (what we can threaten)
-    local offensiveCapability = {
-        vsInfantry = 0,
-        vsArmor = 0,
-        vsAir = 0
-    }
-    
-    for _, unitData in ipairs(ownUnits) do
-        local unit = unitData.unit
-        
-        -- Skip dead units
-        if unit and unit:isExist() then
-            local typeName = self:getUnitTypeName(unit)
-            local classification = self:classifyUnit(typeName)
-            
-            offensiveCapability.vsInfantry = offensiveCapability.vsInfantry + classification.threats.infantry
-            offensiveCapability.vsArmor = offensiveCapability.vsArmor + classification.threats.armor
-            offensiveCapability.vsAir = offensiveCapability.vsAir + classification.threats.air
-        end
-    end
-    
-    return {
-        strength = strength,
-        offensiveCapability = offensiveCapability,
-        units = ownUnits
-    }
-end
-
-function GroupCommander:calculateVulnerability(ownForce, threatCapabilities)
-    -- Calculate how vulnerable we are to the threats based on our composition
-    local vulnerability = {
-        overall = 0,
-        fromInfantryWeapons = 0,
-        fromArmorWeapons = 0,
-        fromAirWeapons = 0
-    }
-    
-    -- Get our composition percentages
-    local totalStrength = ownForce.strength.total
-    if totalStrength == 0 then
-        return vulnerability
-    end
-    
-    local infantryRatio = ownForce.strength.infantry / totalStrength
-    local armorRatio = ownForce.strength.armor / totalStrength
-    
-    -- Calculate vulnerability from infantry weapons
-    vulnerability.fromInfantryWeapons = 
-        (infantryRatio * vulnerabilityMatrix.infantry.infantry * threatCapabilities.vsInfantry) +
-        (armorRatio * vulnerabilityMatrix.armor.infantry * threatCapabilities.vsInfantry)
-    
-    -- Calculate vulnerability from armor weapons
-    vulnerability.fromArmorWeapons = 
-        (infantryRatio * vulnerabilityMatrix.infantry.armor * threatCapabilities.vsArmor) +
-        (armorRatio * vulnerabilityMatrix.armor.armor * threatCapabilities.vsArmor)
-    
-    -- Calculate vulnerability from air weapons
-    vulnerability.fromAirWeapons = 
-        (infantryRatio * vulnerabilityMatrix.infantry.air * threatCapabilities.vsAir) +
-        (armorRatio * vulnerabilityMatrix.armor.air * threatCapabilities.vsAir)
-    
-    vulnerability.overall = vulnerability.fromInfantryWeapons + 
-                           vulnerability.fromArmorWeapons + 
-                           vulnerability.fromAirWeapons
-    
-    return vulnerability
 end
 
 function GroupCommander:orient()
@@ -477,95 +113,6 @@ function GroupCommander:orient()
         capabilities = threatCapabilities,
         vulnerability = vulnerability,
         strengthRatio = strengthRatio
-    }
-end
-
-function GroupCommander:calculateThreatCenter()
-    -- Calculate the average position of all threats
-    if #self.threats == 0 then
-        return nil
-    end
-    
-    local sumX = 0
-    local sumZ = 0
-    local validCount = 0
-    
-    for _, threatData in ipairs(self.threats) do
-        -- Check if unit still exists (may have been destroyed since observe)
-        if threatData.unit and threatData.unit:isExist() then
-            local pos = threatData.unit:getPosition().p
-            sumX = sumX + pos.x
-            sumZ = sumZ + pos.z
-            validCount = validCount + 1
-        end
-    end
-    
-    if validCount == 0 then
-        return nil
-    end
-    
-    return {
-        x = sumX / validCount,
-        z = sumZ / validCount
-    }
-end
-
-function GroupCommander:getOwnPosition()
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return nil
-    end
-    
-    local units = group:getUnits()
-    if #units == 0 then
-        return nil
-    end
-    
-    -- Use first unit position as group position
-    local unit = units[1]
-    if unit and unit:isExist() then
-        return unit:getPosition().p
-    end
-    
-    return nil
-end
-
-function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retreat)
-    local ownPos = self:getOwnPosition()
-    if not ownPos or not threatCenter then
-        env.info(self.groupName .. " Cannot calculate destination: missing position data")
-        return nil
-    end
-    
-    -- Calculate vector from threat to us
-    local dx = ownPos.x - threatCenter.x
-    local dz = ownPos.z - threatCenter.z
-    
-    -- Normalize
-    local distance = math.sqrt(dx * dx + dz * dz)
-    if distance < 1 then
-        -- Too close, pick arbitrary direction
-        dx = 1
-        dz = 0
-        distance = 1
-    end
-    
-    local dirX = dx / distance
-    local dirZ = dz / distance
-    
-    -- Set movement distance based on action
-    local moveDistance
-    if retreat then
-        -- Move away from threats
-        moveDistance = 2000  -- 2km retreat
-    else
-        -- Move toward threats (advance)
-        moveDistance = -1000  -- 1km advance (negative to move toward)
-    end
-    
-    return {
-        x = ownPos.x + (dirX * moveDistance),
-        z = ownPos.z + (dirZ * moveDistance)
     }
 end
 
@@ -639,17 +186,503 @@ function GroupCommander:act()
     elseif self.disposition == dispositionTypes.RETREAT then
         self:setROE(roe.RETURN_FIRE)
     elseif self.disposition == dispositionTypes.HOLD then
-        self:setROE(roe.WEAPON_FREE)
+        self:setROE(roe.RETURN_FIRE)
     elseif self.disposition == dispositionTypes.DEFEND then
         self:setROE(roe.WEAPON_FREE)
     else
-        self:setROE(roe.RETURN_FIRE)
+        self:setROE(roe.WEAPON_HOLD)
     end
     
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
     if self.destination and (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
         self:issueMoveOrder(self.destination)
     end
+
+
+end
+
+function GroupCommander:analyzeOwnForce()
+    -- Get all units in our group
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        return nil
+    end
+    
+    local groupUnits = group:getUnits()
+    local ownUnits = {}
+    
+    for _, unit in ipairs(groupUnits) do
+        if unit and unit:isExist() then
+            table.insert(ownUnits, {
+                unit = unit,
+                position = unit:getPosition().p
+            })
+        end
+    end
+    
+    local strength = self:calculateForceStrength(ownUnits)
+    
+    -- Calculate offensive capabilities (what we can threaten)
+    local offensiveCapability = {
+        vsInfantry = 0,
+        vsArmor = 0,
+        vsAir = 0
+    }
+    
+    for _, unitData in ipairs(ownUnits) do
+        local unit = unitData.unit
+        
+        -- Skip dead units
+        if unit and unit:isExist() then
+            local typeName = self:getUnitTypeName(unit)
+            local classification = self:classifyUnit(typeName)
+            
+            offensiveCapability.vsInfantry = offensiveCapability.vsInfantry + classification.threats.infantry
+            offensiveCapability.vsArmor = offensiveCapability.vsArmor + classification.threats.armor
+            offensiveCapability.vsAir = offensiveCapability.vsAir + classification.threats.air
+        end
+    end
+    
+    return {
+        strength = strength,
+        offensiveCapability = offensiveCapability,
+        units = ownUnits
+    }
+end
+
+function GroupCommander:analyzeThreatCapabilities()
+    -- Analyze what the threats are armed with and their total threat rating
+    local threatCapabilities = {
+        vsInfantry = 0,
+        vsArmor = 0,
+        vsAir = 0,
+        totalStrength = 0,
+        count = 0,
+        composition = {infantry = 0, armor = 0, air = 0}
+    }
+    
+    for _, threatData in ipairs(self.threats) do
+        local unit = threatData.unit
+        
+        -- Skip dead units
+        if unit and unit:isExist() then
+            local typeName = self:getUnitTypeName(unit)
+            local classification = self:classifyUnit(typeName)
+            
+            threatCapabilities.vsInfantry = threatCapabilities.vsInfantry + classification.threats.infantry
+            threatCapabilities.vsArmor = threatCapabilities.vsArmor + classification.threats.armor
+            threatCapabilities.vsAir = threatCapabilities.vsAir + classification.threats.air
+            threatCapabilities.totalStrength = threatCapabilities.totalStrength + classification.strength
+            threatCapabilities.count = threatCapabilities.count + 1
+            
+            if classification.category == "infantry" then
+                threatCapabilities.composition.infantry = threatCapabilities.composition.infantry + 1
+            elseif classification.category == "armor" then
+                threatCapabilities.composition.armor = threatCapabilities.composition.armor + 1
+            elseif classification.category == "air" then
+                threatCapabilities.composition.air = threatCapabilities.composition.air + 1
+            end
+        end
+    end
+    
+    return threatCapabilities
+end
+
+function GroupCommander:buildThreatTable(threatNames)
+    local threats = {}
+    for _, unitName in ipairs(threatNames) do
+        local unit = Unit.getByName(unitName)
+        if unit and unit:isExist() then
+            table.insert(threats, {
+                name = unitName,
+                unit = unit,
+                position = unit:getPosition().p
+            })
+        end
+    end
+    return threats
+end
+
+function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retreat)
+    local ownPos = self:getOwnPosition()
+    if not ownPos or not threatCenter then
+        env.info(self.groupName .. " Cannot calculate destination: missing position data")
+        return nil
+    end
+    
+    -- Calculate vector from threat to us
+    local dx = ownPos.x - threatCenter.x
+    local dz = ownPos.z - threatCenter.z
+    
+    -- Normalize
+    local distance = math.sqrt(dx * dx + dz * dz)
+    if distance < 1 then
+        -- Too close, pick arbitrary direction
+        dx = 1
+        dz = 0
+        distance = 1
+    end
+    
+    local dirX = dx / distance
+    local dirZ = dz / distance
+    
+    -- Set movement distance based on action
+    local moveDistance
+    if retreat then
+        -- Move away from threats
+        moveDistance = 2000  -- 2km retreat
+    else
+        -- Move toward threats (advance)
+        moveDistance = -1000  -- 1km advance (negative to move toward)
+    end
+    
+    return {
+        x = ownPos.x + (dirX * moveDistance),
+        z = ownPos.z + (dirZ * moveDistance)
+    }
+end
+
+function GroupCommander:calculateDetectionCoefficient(distance)
+    -- At half detectionRadius (1000m): coefficient = 1.0
+    -- At full detectionRadius (2000m): coefficient = 0.2
+    -- Linear interpolation between these points
+    local halfRadius = detectionRadius / 2
+    
+    if distance <= halfRadius then
+        return 1.0
+    else
+        -- Linear interpolation from 1.0 at halfRadius to 0.2 at detectionRadius
+        local t = (distance - halfRadius) / (detectionRadius - halfRadius)
+        return 1.0 - (t * 0.8) -- 1.0 - 0.8 = 0.2 at full distance
+    end
+end
+
+function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
+    local pos1 = unit1:getPosition().p
+    local pos2 = unit2:getPosition().p
+    return mist.utils.get2DDist(pos1, pos2)
+end
+
+function GroupCommander:calculateForceStrength(units)
+    -- Calculate total strength broken down by category
+    local strength = {
+        infantry = 0,
+        armor = 0,
+        air = 0,
+        total = 0,
+        count = 0
+    }
+    
+    for _, unitData in ipairs(units) do
+        local unit = unitData.unit
+        
+        -- Skip dead units
+        if unit and unit:isExist() then
+            local typeName = self:getUnitTypeName(unit)
+            local classification = self:classifyUnit(typeName)
+            
+            strength.total = strength.total + classification.strength
+            strength.count = strength.count + 1
+            
+            if classification.category == "infantry" then
+                strength.infantry = strength.infantry + classification.strength
+            elseif classification.category == "armor" then
+                strength.armor = strength.armor + classification.strength
+            elseif classification.category == "air" then
+                strength.air = strength.air + classification.strength
+            end
+        end
+    end
+    
+    return strength
+end
+
+function GroupCommander:calculateThreatCenter()
+    -- Calculate the average position of all threats
+    if #self.threats == 0 then
+        return nil
+    end
+    
+    local sumX = 0
+    local sumZ = 0
+    local validCount = 0
+    
+    for _, threatData in ipairs(self.threats) do
+        -- Check if unit still exists (may have been destroyed since observe)
+        if threatData.unit and threatData.unit:isExist() then
+            local pos = threatData.unit:getPosition().p
+            sumX = sumX + pos.x
+            sumZ = sumZ + pos.z
+            validCount = validCount + 1
+        end
+    end
+    
+    if validCount == 0 then
+        return nil
+    end
+    
+    return {
+        x = sumX / validCount,
+        z = sumZ / validCount
+    }
+end
+
+function GroupCommander:calculateVulnerability(ownForce, threatCapabilities)
+    -- Calculate how vulnerable we are to the threats based on our composition
+    local vulnerability = {
+        overall = 0,
+        fromInfantryWeapons = 0,
+        fromArmorWeapons = 0,
+        fromAirWeapons = 0
+    }
+    
+    -- Get our composition percentages
+    local totalStrength = ownForce.strength.total
+    if totalStrength == 0 then
+        return vulnerability
+    end
+    
+    local infantryRatio = ownForce.strength.infantry / totalStrength
+    local armorRatio = ownForce.strength.armor / totalStrength
+    
+    -- Calculate vulnerability from infantry weapons
+    vulnerability.fromInfantryWeapons = 
+        (infantryRatio * vulnerabilityMatrix.infantry.infantry * threatCapabilities.vsInfantry) +
+        (armorRatio * vulnerabilityMatrix.armor.infantry * threatCapabilities.vsInfantry)
+    
+    -- Calculate vulnerability from armor weapons
+    vulnerability.fromArmorWeapons = 
+        (infantryRatio * vulnerabilityMatrix.infantry.armor * threatCapabilities.vsArmor) +
+        (armorRatio * vulnerabilityMatrix.armor.armor * threatCapabilities.vsArmor)
+    
+    -- Calculate vulnerability from air weapons
+    vulnerability.fromAirWeapons = 
+        (infantryRatio * vulnerabilityMatrix.infantry.air * threatCapabilities.vsAir) +
+        (armorRatio * vulnerabilityMatrix.armor.air * threatCapabilities.vsAir)
+    
+    vulnerability.overall = vulnerability.fromInfantryWeapons + 
+                           vulnerability.fromArmorWeapons + 
+                           vulnerability.fromAirWeapons
+    
+    return vulnerability
+end
+
+function GroupCommander:classifyUnit(unitTypeName)
+    if not unitTypeName then
+        return {category = "unknown", threats = {infantry = 0, armor = 0, air = 0}, strength = 0}
+    end
+    
+    local classification = unitClassification[unitTypeName]
+    if classification then
+        return classification
+    end
+    
+    -- Default classification for unknown units
+    return {category = "unknown", threats = {infantry = 1, armor = 1, air = 0}, strength = 1}
+end
+
+function GroupCommander:detectNearbyUnits()
+    local leadUnitName = self.groupName .. "-1"
+    local leadUnit = Unit.getByName(leadUnitName)
+    
+    if not leadUnit or not leadUnit:isExist() then
+        return {allies = {}, threats = {}}
+    end
+    
+    local myCoalition = self.coalition
+    local enemyCoalition = myCoalition == "red" and "blue" or "red"
+    
+    -- Get all units in zone (can't filter by coalition in makeUnitTable or LOS breaks)
+    local allUnits = mist.makeUnitTable({"[all]"})
+    local unitsInZone = mist.getUnitsInMovingZones(
+        allUnits,
+        {leadUnitName},
+        detectionRadius,
+        "cylinder"
+    )
+    
+    -- Extract ally and threat names by filtering on coalition
+    local allies = {}
+    local threats = {}
+    for _, unitObject in ipairs(unitsInZone) do
+        if unitObject and unitObject.getName then
+            local name = unitObject:getName()
+            if name ~= leadUnitName then
+                local unit = Unit.getByName(name)
+                if unit and unit:isExist() then
+                    local unitCoalition = unit:getCoalition()
+                    -- Coalition: 0=neutral, 1=red, 2=blue
+                    local coalitionName = unitCoalition == 1 and "red" or (unitCoalition == 2 and "blue" or "neutral")
+                    
+                    if coalitionName == myCoalition then
+                        table.insert(allies, name)
+                    elseif coalitionName == enemyCoalition then
+                        table.insert(threats, name)
+                    end
+                end
+            end
+        end
+    end
+    
+    return {allies = allies, threats = threats}
+end
+
+function GroupCommander:filterThreatsWithLOS(threatNames)
+    if not threatNames or #threatNames == 0 then
+        return {}
+    end
+    
+    -- Get all units in our group to use as observers
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        return {}
+    end
+    
+    local groupUnits = group:getUnits()
+    local observerNames = {}
+    for _, unit in ipairs(groupUnits) do
+        if unit and unit:isExist() then
+            table.insert(observerNames, unit:getName())
+        end
+    end
+    
+    if #observerNames == 0 then
+        return {}
+    end
+    
+    -- Use mist.getUnitsLOS: observers, observerAlt, targets, targetAlt
+    local losResults = mist.getUnitsLOS(
+        observerNames,  -- All observers, not just the first
+        2,              -- Observer altitude offset (2m above unit position)
+        threatNames,
+        2               -- Target altitude offset (2m above unit position)
+    )
+    
+    if not losResults or #losResults == 0 then
+        return {}
+    end
+    
+    -- Collect all visible units from all observers
+    -- losResults is an array where each element has ["unit"] (observer) and ["vis"] (array of visible threats)
+    local visibleThreatsSet = {}
+    for _, observerResult in ipairs(losResults) do
+        local observerUnit = observerResult.unit
+        
+        if observerUnit and observerUnit:isExist() and observerResult.vis then
+            for _, threatUnit in ipairs(observerResult.vis) do
+                if threatUnit and threatUnit:isExist() then
+                    local distance = self:calculateDistanceBetweenUnits(observerUnit, threatUnit)
+                    local coefficient = self:calculateDetectionCoefficient(distance)
+                    
+                    -- Use coefficient as probability to add unit to threats
+                    if math.random() < coefficient then
+                        visibleThreatsSet[threatUnit:getName()] = true
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Convert set to array
+    local visibleThreats = {}
+    for unitName, _ in pairs(visibleThreatsSet) do
+        table.insert(visibleThreats, unitName)
+    end
+    
+    return visibleThreats
+end
+
+function GroupCommander:getOwnPosition()
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        return nil
+    end
+    
+    local units = group:getUnits()
+    if #units == 0 then
+        return nil
+    end
+    
+    -- Use first unit position as group position
+    local unit = units[1]
+    if unit and unit:isExist() then
+        return unit:getPosition().p
+    end
+    
+    return nil
+end
+
+function GroupCommander:getOwnUnitNames()
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        return {}
+    end
+    
+    local units = group:getUnits()
+    local unitNames = {}
+    for _, unit in ipairs(units) do
+        if unit and unit:isExist() then
+            table.insert(unitNames, unit:getName())
+        end
+    end
+    return unitNames
+end
+
+function GroupCommander:getStatus()
+    local status = {
+        -- ammoState = self:getAmmmoLowState(),
+        -- cohesion = self:getCohesion(),
+        -- destination = self.destination,
+        -- disposition = self.disposition,
+        -- fuelState = self:getFuelLowState(),
+        -- groupName = self.groupName,
+        -- knownThreats = self:getThreatReport(),
+        -- repairState = self:getRepairNeededState(),
+    }
+    return status
+end
+
+function GroupCommander:getUnitTypeName(unit)
+    if not unit or not unit:isExist() then
+        return nil
+    end
+    
+    local typeName = unit:getTypeName()
+    return typeName
+end
+
+function GroupCommander:issueMoveOrder(point)
+    env.info("Issuing move order for " .. self.groupName .. " to x=" .. point.x .. " z=" .. point.z)
+    
+    -- Verify group exists
+    local group = Group.getByName(self.groupName)
+    if not group then
+        env.info("ERROR: Group " .. self.groupName .. " does not exist!")
+        return
+    end
+    
+    if not group:isExist() then
+        env.info("ERROR: Group " .. self.groupName .. " is not alive!")
+        return
+    end
+    
+    local destination = {
+        point = point,
+        radius = 100
+    }
+    local formation = "Cone"
+    local heading = 0
+    local speed = 100
+    local ignoreRoads = false
+    
+    mist.groupToPoint(
+        self.groupName,
+        destination,
+        formation,
+        heading,
+        speed,
+        ignoreRoads
+    )
 end
 
 function GroupCommander:setALR(riskLevel)
@@ -662,6 +695,11 @@ function GroupCommander:setDisposition(dispositionType)
     self.disposition = dispositionType
 end
 
+function GroupCommander:setFormation(formationType)
+    env.info("Setting formation to " .. formationType .. " for group of color " .. self.color)
+    self.formationType = formationType
+end
+
 function GroupCommander:setROE(roeLevel)
     env.info("Setting ROE to " .. roeLevel .. " for group " .. self.groupName)
     local group = Group.getByName(self.groupName)
@@ -672,11 +710,6 @@ function GroupCommander:setROE(roeLevel)
     else
         env.info("ERROR: Cannot set ROE, group " .. self.groupName .. " does not exist")
     end
-end
-
-function GroupCommander:setFormation(formationType)
-    env.info("Setting formation to " .. formationType .. " for group of color " .. self.color)
-    self.formationType = formationType
 end
 
 return GroupCommander
