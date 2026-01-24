@@ -1,3 +1,5 @@
+local constants = require("constants")
+local taskTypes = constants.taskTypes
 
 local GroupCommander = require("group-commander")
 local StrategicCommander = require("strategic-commander")
@@ -36,6 +38,21 @@ mist.scheduleFunction(
     {},
     timer.getTime() + 5  -- Wait 5 seconds after mission start
 )
+
+stratBlue.objectives = {
+    {
+        type = taskTypes.DEFEND,
+        position = blueDefendPosition,
+        radius = 500, -- meters
+    }
+}
+
+stratRed.objectives = {
+    {
+        type = taskTypes.RESERVE,
+        position = redRepositionPosition,
+    }
+}
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge
