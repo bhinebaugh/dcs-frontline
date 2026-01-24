@@ -23,6 +23,7 @@ function ControlZones.new(namedZones, groundTemplates)
     self.groupCounter = 1
     self.commanders = {}
     self.markerCounter = 9990
+    self.frontlineMarkers = {blue = {}, red = {}} --should really be connected to :addCommander
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -35,6 +36,7 @@ function ControlZones.new(namedZones, groundTemplates)
     }
     self.groupOfUnit = {}
     self.groundGroups = {}
+    self.groupsByZone = {}
     self.centroid = {}
     return self
 end
@@ -110,6 +112,10 @@ function ControlZones:getZone(name)
     return self.zonesByName[name]
 end
 
+function ControlZones:getGroupsInZone(zoneName)
+    return self.groupsByZone[zoneName]
+end
+
 function ControlZones:changeZoneOwner(name, newOwner)
     local formerOwner = self.owner[name]
     if newOwner == formerOwner then
@@ -134,13 +140,14 @@ function ControlZones:checkOwnership(time)
     -- if units in a neutral zone, gain control 
     -- if both colors in zone, no change
     env.info("checking zone control......")
-    for zoneName, _ in pairs(self.zoneByName) do
+    for zoneName, _ in pairs(self.zonesByName) do
         self:updateZoneOwner(zoneName)
     end
     return time + 30
 end
 
 function ControlZones:updateZoneOwner(zoneName)
+    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
@@ -562,8 +569,17 @@ end
 
 function ControlZones:drawFrontline(color)
     self.front[color] = self:getPerimeterEdges(color)
+    --first erase any existing lines
+    if self.frontlineMarkers[color] then
+        for _, id in pairs(self.frontlineMarkers[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.frontlineMarkers[color] = {}
+    end
+    --then draw a line for each edge of the current color's front
     for _, zonePoints in pairs(self.front[color]) do
         local lineId = self:getNewMarker()
+        table.insert(self.frontlineMarkers[color], lineId)
         local lineColor = rgb[color]
         local heading
         local z1, z2 = self:getZone(zonePoints.p1), self:getZone(zonePoints.p2)
@@ -576,6 +592,7 @@ function ControlZones:drawFrontline(color)
         local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
         trigger.action.lineToAll(-1, lineId, p1A, p2A, lineColor, 1)
         lineId = self:getNewMarker()
+        table.insert(self.frontlineMarkers[color], lineId)
         trigger.action.lineToAll(-1, lineId, p1B, p2B, lineColor, 1) --double the line for better visibility
     end
 end
@@ -587,13 +604,8 @@ function ControlZones:drawDirective(fromZone, toZone)
     local fill = color
     local originPoint = self:getZone(fromZone).point
     local targetPoint = self:getZone(toZone).point
-    env.info("origin point")
-    env.info(mist.utils.tableShow(originPoint))
     local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
     local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-    env.info("heading")
-    env.info(heading)
-
     local distance = 1000
     local lineStart = mist.projectPoint(originPoint, distance, heading)
     local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
@@ -601,7 +613,7 @@ function ControlZones:drawDirective(fromZone, toZone)
     return true
 end
 
-function ControlZones:spawnGroupInZone(zoneName, color, template)
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
     local zn = self:getZone(zoneName)
     local unitSet = {}
     local xoff = math.random(-40, 40)
@@ -611,7 +623,6 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self:getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
@@ -626,27 +637,118 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         origin = zoneName,
         color = color,
     }
+    if not self.groupsByZone[zoneName] then
+        self.groupsByZone[zoneName] = { groupName }
+    else
+        table.insert(self.groupsByZone[zoneName], groupName)
+    end
     return groupName
+end
+
+function ControlZones:processDeadUnit(unitName)
+    env.info("control zone: unit "..unitName.." is dead")
+    local grpName = self.groupOfUnit[unitName]
+    local grpColor = self.groundGroups[grpName].color
+    env.info("    from group "..grpName.." of "..grpColor)
+    if mist.groupIsDead(grpName) then --error if player
+        env.info("    >>> GROUP LOST all units of "..grpName.." are dead")
+        self.commanders[grpColor]:registerGroupLost(grpName)
+        local originZone = self.groundGroups[grpName].origin
+        self:updateZoneOwner(originZone)
+    else
+        self.commanders[grpColor]:registerUnitLost(unitName, grpName)
+    end
+end
+
+function ControlZones:constructTask(params)
+    local task = {}
+    local pt = params.destination.point
+
+    local route = {
+        ["points"] = {
+            [1] = {
+                type= AI.Task.WaypointType.TURNING_POINT,
+                x = pt.x,
+                y = pt.z,
+                speed = 100,
+                action = AI.Task.VehicleFormation.RANK
+            },
+            [2] = {
+                type= AI.Task.WaypointType.TURNING_POINT,
+                x = pt.x,
+                y = pt.z,
+                speed = 100,
+                action = AI.Task.VehicleFormation.RANK
+            },
+        }
+    }
+
+    --also mist.ground.buildWP or mist.groupToPoint(groupName, zoneName, ...)
+    local taskMove = {
+        id = 'Mission',
+        params = {
+            route = route,
+        }
+    }
+
+    task = taskMove
+    return task
+end
+
+function ControlZones:setGroupTask(groupName, task)
+    local group = Group.getByName(groupName)
+    if not group then
+        env.info("Not assigning task: no group "..groupName)
+        return false
+    end
+
+    group:getController():setTask(task)
+    --remove group from self.groupsByZone[]
+    return true
 end
 
 function ControlZones:populateZones()
     -- on first pass spawn basic template to hold zone,
     -- later reinforce zones prioritized by each commander
-    for _, color in pairs({"blue","red"}) do
-        local zones = self:getCluster(color)
-        for _, zoneName in pairs(zones) do
-            local r = math.random(#self.groundTemplates[color])
-            local group = self.groundTemplates[color][r]
-            self:spawnGroupInZone(zoneName, color, group)
+    for _, cmd in pairs(self.commanders) do
+        --a single group for each zone to start
+        local zones = self:getCluster(cmd.color)
+        local reinforcements = cmd:chooseZoneReinforcements(zones)
+        for zoneName, data in pairs(reinforcements) do
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+        end
+
+        --front zones get an additional group
+        local frontlineZones = self:getPerimeterZones(cmd.color)
+        reinforcements = cmd:chooseZoneReinforcements(frontlineZones)
+        for zoneName, data in pairs(reinforcements) do
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
         end
     end
 end
 
-function ControlZones:reinforceZones()
-        local selectedZones = self.commanders.blue:chooseZoneReinforcements()
-        for zoneName, template in pairs(selectedZones) do
-            self:spawnGroupInZone(zoneName, "blue", template)
+function ControlZones:requestOrders()
+    for _, cmd in pairs(self.commanders) do
+        local params = cmd:issueOrders()
+        if params then
+            env.info("    constructing task for "..params.group)
+            local task = self:constructTask(params)
+            self:setGroupTask(params.group, task)
+            self:drawDirective(params.origin.name, params.destination.name)
         end
+    end
+end
+
+function ControlZones:kickoff()
+    self:populateZones()
+    timer.scheduleFunction(
+        function(params)
+            params.context:requestOrders()
+            return timer.getTime() + 30
+        end,
+        {context = self},
+        timer.getTime() + 8
+    )
 end
 
 return ControlZones

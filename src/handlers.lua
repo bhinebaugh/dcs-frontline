@@ -4,8 +4,6 @@ UnitLostHandler.__index = UnitLostHandler
 function UnitLostHandler.new(cz)
     local self = setmetatable({}, UnitLostHandler)
     self.cz = cz
-    self.groupOfUnit = cz.groupOfUnit
-    self.groundGroups = cz.groundGroups
     return self
 end
 
@@ -16,17 +14,11 @@ function UnitLostHandler:onEvent(e)
     if not e then return end
     if world.event.S_EVENT_KILL == e.id then
         local unitName = e.target:getName()
+        --event initiator
         if unitName and not e.target:getPlayerName() then
-            local grpName = self.groupOfUnit[unitName]
-            if mist.groupIsDead(grpName) then --error if player
-                env.info(grpName.." is all dead now")
-                env.info(mist.utils.tableShow(self.groundGroups[grpName]))
-                local originZone = self.groundGroups[grpName].origin
-                env.info("updating ownership of "..originZone)
-                self.cz:updateZoneOwner(originZone)
-            end
+            --register reduced strength or loss with coalition command
+            self.cz:processDeadUnit(unitName)
         end
-        --register reduced strength or loss with coalition command
     end
 end
 

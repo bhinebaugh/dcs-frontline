@@ -49,7 +49,4 @@ world.addEventHandler(unitLostHandler)
 
 cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates.blue))
 cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates.red))
-cz.commanders.blue:chooseTarget()
-cz.commanders.red:chooseTarget()
-cz:populateZones()
-cz:reinforceZones()
+cz:kickoff()

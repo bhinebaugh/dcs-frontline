@@ -93,11 +93,7 @@ world.addEventHandler(unitLostHandler)
 
 cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates.blue))
 cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates.red))
-cz.commanders.blue:chooseTarget()
-cz.commanders.red:chooseTarget()
-cz:populateZones()
-cz:reinforceZones()
-
+cz:kickoff()
 end)
 __bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = {
@@ -109,18 +105,36 @@ local rgb = {
 local groundTemplates = { --frontline, rear, farp
     red = {
         {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
-        {"BMP-2", "BTR-80", "GAZ-66", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
-        {"Ural-375", "Ural-375", "Ural-375", "GAZ-66", "Paratrooper RPG-16", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK", "Infantry AK" },
+        {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
+        {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
+        {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
     },
     blue = {
-        {"M 818", "M 818", "M 818", "Hummer"},
-        {"M 818", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M249" },
-        {"M-2 Bradley", "Hummer", "Hummer", "Soldier M4", "Soldier M4", "Soldier M4", "Soldier M4" },
+        {"Hummer", "M 818", "M 818", "M 818"},
+        {"M-113", "Hummer", "M 818", "M 818"},
+        {"M-113", "M-113", "Hummer", "Hummer"},
+        {"M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament", "Hummer"},
     }
+}
+
+local taskTypes = {
+    DEFEND = 1,
+    REINFORCE = 2,
+    RECON = 3,
+    ASSAULT = 4,
+    RESERVE = 5,
+    INDIRECT = 6,
+    AA = 7,
+}
+local statusTypes = {
+    HOLD = 1,
+    EN_ROUTE = 2,
 }
 
 return {
     rgb = rgb,
+    taskTypes = taskTypes,
+    statusTypes = statusTypes,
     groundTemplates = groundTemplates
 }
 
@@ -132,8 +146,6 @@ UnitLostHandler.__index = UnitLostHandler
 function UnitLostHandler.new(cz)
     local self = setmetatable({}, UnitLostHandler)
     self.cz = cz
-    self.groupOfUnit = cz.groupOfUnit
-    self.groundGroups = cz.groundGroups
     return self
 end
 
@@ -144,17 +156,11 @@ function UnitLostHandler:onEvent(e)
     if not e then return end
     if world.event.S_EVENT_KILL == e.id then
         local unitName = e.target:getName()
+        --event initiator
         if unitName and not e.target:getPlayerName() then
-            local grpName = self.groupOfUnit[unitName]
-            if mist.groupIsDead(grpName) then --error if player
-                env.info(grpName.." is all dead now")
-                env.info(mist.utils.tableShow(self.groundGroups[grpName]))
-                local originZone = self.groundGroups[grpName].origin
-                env.info("updating ownership of "..originZone)
-                self.cz:updateZoneOwner(originZone)
-            end
+            --register reduced strength or loss with coalition command
+            self.cz:processDeadUnit(unitName)
         end
-        --register reduced strength or loss with coalition command
     end
 end
 
@@ -164,6 +170,9 @@ return {
 
 end)
 __bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+local taskTypes = require("constants").taskTypes
+local statusTypes = require("constants").statusTypes
+
 local CoalitionCommander = {}
 CoalitionCommander.__index = CoalitionCommander
 
@@ -174,7 +183,15 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
     self.templates = groundTemplates
-    self.groups = {}
+    self.groups = {} -- e.g. name location task
+    self.groupsByZone = {}
+    for _, name in pairs(self.map.allZones) do
+        self.groupsByZone[name] = {}
+    end
+    self.groupsByTask = {}
+    for i, j in pairs(taskTypes) do
+        self.groupsByTask[j] = {}
+    end
     self.operations = {
         active = {},
         history = {},
@@ -185,44 +202,163 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     return self
 end
 
-function CoalitionCommander:chooseZoneReinforcements()
+function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneName)
+    self.groups[groupName] = {
+        name = groupName,
+        template = templateID,
+        strength = #self.templates[templateID],
+        task = task or taskTypes.DEFEND,
+        location = zoneName,
+        status = statusTypes.HOLD, -- preparing, en route, complete/at destination
+        target = target or nil,
+        origin = zoneName, --or point, or other value
+    }
+    table.insert(self.groupsByTask[task], groupName)
+    if zoneName then
+        table.insert(self.groupsByZone[zoneName], groupName)
+    end
+end
+function CoalitionCommander:updateGroup(groupName, params)
+    local grp = self.groups[groupName]
+    for k, v in pairs(params) do
+        if k == "task" then
+            local oldTask = grp.task
+            local newTask = v
+            for i, g in pairs(self.groupsByTask[oldTask]) do
+                if g == groupName then table.remove(self.groupsByTask[oldTask], i) end
+            end
+            table.insert(self.groupsByTask[newTask], groupName)
+            --if groups was not already EN_ROUTE...
+            if newTask == taskTypes.ASSAULT or newTask == taskTypes.REINFORCE or newTask == taskTypes.RECON then
+                grp.status = statusTypes.EN_ROUTE
+                for i, g in pairs(self.groupsByZone[grp.location]) do
+                    if g == groupName then table.remove(self.groupsByZone[grp.location], i) end
+                end
+            end
+        end
+        self.groups[groupName][k] = v
+    end
+end
+function CoalitionCommander:removeGroup(groupName)
+    local task = self.groups[groupName].task
+    local zone = self.groups[groupName].location
+    local status = self.groups[groupName].status
+    for i, g in pairs(self.groupsByTask[task]) do
+        if g == groupName then table.remove(self.groupsByTask[task], i) end
+    end
+    if zone and status == statusTypes.HOLD then
+        for i, g in pairs(self.groupsByZone[zone]) do
+            if g == groupName then table.remove(self.groupsByZone[zone], i) end
+        end
+    end
+    self.groups[groupName] = nil
+end
+
+function CoalitionCommander:registerUnitLost(unitName, groupName)
+    env.info(self.coalition.." command: receiving report on "..unitName.." of "..groupName)
+    local grp = self.groups[groupName]
+    env.info("    "..self.coalition.." command lost "..unitName.." in assault on "..grp.target)
+    grp.strength = grp.strength - 1
+    env.info("    group strength is now "..grp.strength)
+end
+function CoalitionCommander:registerGroupLost(groupName)
+    env.info(self.coalition.." command: receiving report on "..groupName)
+    local grp = self.groups[groupName]
+    if grp then
+        env.info("    lost "..grp.name.." - assault on "..grp.target.." failed")
+        for i, op in pairs(self.operations.active) do
+            if op.group == groupName then
+                table.insert(self.operations.history, op)
+                self.operations.active[i] = nil
+                env.info("+++ updated operations list")
+                env.info(mist.utils.tableShow(self.operations.active))
+                env.info("--- past operations list")
+                env.info(mist.utils.tableShow(self.operations.history))
+            end
+        end
+        self:removeGroup(groupName)
+    else
+        env.info("    ("..groupName.." was already reported lost)")
+    end
+end
+
+function CoalitionCommander:chooseZoneReinforcements(zones)
     local reinforcements = {}
-    local frontZones = self.map:getPerimeterZones(self.color)
-    for _, zoneName in pairs(frontZones) do
+    for _, zoneName in pairs(zones) do
         local r = math.random(#self.templates)
         local group = self.templates[r]
-        reinforcements[zoneName] = group
+        local groupName = zoneName.."-"..self.map:getNewGroupId()
+        reinforcements[zoneName] = {
+            groupName = groupName,
+            template = group
+        }
+        self:addGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
     end
     return reinforcements
 end
 
-function CoalitionCommander:chooseTarget()
-    local r = math.random(#self.map.front[self.coalition])
-    local randomBorderEdge = self.map.front[self.coalition][r]
-    local origin = randomBorderEdge.p1
-    local enemyNeighbors = self.map:getNeighbors(origin, self.opponent)
+function CoalitionCommander:designateAssault()
+    local frontlineReserves = {}
+    local frontZones = self.map:getPerimeterZones(self.color)
 
+    for _, zoneName in pairs(frontZones) do
+        local groupsInZone = self.groupsByZone[zoneName]
+        if #groupsInZone > 1 then
+            local defensive = 0
+            local zoneReserves = {}
+            for _, groupName in pairs(groupsInZone) do
+                if self.groups[groupName] and self.groups[groupName].task == taskTypes.DEFEND then
+                    defensive = defensive + 1
+                    table.insert(zoneReserves, groupName)
+                end
+            end
+            if #zoneReserves > 1 then
+                table.insert(frontlineReserves, {zone = zoneName, groups = zoneReserves})
+            end
+        end
+    end
+
+    if #frontlineReserves < 1 then
+        env.info("    no frontline zones have groups available for offensive tasking")
+        return nil
+    end
+    local randomReserves = frontlineReserves[math.random(#frontlineReserves)]
+
+    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent)
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
-    -- SpawnGroupInZone(origin, self.coalition)
-    table.insert(self.operations.active, {origin = origin, target = target, group = nil})
-    self.map:drawDirective(origin, target)
+
+    --for now, choose single group
+    if #randomReserves.groups > 1 then --can task multiple groups if available
+        env.info("    "..#randomReserves.groups.." groups available at "..randomReserves.zone)
+    end
+    local taskedGroup = randomReserves.groups[1]
+
+    self:updateGroup(taskedGroup, {task = taskTypes.ASSAULT, target = target})
+    table.insert(self.operations.active, {type = "assault", origin = randomReserves.zone, destination = target, group = taskedGroup})
+    env.info("    tasking "..taskedGroup.." to assault "..target)
+
+    return {
+        group = taskedGroup,
+        origin = self.map:getZone(randomReserves.zone),
+        destination = self.map:getZone(target),
+    }
+
 end
 
-function CoalitionCommander:launchAssault()
-    -- match available groups with active operation
-    if next(self.operations.active) == nil then
-        env.info("NO ACTIVE OPERATIONS no units tasks")
-        return false
+function CoalitionCommander:issueOrders()
+    env.info(self.color.." generating orders")
+    if #self.operations.active > 4 then --limit number of active operations
+        env.info("    pass (at capacity)")
+        return nil
     end
-    local op = self.operations.active[1]
-    env.info(mist.utils.tableShow(op))
-    op.group = self.map:spawnGroupInZone(op.origin, self.color, groundTemplates[self.color][1])
-    env.info("spawned group "..op.group)
-    local zn = self.map:getZone(op.target)
-    env.info("destination "..zn.x..", "..zn.y)
+    if math.random() < 0.5 then
+        env.info("    pass (random)")
+        return nil
+    end
 
-    -- local targetCord = getGroupPos('Ground-Target')
-    local targetCord = self.map:getZone('control-42').point
+    local params = self:designateAssault()
+
+    return params
 end
 
 return CoalitionCommander
@@ -254,6 +390,7 @@ function ControlZones.new(namedZones, groundTemplates)
     self.groupCounter = 1
     self.commanders = {}
     self.markerCounter = 9990
+    self.frontlineMarkers = {blue = {}, red = {}} --should really be connected to :addCommander
     -- self.maxima = {
     --     westmost = nil,
     --     eastmost = nil,
@@ -266,6 +403,7 @@ function ControlZones.new(namedZones, groundTemplates)
     }
     self.groupOfUnit = {}
     self.groundGroups = {}
+    self.groupsByZone = {}
     self.centroid = {}
     return self
 end
@@ -341,6 +479,10 @@ function ControlZones:getZone(name)
     return self.zonesByName[name]
 end
 
+function ControlZones:getGroupsInZone(zoneName)
+    return self.groupsByZone[zoneName]
+end
+
 function ControlZones:changeZoneOwner(name, newOwner)
     local formerOwner = self.owner[name]
     if newOwner == formerOwner then
@@ -365,13 +507,14 @@ function ControlZones:checkOwnership(time)
     -- if units in a neutral zone, gain control 
     -- if both colors in zone, no change
     env.info("checking zone control......")
-    for zoneName, _ in pairs(self.zoneByName) do
+    for zoneName, _ in pairs(self.zonesByName) do
         self:updateZoneOwner(zoneName)
     end
     return time + 30
 end
 
 function ControlZones:updateZoneOwner(zoneName)
+    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
@@ -793,8 +936,17 @@ end
 
 function ControlZones:drawFrontline(color)
     self.front[color] = self:getPerimeterEdges(color)
+    --first erase any existing lines
+    if self.frontlineMarkers[color] then
+        for _, id in pairs(self.frontlineMarkers[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.frontlineMarkers[color] = {}
+    end
+    --then draw a line for each edge of the current color's front
     for _, zonePoints in pairs(self.front[color]) do
         local lineId = self:getNewMarker()
+        table.insert(self.frontlineMarkers[color], lineId)
         local lineColor = rgb[color]
         local heading
         local z1, z2 = self:getZone(zonePoints.p1), self:getZone(zonePoints.p2)
@@ -807,6 +959,7 @@ function ControlZones:drawFrontline(color)
         local p2A, p2B = mist.projectPoint(z2.point, 2000, heading), mist.projectPoint(z2.point, 2200, heading)
         trigger.action.lineToAll(-1, lineId, p1A, p2A, lineColor, 1)
         lineId = self:getNewMarker()
+        table.insert(self.frontlineMarkers[color], lineId)
         trigger.action.lineToAll(-1, lineId, p1B, p2B, lineColor, 1) --double the line for better visibility
     end
 end
@@ -818,13 +971,8 @@ function ControlZones:drawDirective(fromZone, toZone)
     local fill = color
     local originPoint = self:getZone(fromZone).point
     local targetPoint = self:getZone(toZone).point
-    env.info("origin point")
-    env.info(mist.utils.tableShow(originPoint))
     local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
     local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-    env.info("heading")
-    env.info(heading)
-
     local distance = 1000
     local lineStart = mist.projectPoint(originPoint, distance, heading)
     local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
@@ -832,7 +980,7 @@ function ControlZones:drawDirective(fromZone, toZone)
     return true
 end
 
-function ControlZones:spawnGroupInZone(zoneName, color, template)
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
     local zn = self:getZone(zoneName)
     local unitSet = {}
     local xoff = math.random(-40, 40)
@@ -842,7 +990,6 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         xoff = xoff + math.random(-22, 22)
         yoff = yoff + math.random(-22, 22)
     end
-    local groupName = zoneName.."-ground-"..self:getNewGroupId()
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
@@ -857,27 +1004,118 @@ function ControlZones:spawnGroupInZone(zoneName, color, template)
         origin = zoneName,
         color = color,
     }
+    if not self.groupsByZone[zoneName] then
+        self.groupsByZone[zoneName] = { groupName }
+    else
+        table.insert(self.groupsByZone[zoneName], groupName)
+    end
     return groupName
+end
+
+function ControlZones:processDeadUnit(unitName)
+    env.info("control zone: unit "..unitName.." is dead")
+    local grpName = self.groupOfUnit[unitName]
+    local grpColor = self.groundGroups[grpName].color
+    env.info("    from group "..grpName.." of "..grpColor)
+    if mist.groupIsDead(grpName) then --error if player
+        env.info("    >>> GROUP LOST all units of "..grpName.." are dead")
+        self.commanders[grpColor]:registerGroupLost(grpName)
+        local originZone = self.groundGroups[grpName].origin
+        self:updateZoneOwner(originZone)
+    else
+        self.commanders[grpColor]:registerUnitLost(unitName, grpName)
+    end
+end
+
+function ControlZones:constructTask(params)
+    local task = {}
+    local pt = params.destination.point
+
+    local route = {
+        ["points"] = {
+            [1] = {
+                type= AI.Task.WaypointType.TURNING_POINT,
+                x = pt.x,
+                y = pt.z,
+                speed = 100,
+                action = AI.Task.VehicleFormation.RANK
+            },
+            [2] = {
+                type= AI.Task.WaypointType.TURNING_POINT,
+                x = pt.x,
+                y = pt.z,
+                speed = 100,
+                action = AI.Task.VehicleFormation.RANK
+            },
+        }
+    }
+
+    --also mist.ground.buildWP or mist.groupToPoint(groupName, zoneName, ...)
+    local taskMove = {
+        id = 'Mission',
+        params = {
+            route = route,
+        }
+    }
+
+    task = taskMove
+    return task
+end
+
+function ControlZones:setGroupTask(groupName, task)
+    local group = Group.getByName(groupName)
+    if not group then
+        env.info("Not assigning task: no group "..groupName)
+        return false
+    end
+
+    group:getController():setTask(task)
+    --remove group from self.groupsByZone[]
+    return true
 end
 
 function ControlZones:populateZones()
     -- on first pass spawn basic template to hold zone,
     -- later reinforce zones prioritized by each commander
-    for _, color in pairs({"blue","red"}) do
-        local zones = self:getCluster(color)
-        for _, zoneName in pairs(zones) do
-            local r = math.random(#self.groundTemplates[color])
-            local group = self.groundTemplates[color][r]
-            self:spawnGroupInZone(zoneName, color, group)
+    for _, cmd in pairs(self.commanders) do
+        --a single group for each zone to start
+        local zones = self:getCluster(cmd.color)
+        local reinforcements = cmd:chooseZoneReinforcements(zones)
+        for zoneName, data in pairs(reinforcements) do
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+        end
+
+        --front zones get an additional group
+        local frontlineZones = self:getPerimeterZones(cmd.color)
+        reinforcements = cmd:chooseZoneReinforcements(frontlineZones)
+        for zoneName, data in pairs(reinforcements) do
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
         end
     end
 end
 
-function ControlZones:reinforceZones()
-        local selectedZones = self.commanders.blue:chooseZoneReinforcements()
-        for zoneName, template in pairs(selectedZones) do
-            self:spawnGroupInZone(zoneName, "blue", template)
+function ControlZones:requestOrders()
+    for _, cmd in pairs(self.commanders) do
+        local params = cmd:issueOrders()
+        if params then
+            env.info("    constructing task for "..params.group)
+            local task = self:constructTask(params)
+            self:setGroupTask(params.group, task)
+            self:drawDirective(params.origin.name, params.destination.name)
         end
+    end
+end
+
+function ControlZones:kickoff()
+    self:populateZones()
+    timer.scheduleFunction(
+        function(params)
+            params.context:requestOrders()
+            return timer.getTime() + 30
+        end,
+        {context = self},
+        timer.getTime() + 8
+    )
 end
 
 return ControlZones
