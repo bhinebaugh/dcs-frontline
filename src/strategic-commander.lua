@@ -1,7 +1,9 @@
 local constants = require("constants")
 local GroupCommander = require("group-commander")
+local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
+local dispositionTypes = constants.dispositionTypes
 local oodaStates = constants.oodaStates
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
@@ -17,7 +19,7 @@ function StrategicCommander.new(config)
     self.color = config.color or "white"
     self.oodaState = oodaStates.OBSERVE
     self.oodaOffset = math.random() * oodaInterval
-    self.threats = {}
+    self.threatTracker = ThreatTracker.new(self.color .. "StrategicCommander")
     self.objectives = {}
     
     mist.scheduleFunction(
@@ -49,7 +51,7 @@ function StrategicCommander:observe()
     env.info(self.color .. "StrategicCommander: OBSERVE")
     -- Known own force positions, status, and times
     -- Known enemy force positions, status, and times
-    self.threats = self:getKnownThreats()
+    self:aggregateThreatsFromGroups()
     -- Control zone statuses
     -- Existing objectives and their statuses
     -- Historical objectives and outcomes
@@ -76,11 +78,15 @@ function StrategicCommander:decide()
     self.retreatingGroups = {}
     for _, commander in pairs(ownGroupCommanders) do
         local status = commander:getStatus()
-        if status.roe == roe.RETREAT then
+        if status.disposition == dispositionTypes.RETREAT then
             table.insert(self.retreatingGroups, commander)
             table.remove(ownGroupCommanders, _)
         end
     end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #self.retreatingGroups .. " retreating groups."
+    )
 
     -- Reserves to reinforce threatened forces
     self.reinforcementGroups = {}
@@ -111,25 +117,23 @@ function StrategicCommander:decide()
             end
         end
     end
+    env.info(
+        self.color .. "StrategicCommander: Assigned " ..
+        #self.reinforcementGroups .. " reinforcement groups."
+    )
 
     -- Low supply groups to resupply points
     -- Reconnaissance to gather needed intelligence
     -- Reposition for coordinated action on objectives
+    self.repositioningGroups = {}
     for _, commander in pairs(ownGroupCommanders) do
-        -- Assign each remaining commander to act on primary objective
-        if self.prioirtyObjective then
-            env.info(
-                self.color .. "StrategicCommander: ordering " ..
-                commander.name .. " to act on objective " ..
-                self.prioirtyObjective.type
-            )
-            commander:issueOrder({
-                alr = alr.MEDIUM,
-                position = self.prioirtyObjective.position,
-                type = self.prioirtyObjective.type,
-            })
-        end
+        table.insert(self.repositioningGroups, commander)
+        table.remove(ownGroupCommanders, _)
     end
+    env.info(
+        self.color .. "StrategicCommander: Assigned " ..
+        #self.repositioningGroups .. " repositioning groups."
+    )
 
     -- Offensive actions on objectives
     -- Logistics to resupply points needing replenishment
@@ -156,6 +160,33 @@ function StrategicCommander:act()
             type = taskTypes.REINFORCE,
         })
     end
+
+    for _, commander in pairs(self.repositioningGroups) do
+        -- Assign each remaining commander to act on primary objective
+        if self.prioirtyObjective then
+            env.info(
+                self.color .. "StrategicCommander: ordering " ..
+                commander.groupName .. " to act on objective " ..
+                self.prioirtyObjective.type
+            )
+            
+            -- Push relevant threat intel before issuing order
+            local relevantThreats = self:getThreatsNearPosition(
+                self.prioirtyObjective.position, 
+                3000  -- 3km radius
+            )
+            if relevantThreats then
+                commander:updateThreatIntel(relevantThreats)
+            end
+            
+            commander:issueOrder({
+                alr = alr.MEDIUM,
+                position = self.prioirtyObjective.position,
+                radius = self.prioirtyObjective.radius,
+                type = self.prioirtyObjective.type,
+            })
+        end
+    end
 end
 
 function StrategicCommander:assesObjective(objective)
@@ -173,7 +204,7 @@ end
 
 function StrategicCommander:assessObjectives()
     local highestProbabilityObjective = nil
-    local highestProbability = 0
+    local highestProbability = -math.huge
     for _, objective in pairs(self.objectives) do
         -- Evaluate each objective's likelihood of success
         -- Update objective status accordingly
@@ -191,19 +222,15 @@ function StrategicCommander:assessObjectives()
     return highestProbabilityObjective
 end
 
-function StrategicCommander:getKnownThreats()
+function StrategicCommander:aggregateThreatsFromGroups()
+    -- Aggregate threats from all group commanders using mergeThreatIntel
     local groupCommanders = self:getOwnGroupCommanders()
-    local threats = {}
-
+    
     for _, commander in pairs(groupCommanders) do
         local status = commander:getStatus()
-        for _, threat in pairs(status.threats) do
-            threat.sightedAt = timer.getTime()
-            threats[threat.name] = threat
-        end
+        -- Merge each group's threats into strategic view
+        self.threatTracker:mergeThreatIntel(status.threats)
     end
-
-    return threats
 end
 
 function StrategicCommander:getOwnGroupCommanders()
@@ -227,12 +254,15 @@ end
 
 function StrategicCommander:getThreatsNearPosition(position, radius)
     local nearbyThreats = {}
-    for _, threat in pairs(self.threats) do
+    local allThreats = self.threatTracker:getThreats()
+    
+    for unitName, threat in pairs(allThreats) do
         local dist = mist.vec.mag(mist.vec.sub(threat.position, position))
         if dist <= radius then
-            table.insert(nearbyThreats, threat)
+            nearbyThreats[unitName] = threat
         end
     end
+    
     return nearbyThreats
 end
 
