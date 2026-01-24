@@ -10,6 +10,7 @@ local GroupCommander = {}
 GroupCommander.__index = GroupCommander
 
 local oodaInterval = 10.0 -- seconds
+local detectionRadius = 5000 -- meters
 
 function GroupCommander.new(groupName, config)
     local self = setmetatable({}, GroupCommander)
@@ -53,7 +54,7 @@ function GroupCommander:detectNearbyUnits()
     local unitsInZone = mist.getUnitsInMovingZones(
         allUnits,
         {leadUnitName},
-        15000,
+        detectionRadius,
         "cylinder"
     )
     
@@ -81,6 +82,27 @@ function GroupCommander:detectNearbyUnits()
     end
     
     return {allies = allies, threats = threats}
+end
+
+function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
+    local pos1 = unit1:getPosition().p
+    local pos2 = unit2:getPosition().p
+    return mist.utils.get2DDist(pos1, pos2)
+end
+
+function GroupCommander:calculateDetectionCoefficient(distance)
+    -- At half detectionRadius (1000m): coefficient = 1.0
+    -- At full detectionRadius (2000m): coefficient = 0.2
+    -- Linear interpolation between these points
+    local halfRadius = detectionRadius / 2
+    
+    if distance <= halfRadius then
+        return 1.0
+    else
+        -- Linear interpolation from 1.0 at halfRadius to 0.2 at detectionRadius
+        local t = (distance - halfRadius) / (detectionRadius - halfRadius)
+        return 1.0 - (t * 0.8) -- 1.0 - 0.8 = 0.2 at full distance
+    end
 end
 
 function GroupCommander:filterThreatsWithLOS(threatNames)
@@ -119,12 +141,21 @@ function GroupCommander:filterThreatsWithLOS(threatNames)
     end
     
     -- Collect all visible units from all observers
+    -- losResults is an array where each element has ["unit"] (observer) and ["vis"] (array of visible threats)
     local visibleThreatsSet = {}
     for _, observerResult in ipairs(losResults) do
-        if observerResult.vis then
-            for _, visibleUnit in ipairs(observerResult.vis) do
-                if visibleUnit.getName then
-                    visibleThreatsSet[visibleUnit:getName()] = true
+        local observerUnit = observerResult.unit
+        
+        if observerUnit and observerUnit:isExist() and observerResult.vis then
+            for _, threatUnit in ipairs(observerResult.vis) do
+                if threatUnit and threatUnit:isExist() then
+                    local distance = self:calculateDistanceBetweenUnits(observerUnit, threatUnit)
+                    local coefficient = self:calculateDetectionCoefficient(distance)
+                    
+                    -- Use coefficient as probability to add unit to threats
+                    if math.random() < coefficient then
+                        visibleThreatsSet[threatUnit:getName()] = true
+                    end
                 end
             end
         end
@@ -528,7 +559,7 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
         -- Move away from threats
         moveDistance = 2000  -- 2km retreat
     else
-        -- Move toward threats (assault)
+        -- Move toward threats (advance)
         moveDistance = -1000  -- 1km advance (negative to move toward)
     end
     
@@ -560,7 +591,7 @@ function GroupCommander:decide()
     
     -- Decision thresholds
     local retreatThreshold = 0.6
-    local assaultThreshold = 1.5
+    local advanceThreshold = 1.5
     local maxAcceptableVulnerability = 20.0
     
     local threatCenter = self:calculateThreatCenter()
@@ -579,9 +610,9 @@ function GroupCommander:decide()
         self:setDisposition(dispositionTypes.RETREAT)
         self.destination = self:calculateDestinationRelativeToThreats(threatCenter, true)
         
-    elseif strengthRatio >= assaultThreshold and vulnerability < maxAcceptableVulnerability * 0.5 then
-        env.info(self.groupName .. " DECIDE: ASSAULT")
-        self:setDisposition(dispositionTypes.ASSAULT)
+    elseif strengthRatio >= advanceThreshold and vulnerability < maxAcceptableVulnerability * 0.5 then
+        env.info(self.groupName .. " DECIDE: ADVANCE")
+        self:setDisposition(dispositionTypes.ADVANCE)
         self.destination = self:calculateDestinationRelativeToThreats(threatCenter, false)
         
     else
@@ -603,7 +634,7 @@ end
 
 function GroupCommander:act()
     -- Set ROE based on disposition
-    if self.disposition == dispositionTypes.ASSAULT then
+    if self.disposition == dispositionTypes.ADVANCE then
         self:setROE(roe.WEAPON_FREE)
     elseif self.disposition == dispositionTypes.RETREAT then
         self:setROE(roe.RETURN_FIRE)
@@ -615,8 +646,8 @@ function GroupCommander:act()
         self:setROE(roe.RETURN_FIRE)
     end
     
-    -- Only issue move orders for ASSAULT and RETREAT (not HOLD or DEFEND)
-    if self.destination and (self.disposition == dispositionTypes.ASSAULT or self.disposition == dispositionTypes.RETREAT) then
+    -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
+    if self.destination and (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
         self:issueMoveOrder(self.destination)
     end
 end

@@ -10,7 +10,8 @@ while getopts "c" opt; do
 done
 shift $((OPTIND-1))
 
-INPUT_PATH=src/frontline.lua
+INPUT_PATH=src/sandbox.lua
+# INPUT_PATH=src/frontline.lua
 # TEMP_PATH=".temp.lua"
 TEMP_PATH=bundled.lua
 

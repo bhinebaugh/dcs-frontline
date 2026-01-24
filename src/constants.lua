@@ -5,6 +5,7 @@ local acceptableLevelsOfRisk = {
 }
 
 local dispositionTypes = {
+    ADVANCE = "Advance",
     ASSAULT = "Assault",
     DEFEND = "Defend",
     EVADE = "Evade",
