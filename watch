@@ -1,3 +1,17 @@
 #! /bin/sh
 
-npx nodemon --watch "." --ignore "**/bundled.lua" --ext lua --exec "sh ./build frontline.lua"
+# Parse flags
+INPUT_FLAG=""
+OUTPUT_FLAG=""
+IGNORE_PATTERN="**/bundled.lua"
+
+while getopts "i:o:" opt; do
+  case $opt in
+    i) INPUT_FLAG="-i $OPTARG" ;;
+    o) OUTPUT_FLAG="-o $OPTARG"; IGNORE_PATTERN="**/$OPTARG" ;;
+    *) echo "Usage: $0 [-i input-file] [-o output-file]" && exit 1 ;;
+  esac
+done
+shift $((OPTIND-1))
+
+npx nodemon --watch "." --ignore "$IGNORE_PATTERN" --ext lua --exec "sh ./build $INPUT_FLAG $OUTPUT_FLAG"

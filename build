@@ -1,23 +1,23 @@
 #! /bin/sh
 
-# Parse flags
+# Set defaults
+INPUT_PATH=src/frontline.lua
+TEMP_PATH=bundled.lua
 COPY_TO_CLIPBOARD=false
-while getopts "c" opt; do
+
+# Parse flags
+while getopts "ci:o:" opt; do
   case $opt in
     c) COPY_TO_CLIPBOARD=true ;;
-    *) echo "Usage: $0 [-c] <input-file>" && exit 1 ;;
+    i) INPUT_PATH="$OPTARG" ;;
+    o) TEMP_PATH="$OPTARG" ;;
+    *) echo "Usage: $0 [-c] [-i input-file] [-o output-file]" && exit 1 ;;
   esac
 done
 shift $((OPTIND-1))
-
-INPUT_PATH=src/frontline.lua
-# TEMP_PATH=".temp.lua"
-TEMP_PATH=bundled.lua
 
 npx luabundler bundle -p "./src/?.lua" -o $TEMP_PATH $INPUT_PATH
 
 if [ "$COPY_TO_CLIPBOARD" = true ]; then
   cat $TEMP_PATH | clip
 fi
-
-# rm $TEMP_PATH
