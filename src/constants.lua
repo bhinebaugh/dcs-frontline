@@ -52,8 +52,9 @@ local taskTypes = {
 local threatStatus = {
     OBSERVED = "Observed",      -- Currently in LOS
     SUSPECTED = "Suspected",    -- Not currently visible but believed present
-    UNCONFIRMED = "Unconfirmed", -- Expected position checked, not found
-    ELIMINATED = "Eliminated"   -- Confirmed destroyed or departed
+    UNCONFIRMED = "Unconfirmed", -- Position checked, not found
+    LOST = "Lost",              -- Unconfirmed for >5 minutes, presumed gone
+    ELIMINATED = "Eliminated"   -- Confirmed destroyed (BDA)
 }
 
 local statusTypes = {
@@ -163,6 +164,7 @@ return {
     oodaStates = oodaStates,
     rgb = rgb,
     taskTypes = taskTypes,
+    threatStatus = threatStatus,
     statusTypes = statusTypes,
     unitClassification = unitClassification,
     vulnerabilityMatrix = vulnerabilityMatrix
