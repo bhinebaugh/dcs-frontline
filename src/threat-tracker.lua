@@ -27,6 +27,7 @@ function ThreatTracker:updateThreats(observedUnits)
         
         if not threat then
             -- New threat
+            env.info(self.observerName .. " ThreatTracker: New threat detected - " .. unitData.name .. " (OBSERVED)")
             self.threats[unitData.name] = {
                 name = unitData.name,
                 position = unitData.position,
@@ -42,9 +43,13 @@ function ThreatTracker:updateThreats(observedUnits)
             }
         else
             -- Update existing threat
+            local oldStatus = threat.status
             threat.position = unitData.position
             threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
             threat.lastSighting = currentTime
+            if oldStatus ~= threatStatus.OBSERVED then
+                env.info(self.observerName .. " ThreatTracker: " .. unitData.name .. " status changed from " .. oldStatus .. " to OBSERVED")
+            end
             
             -- Add new sighting
             table.insert(threat.sightings, {
@@ -60,6 +65,12 @@ end
 -- Returns: table indexed by unit name
 function ThreatTracker:getThreats()
     return self.threats
+end
+
+-- Get a single threat by name
+-- Returns: threat data or nil
+function ThreatTracker:getThreat(unitName)
+    return self.threats[unitName]
 end
 
 -- Merge threat intel from external source (e.g., strategic commander)
@@ -107,23 +118,28 @@ end
 
 -- Mark a threat with a specific status
 -- unitName: name of the threat unit
--- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, ELIMINATED)
+-- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, LOST, ELIMINATED)
 function ThreatTracker:markThreatStatus(unitName, status)
     local threat = self.threats[unitName]
     if threat then
+        local oldStatus = threat.status
         threat.status = status
+        if oldStatus ~= status then
+            threat.statusChangedAt = timer.getTime()
+            env.info(self.observerName .. " ThreatTracker: " .. unitName .. " status changed from " .. oldStatus .. " to " .. status)
+        end
     end
 end
 
 -- Get threats we would expect to see in an area
 -- position: {x, y, z} position to check
 -- radius: search radius in meters
--- Returns: array of threat names that are in area but not ELIMINATED
+-- Returns: array of threat names that are in area but not LOST or ELIMINATED
 function ThreatTracker:expectedThreats(position, radius)
     local expected = {}
     
     for unitName, threat in pairs(self.threats) do
-        if threat.status ~= threatStatus.ELIMINATED then
+        if threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST then
             local dx = threat.position.x - position.x
             local dz = threat.position.z - position.z
             local distance = math.sqrt(dx * dx + dz * dz)
@@ -145,6 +161,41 @@ function ThreatTracker:count()
         count = count + 1
     end
     return count
+end
+
+-- Age threats and progress their status based on time
+-- UNCONFIRMED for >5 minutes → LOST
+-- LOST or ELIMINATED for >10 minutes → removed
+function ThreatTracker:ageThreats()
+    local currentTime = timer.getTime()
+    local toRemove = {}
+    
+    for unitName, threat in pairs(self.threats) do
+        -- Track when status was last changed
+        if not threat.statusChangedAt then
+            threat.statusChangedAt = threat.lastSighting
+        end
+        
+        local timeInStatus = currentTime - threat.statusChangedAt
+        
+        -- Progress UNCONFIRMED → LOST after 5 minutes
+        if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
+            env.info(self.observerName .. " ThreatTracker: " .. unitName .. " status changed from Unconfirmed to Lost (5+ minutes)")
+            threat.status = threatStatus.LOST
+            threat.statusChangedAt = currentTime
+        end
+        
+        -- Remove LOST or ELIMINATED threats after 10 minutes
+        if (threat.status == threatStatus.LOST or threat.status == threatStatus.ELIMINATED) and timeInStatus > 600 then
+            env.info(self.observerName .. " ThreatTracker: Removing " .. unitName .. " (" .. threat.status .. " for 10+ minutes)")
+            table.insert(toRemove, unitName)
+        end
+    end
+    
+    -- Remove threats marked for removal
+    for _, unitName in ipairs(toRemove) do
+        self.threats[unitName] = nil
+    end
 end
 
 -- Cull threats that haven't been observed recently (for future use)

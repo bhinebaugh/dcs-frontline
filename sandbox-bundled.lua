@@ -138,6 +138,7 @@ function StrategicCommander.new(config)
     self.oodaOffset = math.random() * oodaInterval
     self.threatTracker = ThreatTracker.new(self.color .. "StrategicCommander")
     self.objectives = {}
+    self.lastIssuedOrders = {}
     
     mist.scheduleFunction(
         StrategicCommander.oodaTick,
@@ -208,28 +209,35 @@ function StrategicCommander:decide()
     -- Reserves to reinforce threatened forces
     self.reinforcementGroups = {}
     for _, retreatingCommander in pairs(self.retreatingGroups) do
-        local retreatPosition = retreatingCommander:getStatus().retreatPosition
-        local nearestReinforcement = nil
-        local nearestDistance = math.huge
-        for _, commander in pairs(ownGroupCommanders) do
-            local status = commander:getStatus()
-            local dist = mist.vec.mag(
-                mist.vec.sub(status.position, retreatPosition)
-            )
-            if dist < nearestDistance then
-                nearestDistance = dist
-                nearestReinforcement = commander
+        local status = retreatingCommander:getStatus()
+        local retreatPosition = status.destination or status.position
+        
+        -- Skip if we can't determine a retreat position
+        if not retreatPosition then
+            env.info(self.color .. "StrategicCommander: Skipping reinforcement for " .. retreatingCommander.groupName .. " (no position available)")
+        else
+            local nearestReinforcement = nil
+            local nearestDistance = math.huge
+            for _, commander in pairs(ownGroupCommanders) do
+                local commanderStatus = commander:getStatus()
+                local dist = mist.vec.mag(
+                    mist.vec.sub(commanderStatus.position, retreatPosition)
+                )
+                if dist < nearestDistance then
+                    nearestDistance = dist
+                    nearestReinforcement = commander
+                end
             end
-        end
-        if nearestReinforcement then
-            table.insert(self.reinforcementGroups, {
-                reinforcingCommander = nearestReinforcement,
-                retreatingCommander = retreatingCommander,
-                retreatPosition = retreatPosition
-            })
-            for i, commander in pairs(ownGroupCommanders) do
-                if commander == nearestReinforcement then
-                    table.remove(ownGroupCommanders, i)
+            if nearestReinforcement then
+                table.insert(self.reinforcementGroups, {
+                    reinforcingCommander = nearestReinforcement,
+                    retreatingCommander = retreatingCommander,
+                    retreatPosition = retreatPosition
+                })
+                for i, commander in pairs(ownGroupCommanders) do
+                    if commander == nearestReinforcement then
+                        table.remove(ownGroupCommanders, i)
+                    end
                 end
             end
         end
@@ -265,43 +273,73 @@ function StrategicCommander:act()
         local retreatingCommander = retreatPair.retreatingCommander
         local retreatPosition = retreatPair.retreatPosition
 
-        env.info(
-            self.color .. "StrategicCommander: ordering " ..
-            reinforcingCommander.name .. " to reinforce " ..
-            retreatingCommander.name .. " at position " ..
-            mist.vec.tostring(retreatPosition)
-        )
-        reinforcingCommander:issueOrder({
-            alr = alr.MEDIUM,
-            position = retreatPosition,
-            type = taskTypes.REINFORCE,
-        })
+        -- Check if this order has already been issued (more than 100m tolerance)
+        local lastOrder = self.lastIssuedOrders[reinforcingCommander.groupName]
+        local orderChanged = not lastOrder or
+            lastOrder.type ~= taskTypes.REINFORCE or
+            math.abs(lastOrder.position.x - retreatPosition.x) > 100 or
+            math.abs(lastOrder.position.z - retreatPosition.z) > 100
+
+        if orderChanged then
+            env.info(
+                self.color .. "StrategicCommander: ordering " ..
+                reinforcingCommander.groupName .. " to reinforce " ..
+                retreatingCommander.groupName .. " at position x=" ..
+                retreatPosition.x .. " z=" .. retreatPosition.z
+            )
+            reinforcingCommander:issueOrder({
+                alr = alr.MEDIUM,
+                position = retreatPosition,
+                type = taskTypes.REINFORCE,
+            })
+            self.lastIssuedOrders[reinforcingCommander.groupName] = {
+                alr = alr.MEDIUM,
+                position = {x = retreatPosition.x, z = retreatPosition.z},
+                type = taskTypes.REINFORCE,
+            }
+        end
     end
 
     for _, commander in pairs(self.repositioningGroups) do
         -- Assign each remaining commander to act on primary objective
         if self.prioirtyObjective then
-            env.info(
-                self.color .. "StrategicCommander: ordering " ..
-                commander.groupName .. " to act on objective " ..
-                self.prioirtyObjective.type
-            )
-            
-            -- Push relevant threat intel before issuing order
-            local relevantThreats = self:getThreatsNearPosition(
-                self.prioirtyObjective.position, 
-                3000  -- 3km radius
-            )
-            if relevantThreats then
-                commander:updateThreatIntel(relevantThreats)
+            -- Check if this order has already been issued (more than 100m tolerance)
+            local lastOrder = self.lastIssuedOrders[commander.groupName]
+            local orderChanged = not lastOrder or
+                lastOrder.type ~= self.prioirtyObjective.type or
+                math.abs(lastOrder.position.x - self.prioirtyObjective.position.x) > 100 or
+                math.abs(lastOrder.position.z - self.prioirtyObjective.position.z) > 100 or
+                lastOrder.radius ~= self.prioirtyObjective.radius
+
+            if orderChanged then
+                env.info(
+                    self.color .. "StrategicCommander: ordering " ..
+                    commander.groupName .. " to act on objective " ..
+                    self.prioirtyObjective.type
+                )
+                
+                -- Push relevant threat intel before issuing order
+                local relevantThreats = self:getThreatsNearPosition(
+                    self.prioirtyObjective.position, 
+                    3000  -- 3km radius
+                )
+                if relevantThreats then
+                    commander:updateThreatIntel(relevantThreats)
+                end
+                
+                commander:issueOrder({
+                    alr = alr.MEDIUM,
+                    position = self.prioirtyObjective.position,
+                    radius = self.prioirtyObjective.radius,
+                    type = self.prioirtyObjective.type,
+                })
+                self.lastIssuedOrders[commander.groupName] = {
+                    alr = alr.MEDIUM,
+                    position = {x = self.prioirtyObjective.position.x, z = self.prioirtyObjective.position.z},
+                    radius = self.prioirtyObjective.radius,
+                    type = self.prioirtyObjective.type,
+                }
             end
-            
-            commander:issueOrder({
-                alr = alr.MEDIUM,
-                position = self.prioirtyObjective.position,
-                radius = self.prioirtyObjective.radius,
-                type = self.prioirtyObjective.type,
-            })
         end
     end
 end
@@ -416,6 +454,7 @@ function ThreatTracker:updateThreats(observedUnits)
         
         if not threat then
             -- New threat
+            env.info(self.observerName .. " ThreatTracker: New threat detected - " .. unitData.name .. " (OBSERVED)")
             self.threats[unitData.name] = {
                 name = unitData.name,
                 position = unitData.position,
@@ -431,9 +470,13 @@ function ThreatTracker:updateThreats(observedUnits)
             }
         else
             -- Update existing threat
+            local oldStatus = threat.status
             threat.position = unitData.position
             threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
             threat.lastSighting = currentTime
+            if oldStatus ~= threatStatus.OBSERVED then
+                env.info(self.observerName .. " ThreatTracker: " .. unitData.name .. " status changed from " .. oldStatus .. " to OBSERVED")
+            end
             
             -- Add new sighting
             table.insert(threat.sightings, {
@@ -449,6 +492,12 @@ end
 -- Returns: table indexed by unit name
 function ThreatTracker:getThreats()
     return self.threats
+end
+
+-- Get a single threat by name
+-- Returns: threat data or nil
+function ThreatTracker:getThreat(unitName)
+    return self.threats[unitName]
 end
 
 -- Merge threat intel from external source (e.g., strategic commander)
@@ -496,23 +545,28 @@ end
 
 -- Mark a threat with a specific status
 -- unitName: name of the threat unit
--- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, ELIMINATED)
+-- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, LOST, ELIMINATED)
 function ThreatTracker:markThreatStatus(unitName, status)
     local threat = self.threats[unitName]
     if threat then
+        local oldStatus = threat.status
         threat.status = status
+        if oldStatus ~= status then
+            threat.statusChangedAt = timer.getTime()
+            env.info(self.observerName .. " ThreatTracker: " .. unitName .. " status changed from " .. oldStatus .. " to " .. status)
+        end
     end
 end
 
 -- Get threats we would expect to see in an area
 -- position: {x, y, z} position to check
 -- radius: search radius in meters
--- Returns: array of threat names that are in area but not ELIMINATED
+-- Returns: array of threat names that are in area but not LOST or ELIMINATED
 function ThreatTracker:expectedThreats(position, radius)
     local expected = {}
     
     for unitName, threat in pairs(self.threats) do
-        if threat.status ~= threatStatus.ELIMINATED then
+        if threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST then
             local dx = threat.position.x - position.x
             local dz = threat.position.z - position.z
             local distance = math.sqrt(dx * dx + dz * dz)
@@ -534,6 +588,41 @@ function ThreatTracker:count()
         count = count + 1
     end
     return count
+end
+
+-- Age threats and progress their status based on time
+-- UNCONFIRMED for >5 minutes → LOST
+-- LOST or ELIMINATED for >10 minutes → removed
+function ThreatTracker:ageThreats()
+    local currentTime = timer.getTime()
+    local toRemove = {}
+    
+    for unitName, threat in pairs(self.threats) do
+        -- Track when status was last changed
+        if not threat.statusChangedAt then
+            threat.statusChangedAt = threat.lastSighting
+        end
+        
+        local timeInStatus = currentTime - threat.statusChangedAt
+        
+        -- Progress UNCONFIRMED → LOST after 5 minutes
+        if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
+            env.info(self.observerName .. " ThreatTracker: " .. unitName .. " status changed from Unconfirmed to Lost (5+ minutes)")
+            threat.status = threatStatus.LOST
+            threat.statusChangedAt = currentTime
+        end
+        
+        -- Remove LOST or ELIMINATED threats after 10 minutes
+        if (threat.status == threatStatus.LOST or threat.status == threatStatus.ELIMINATED) and timeInStatus > 600 then
+            env.info(self.observerName .. " ThreatTracker: Removing " .. unitName .. " (" .. threat.status .. " for 10+ minutes)")
+            table.insert(toRemove, unitName)
+        end
+    end
+    
+    -- Remove threats marked for removal
+    for _, unitName in ipairs(toRemove) do
+        self.threats[unitName] = nil
+    end
 end
 
 -- Cull threats that haven't been observed recently (for future use)
@@ -610,8 +699,9 @@ local taskTypes = {
 local threatStatus = {
     OBSERVED = "Observed",      -- Currently in LOS
     SUSPECTED = "Suspected",    -- Not currently visible but believed present
-    UNCONFIRMED = "Unconfirmed", -- Expected position checked, not found
-    ELIMINATED = "Eliminated"   -- Confirmed destroyed or departed
+    UNCONFIRMED = "Unconfirmed", -- Position checked, not found
+    LOST = "Lost",              -- Unconfirmed for >5 minutes, presumed gone
+    ELIMINATED = "Eliminated"   -- Confirmed destroyed (BDA)
 }
 
 local statusTypes = {
@@ -721,6 +811,7 @@ return {
     oodaStates = oodaStates,
     rgb = rgb,
     taskTypes = taskTypes,
+    threatStatus = threatStatus,
     statusTypes = statusTypes,
     unitClassification = unitClassification,
     vulnerabilityMatrix = vulnerabilityMatrix
@@ -759,10 +850,12 @@ function GroupCommander.new(groupName, config)
     self.initialCollectiveStatus = self:getCollectiveStatus()
     self.oodaState = oodaStates.OBSERVE
     self.orders = nil
+    self.lastMoveOrder = nil
     self.ownForceStrength = nil
     self.roe = roe.WEAPON_HOLD
     self.threatTracker = ThreatTracker.new(groupName)
     self.threatAnalysis = nil
+    self.lastThreatCenter = nil
 
     self.oodaOffset = math.random() * oodaInterval
     
@@ -820,12 +913,15 @@ function GroupCommander:observe()
     -- Update threat table with newly observed threats (keeping old ones)
     self.threatTracker:updateThreats(observedThreats)
     
-    -- Check for expected threats we didn't see (mark as UNCONFIRMED)
+    -- Check for expected threats we didn't see
     local ownPos = self:getOwnPosition()
     if ownPos then
         local expectedInArea = self.threatTracker:expectedThreats(ownPos, detectionRadius)
+        if #expectedInArea > 0 then
+            env.info(self.groupName .. " OBSERVE: Expected " .. #expectedInArea .. " threats in detection radius")
+        end
         for _, threatName in ipairs(expectedInArea) do
-            -- If we expected to see it but didn't, mark unconfirmed
+            -- If we expected to see it but didn't, update status
             local wasSeen = false
             for _, observed in ipairs(observedThreats) do
                 if observed.name == threatName then
@@ -834,10 +930,32 @@ function GroupCommander:observe()
                 end
             end
             if not wasSeen then
-                self.threatTracker:markThreatStatus(threatName, "Unconfirmed")
+                local threat = self.threatTracker:getThreat(threatName)
+                if threat then
+                    -- Check distance to last known position
+                    local distToLastKnown = math.sqrt(
+                        (ownPos.x - threat.position.x)^2 + 
+                        (ownPos.z - threat.position.z)^2
+                    )
+                    
+                    -- If close to last known position, mark UNCONFIRMED
+                    -- Otherwise just mark SUSPECTED (we haven't checked yet)
+                    if distToLastKnown < 1000 then  -- Within 1km of last known position
+                        if threat.status == "Observed" or threat.status == "Suspected" then
+                            self.threatTracker:markThreatStatus(threatName, "Unconfirmed")
+                        end
+                    else
+                        if threat.status == "Observed" then
+                            self.threatTracker:markThreatStatus(threatName, "Suspected")
+                        end
+                    end
+                end
             end
         end
     end
+    
+    -- Age threats and progress their status
+    self.threatTracker:ageThreats()
     
     env.info(self.groupName .. " OBSERVE: " .. self.threatTracker:count() .. " threats in memory")
 end
@@ -947,9 +1065,35 @@ function GroupCommander:decide()
         
         -- Check if we need to retreat based on ALR
         if strengthRatio < retreatThreshold or vulnerability > maxAcceptableVulnerability then
-            env.info(self.groupName .. " DECIDE: RETREAT (ordered, threats too strong)")
-            self:setDisposition(dispositionTypes.RETREAT)
+            -- Check if we're already retreating or need to start
+            if self.disposition ~= dispositionTypes.RETREAT then
+                env.info(self.groupName .. " DECIDE: RETREAT (ordered, threats too strong)")
+                self:setDisposition(dispositionTypes.RETREAT)
+            else
+                -- Already retreating, check if we should transition to holding
+                local threatStatuses = self:checkThreatStatuses()
+                
+                -- If all threats are UNCONFIRMED or lower, immediately stop retreating
+                if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                    env.info(self.groupName .. " DECIDE: HOLD (threats UNCONFIRMED during retreat)")
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    self.lastThreatCenter = nil
+                    return
+                end
+                
+                -- If all threats are SUSPECTED (none OBSERVED), check time since last observation
+                if threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                    env.info(self.groupName .. " DECIDE: HOLD (threats SUSPECTED for 1+ minute since last observation)")
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    self.lastThreatCenter = nil
+                    return
+                end
+            end
+            
             self.destination = self:calculateDestinationRelativeToThreats(threatCenter, true)
+            self.lastThreatCenter = threatCenter
             
         -- Check if we can advance on threats without straying too far from ordered position
         elseif strengthRatio >= advanceThreshold and vulnerability < maxAcceptableVulnerability * 0.5 then
@@ -964,7 +1108,24 @@ function GroupCommander:decide()
                 if distanceToOrdered < 3000 then
                     env.info(self.groupName .. " DECIDE: ADVANCE ON THREATS (near ordered position)")
                     self:setDisposition(dispositionTypes.ADVANCE)
-                    self.destination = self:calculateDestinationRelativeToThreats(threatCenter, false)
+                    local advanceDestination = self:calculateDestinationRelativeToThreats(threatCenter, false)
+                    
+                    -- Verify the advance destination doesn't exceed the leash
+                    if advanceDestination then
+                        local destDistanceToOrdered = math.sqrt(
+                            (advanceDestination.x - orderedPosition.x)^2 + 
+                            (advanceDestination.z - orderedPosition.z)^2
+                        )
+                        if destDistanceToOrdered > 3000 then
+                            -- Destination would exceed leash, move back toward ordered position instead
+                            env.info(self.groupName .. " DECIDE: Advance destination exceeds leash, returning to position")
+                            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                        else
+                            self.destination = advanceDestination
+                        end
+                    else
+                        self.destination = advanceDestination
+                    end
                 else
                     self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
                     if self.destination then
@@ -1019,9 +1180,35 @@ function GroupCommander:decide()
         
         -- Make decision based on strength and vulnerability
         if strengthRatio < retreatThreshold or vulnerability > maxAcceptableVulnerability then
-            env.info(self.groupName .. " DECIDE: RETREAT")
-            self:setDisposition(dispositionTypes.RETREAT)
+            -- Check if we're already retreating or need to start
+            if self.disposition ~= dispositionTypes.RETREAT then
+                env.info(self.groupName .. " DECIDE: RETREAT")
+                self:setDisposition(dispositionTypes.RETREAT)
+            else
+                -- Already retreating, check if we should transition to holding
+                local threatStatuses = self:checkThreatStatuses()
+                
+                -- If all threats are UNCONFIRMED or lower, immediately stop retreating
+                if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                    env.info(self.groupName .. " DECIDE: HOLD (threats UNCONFIRMED during retreat)")
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    self.lastThreatCenter = nil
+                    return
+                end
+                
+                -- If all threats are SUSPECTED (none OBSERVED), check time since last observation
+                if threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                    env.info(self.groupName .. " DECIDE: HOLD (threats SUSPECTED for 1+ minute since last observation)")
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    self.lastThreatCenter = nil
+                    return
+                end
+            end
+            
             self.destination = self:calculateDestinationRelativeToThreats(threatCenter, true)
+            self.lastThreatCenter = threatCenter
             
         elseif strengthRatio >= advanceThreshold and vulnerability < maxAcceptableVulnerability * 0.5 then
             env.info(self.groupName .. " DECIDE: ADVANCE")
@@ -1062,7 +1249,13 @@ function GroupCommander:act()
     
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
     if self.destination and (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
-        self:issueMoveOrder(self.destination)
+        -- Only issue if destination has changed (more than 100m tolerance)
+        if not self.lastMoveOrder or 
+           math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
+           math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
+            self:issueMoveOrder(self.destination)
+            self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
+        end
     end
 
 
@@ -1190,24 +1383,28 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
             z = ownPos.z + (dirZ * retreatDistance)
         }
     else
-        -- Move toward threats (advance) - position at weapon range from threat center
-        local weaponRange = 1000  -- 1km weapon range
+        -- Move toward threats (advance)
+        local optimalRange = 250   -- Close to 250m for optimal engagement
+        local weaponRange = 1000   -- Max weapon range is 1km
         
-        -- Check if we're already within weapon range
         local currentDistance = math.sqrt(
             (ownPos.x - threatCenter.x)^2 + 
             (ownPos.z - threatCenter.z)^2
         )
         
-        -- If already within weapon range, don't move away
-        if currentDistance <= weaponRange then
+        -- If beyond weapon range, move to weapon range
+        -- If within weapon range, close to optimal range for better accuracy
+        local targetRange = currentDistance > weaponRange and weaponRange or optimalRange
+        
+        -- If already at or closer than optimal range, stay put
+        if currentDistance <= optimalRange then
             return nil
         end
         
         return {
-            x = threatCenter.x + (dirX * weaponRange),
+            x = threatCenter.x + (dirX * targetRange),
             y = threatCenter.y or ownPos.y,
-            z = threatCenter.z + (dirZ * weaponRange)
+            z = threatCenter.z + (dirZ * targetRange)
         }
     end
 end
@@ -1287,11 +1484,51 @@ function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRa
     end
 end
 
+function GroupCommander:checkThreatStatuses()
+    -- Check threat statuses and return info about whether threats are observed vs suspected/unconfirmed
+    local threats = self.threatTracker:getThreats()
+    local observed = 0
+    local suspected = 0
+    local unconfirmed = 0
+    local other = 0
+    local mostRecentObservation = 0
+    
+    for unitName, threatData in pairs(threats) do
+        if threatData.status == "Observed" then
+            observed = observed + 1
+        elseif threatData.status == "Suspected" then
+            suspected = suspected + 1
+        elseif threatData.status == "Unconfirmed" then
+            unconfirmed = unconfirmed + 1
+        else
+            other = other + 1
+        end
+        
+        -- Track most recent observation time
+        if threatData.lastSighting and threatData.lastSighting > mostRecentObservation then
+            mostRecentObservation = threatData.lastSighting
+        end
+    end
+    
+    return {
+        observed = observed,
+        suspected = suspected,
+        unconfirmed = unconfirmed,
+        other = other,
+        total = observed + suspected + unconfirmed + other,
+        allSuspectedOrUnconfirmed = (observed == 0) and ((suspected + unconfirmed) > 0),
+        hasUnconfirmed = unconfirmed > 0,
+        mostRecentObservation = mostRecentObservation,
+        timeSinceLastObservation = mostRecentObservation > 0 and (timer.getTime() - mostRecentObservation) or 0
+    }
+end
+
 function GroupCommander:calculateThreatCenter()
     -- Calculate the average position of all threats based on last known positions
     local sumX = 0
     local sumZ = 0
     local validCount = 0
+    local statusCounts = {}
     
     local threats = self.threatTracker:getThreats()
     for unitName, threatData in pairs(threats) do
@@ -1300,7 +1537,16 @@ function GroupCommander:calculateThreatCenter()
             sumX = sumX + threatData.position.x
             sumZ = sumZ + threatData.position.z
             validCount = validCount + 1
+            statusCounts[threatData.status] = (statusCounts[threatData.status] or 0) + 1
         end
+    end
+    
+    if validCount > 0 then
+        local statusStr = ""
+        for status, cnt in pairs(statusCounts) do
+            statusStr = statusStr .. status .. ":" .. cnt .. " "
+        end
+        env.info(self.groupName .. " DECIDE: Calculating threat center from " .. validCount .. " threats (" .. statusStr .. ")")
     end
     
     if validCount == 0 then
@@ -1368,12 +1614,26 @@ function GroupCommander:classifyUnit(unitTypeName)
 end
 
 function GroupCommander:detectNearbyUnits()
-    local leadUnitName = self.groupName .. "-1"
-    local leadUnit = Unit.getByName(leadUnitName)
+    local group = Group.getByName(self.groupName)
     
-    if not leadUnit or not leadUnit:isExist() then
+    if not group or not group:isExist() then
+        env.info("WARNING: " .. self.groupName .. " group does not exist - cannot detect nearby units")
         return {allies = {}, threats = {}}
     end
+    
+    local groupUnits = group:getUnits()
+    if not groupUnits or #groupUnits == 0 then
+        env.info("WARNING: " .. self.groupName .. " has no units - cannot detect nearby units")
+        return {allies = {}, threats = {}}
+    end
+    
+    local leadUnit = groupUnits[1]
+    if not leadUnit or not leadUnit:isExist() then
+        env.info("WARNING: " .. self.groupName .. " lead unit does not exist - cannot detect nearby units")
+        return {allies = {}, threats = {}}
+    end
+    
+    local leadUnitName = leadUnit:getName()
     
     local myCoalition = self.coalition
     local enemyCoalition = myCoalition == "red" and "blue" or "red"
