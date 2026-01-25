@@ -53,7 +53,7 @@ stratBlue.objectives = {
 
 stratRed.objectives = {
     {
-        type = taskTypes.RESERVE,
+        type = taskTypes.RALLY,
         position = redRepositionPosition,
     }
 }
