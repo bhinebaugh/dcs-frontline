@@ -44,7 +44,7 @@ local taskTypes = {
     REINFORCE = 2,
     RECON = 3,
     ASSAULT = 4,
-    RESERVE = 5,
+    RALLY = 5,
     INDIRECT = 6,
     AA = 7,
 }
@@ -60,6 +60,14 @@ local threatStatus = {
 local statusTypes = {
     HOLD = 1,
     EN_ROUTE = 2,
+}
+
+local orderStatus = {
+    ASSIGNED = "Assigned",       -- Order received, not yet acted upon
+    IN_PROGRESS = "In Progress", -- Actively executing order
+    STANDBY = "Standby",         -- Temporarily unable to execute (e.g., retreating from threats)
+    COMPLETED = "Completed",     -- Successfully completed or deadline reached
+    ABORTED = "Aborted",        -- Mission no longer possible or canceled
 }
 
 local oodaStates = {
@@ -160,6 +168,7 @@ return {
     dispositionTypes = dispositionTypes,
     formationTypes = formationTypes,
     groundTemplates = groundTemplates,
+    orderStatus = orderStatus,
     rulesOfEngagement = rulesOfEngagement,
     oodaStates = oodaStates,
     rgb = rgb,

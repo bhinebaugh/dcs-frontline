@@ -4,6 +4,7 @@ local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
 local oodaStates = constants.oodaStates
+local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local unitClassification = constants.unitClassification
 local vulnerabilityMatrix = constants.vulnerabilityMatrix
@@ -203,6 +204,21 @@ function GroupCommander:decide()
     
     -- If we have orders, use them as the basis for decisions
     if self.orders then
+        -- Mark orders as in progress if they were just assigned
+        if self.orders.status == orderStatus.ASSIGNED then
+            self.orders.status = orderStatus.IN_PROGRESS
+            self.orders.startedAt = timer.getTime()
+        end
+        
+        -- Check if order deadline has been reached
+        if self.orders.deadline and timer.getTime() >= self.orders.deadline then
+            if self.orders.status == orderStatus.IN_PROGRESS or self.orders.status == orderStatus.STANDBY then
+                self.orders.status = orderStatus.COMPLETED
+                self.orders.completedAt = timer.getTime()
+                env.info(self.groupName .. " DECIDE: Order deadline reached, marking COMPLETED")
+            end
+        end
+        
         local orderedPosition = self.orders.position
         local orderedRadius = self.orders.radius or 500
         local orderedALR = self.orders.alr or alr.LOW
@@ -223,8 +239,14 @@ function GroupCommander:decide()
                 env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (no threats)")
                 self:setDisposition(dispositionTypes.ADVANCE)
             else
+                -- We're at objective with no threats
                 env.info(self.groupName .. " DECIDE: DEFEND (at objective, no threats)")
                 self:setDisposition(dispositionTypes.DEFEND)
+                -- Mark order as completed if we're defending at objective
+                if self.orders.status == orderStatus.IN_PROGRESS then
+                    self.orders.status = orderStatus.COMPLETED
+                    self.orders.completedAt = timer.getTime()
+                end
             end
             return
         end
@@ -248,6 +270,10 @@ function GroupCommander:decide()
             if self.disposition ~= dispositionTypes.RETREAT then
                 env.info(self.groupName .. " DECIDE: RETREAT (ordered, threats too strong)")
                 self:setDisposition(dispositionTypes.RETREAT)
+                -- Mark order as on standby while retreating
+                if self.orders.status == orderStatus.IN_PROGRESS then
+                    self.orders.status = orderStatus.STANDBY
+                end
             else
                 -- Already retreating, check if we should transition to holding
                 local threatStatuses = self:checkThreatStatuses()
@@ -332,8 +358,17 @@ function GroupCommander:decide()
             self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
             if self.destination then
                 env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
+                -- Resume order if it was on standby
+                if self.orders.status == orderStatus.STANDBY then
+                    self.orders.status = orderStatus.IN_PROGRESS
+                end
             else
                 env.info(self.groupName .. " DECIDE: DEFEND (within objective radius)")
+                -- Mark order as completed if we're defending at objective
+                if self.orders.status == orderStatus.IN_PROGRESS or self.orders.status == orderStatus.STANDBY then
+                    self.orders.status = orderStatus.COMPLETED
+                    self.orders.completedAt = timer.getTime()
+                end
             end
         end
         
@@ -1025,6 +1060,7 @@ function GroupCommander:getStatus()
         destination = self.destination,
         disposition = self.disposition,
         groupName = self.groupName,
+        orderStatus = self.orders and self.orders.status or nil,
         position = self:getOwnPosition(),
         status = collectiveStatus,
         threats = self.threatTracker:getThreats(),
@@ -1099,6 +1135,11 @@ function GroupCommander:issueMoveOrder(point)
 end
 
 function GroupCommander:issueOrder(order)
+    -- Set initial status if not provided
+    if not order.status then
+        order.status = orderStatus.ASSIGNED
+        order.assignedAt = timer.getTime()
+    end
     self.orders = order
 end
 
