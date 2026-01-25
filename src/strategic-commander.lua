@@ -21,6 +21,7 @@ function StrategicCommander.new(config)
     self.oodaOffset = math.random() * oodaInterval
     self.threatTracker = ThreatTracker.new(self.color .. "StrategicCommander")
     self.objectives = {}
+    self.lastIssuedOrders = {}
     
     mist.scheduleFunction(
         StrategicCommander.oodaTick,
@@ -91,28 +92,35 @@ function StrategicCommander:decide()
     -- Reserves to reinforce threatened forces
     self.reinforcementGroups = {}
     for _, retreatingCommander in pairs(self.retreatingGroups) do
-        local retreatPosition = retreatingCommander:getStatus().retreatPosition
-        local nearestReinforcement = nil
-        local nearestDistance = math.huge
-        for _, commander in pairs(ownGroupCommanders) do
-            local status = commander:getStatus()
-            local dist = mist.vec.mag(
-                mist.vec.sub(status.position, retreatPosition)
-            )
-            if dist < nearestDistance then
-                nearestDistance = dist
-                nearestReinforcement = commander
+        local status = retreatingCommander:getStatus()
+        local retreatPosition = status.destination or status.position
+        
+        -- Skip if we can't determine a retreat position
+        if not retreatPosition then
+            env.info(self.color .. "StrategicCommander: Skipping reinforcement for " .. retreatingCommander.groupName .. " (no position available)")
+        else
+            local nearestReinforcement = nil
+            local nearestDistance = math.huge
+            for _, commander in pairs(ownGroupCommanders) do
+                local commanderStatus = commander:getStatus()
+                local dist = mist.vec.mag(
+                    mist.vec.sub(commanderStatus.position, retreatPosition)
+                )
+                if dist < nearestDistance then
+                    nearestDistance = dist
+                    nearestReinforcement = commander
+                end
             end
-        end
-        if nearestReinforcement then
-            table.insert(self.reinforcementGroups, {
-                reinforcingCommander = nearestReinforcement,
-                retreatingCommander = retreatingCommander,
-                retreatPosition = retreatPosition
-            })
-            for i, commander in pairs(ownGroupCommanders) do
-                if commander == nearestReinforcement then
-                    table.remove(ownGroupCommanders, i)
+            if nearestReinforcement then
+                table.insert(self.reinforcementGroups, {
+                    reinforcingCommander = nearestReinforcement,
+                    retreatingCommander = retreatingCommander,
+                    retreatPosition = retreatPosition
+                })
+                for i, commander in pairs(ownGroupCommanders) do
+                    if commander == nearestReinforcement then
+                        table.remove(ownGroupCommanders, i)
+                    end
                 end
             end
         end
@@ -148,43 +156,73 @@ function StrategicCommander:act()
         local retreatingCommander = retreatPair.retreatingCommander
         local retreatPosition = retreatPair.retreatPosition
 
-        env.info(
-            self.color .. "StrategicCommander: ordering " ..
-            reinforcingCommander.name .. " to reinforce " ..
-            retreatingCommander.name .. " at position " ..
-            mist.vec.tostring(retreatPosition)
-        )
-        reinforcingCommander:issueOrder({
-            alr = alr.MEDIUM,
-            position = retreatPosition,
-            type = taskTypes.REINFORCE,
-        })
+        -- Check if this order has already been issued (more than 100m tolerance)
+        local lastOrder = self.lastIssuedOrders[reinforcingCommander.groupName]
+        local orderChanged = not lastOrder or
+            lastOrder.type ~= taskTypes.REINFORCE or
+            math.abs(lastOrder.position.x - retreatPosition.x) > 100 or
+            math.abs(lastOrder.position.z - retreatPosition.z) > 100
+
+        if orderChanged then
+            env.info(
+                self.color .. "StrategicCommander: ordering " ..
+                reinforcingCommander.groupName .. " to reinforce " ..
+                retreatingCommander.groupName .. " at position x=" ..
+                retreatPosition.x .. " z=" .. retreatPosition.z
+            )
+            reinforcingCommander:issueOrder({
+                alr = alr.MEDIUM,
+                position = retreatPosition,
+                type = taskTypes.REINFORCE,
+            })
+            self.lastIssuedOrders[reinforcingCommander.groupName] = {
+                alr = alr.MEDIUM,
+                position = {x = retreatPosition.x, z = retreatPosition.z},
+                type = taskTypes.REINFORCE,
+            }
+        end
     end
 
     for _, commander in pairs(self.repositioningGroups) do
         -- Assign each remaining commander to act on primary objective
         if self.prioirtyObjective then
-            env.info(
-                self.color .. "StrategicCommander: ordering " ..
-                commander.groupName .. " to act on objective " ..
-                self.prioirtyObjective.type
-            )
-            
-            -- Push relevant threat intel before issuing order
-            local relevantThreats = self:getThreatsNearPosition(
-                self.prioirtyObjective.position, 
-                3000  -- 3km radius
-            )
-            if relevantThreats then
-                commander:updateThreatIntel(relevantThreats)
+            -- Check if this order has already been issued (more than 100m tolerance)
+            local lastOrder = self.lastIssuedOrders[commander.groupName]
+            local orderChanged = not lastOrder or
+                lastOrder.type ~= self.prioirtyObjective.type or
+                math.abs(lastOrder.position.x - self.prioirtyObjective.position.x) > 100 or
+                math.abs(lastOrder.position.z - self.prioirtyObjective.position.z) > 100 or
+                lastOrder.radius ~= self.prioirtyObjective.radius
+
+            if orderChanged then
+                env.info(
+                    self.color .. "StrategicCommander: ordering " ..
+                    commander.groupName .. " to act on objective " ..
+                    self.prioirtyObjective.type
+                )
+                
+                -- Push relevant threat intel before issuing order
+                local relevantThreats = self:getThreatsNearPosition(
+                    self.prioirtyObjective.position, 
+                    3000  -- 3km radius
+                )
+                if relevantThreats then
+                    commander:updateThreatIntel(relevantThreats)
+                end
+                
+                commander:issueOrder({
+                    alr = alr.MEDIUM,
+                    position = self.prioirtyObjective.position,
+                    radius = self.prioirtyObjective.radius,
+                    type = self.prioirtyObjective.type,
+                })
+                self.lastIssuedOrders[commander.groupName] = {
+                    alr = alr.MEDIUM,
+                    position = {x = self.prioirtyObjective.position.x, z = self.prioirtyObjective.position.z},
+                    radius = self.prioirtyObjective.radius,
+                    type = self.prioirtyObjective.type,
+                }
             end
-            
-            commander:issueOrder({
-                alr = alr.MEDIUM,
-                position = self.prioirtyObjective.position,
-                radius = self.prioirtyObjective.radius,
-                type = self.prioirtyObjective.type,
-            })
         end
     end
 end
