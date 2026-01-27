@@ -1198,6 +1198,7 @@ return {
 end)
 __bundle_register("map", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = require("constants").rgb
+local settings = require("settings")
 local Map = {}
 Map.__index = Map
 
@@ -1226,6 +1227,7 @@ function Map:getNewMarker()
 end
 
 function Map:drawZone(name, color, pt)
+    if not settings.draw.zones then return end
     local zoneId = self:getNewMarker()
     self.markers.zones[name] = zoneId
     trigger.action.circleToAll(-1, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
@@ -1235,10 +1237,12 @@ function Map:drawZone(name, color, pt)
 end
 
 function Map:redrawZone(name, color)
+    if not settings.draw.zones then return end
     trigger.action.setMarkupColorFill(self.markers.zones[name], rgb[color])
 end
 
 function Map:drawZones(zones)
+    if not settings.draw.zones then return end
     for name, info in pairs(zones) do
         self:drawZone(name, info.color, info.point)
     end
@@ -1248,6 +1252,7 @@ function Map:drawZones(zones)
 end
 
 function Map:drawEdges(edges)
+    if not settings.draw.edges then return end
     for _, edge in pairs(edges) do
         local lineId = self:getNewMarker()
         table.insert(self.markers.edges, lineId)
@@ -1283,6 +1288,7 @@ function Map:drawFrontline(edges, color)
 end
 
 function Map:drawDirective(originPoint, targetPoint)
+    if not settings.draw.directives then return end
     local side = -1 --which coalition the arrow is visible to
     local nextId = self:getNewMarker()
     local color = {1,1,0.2,1}
@@ -1297,6 +1303,17 @@ function Map:drawDirective(originPoint, targetPoint)
 end
 
 return Map
+end)
+__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
+local settings = {
+    draw = {
+        edges = true,
+        zones = true,
+        directives = true,
+    }
+}
+
+return settings
 end)
 __bundle_register("table", function(require, _LOADED, __bundle_register, __bundle_modules)
 function table.contains(table, el)
