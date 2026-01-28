@@ -124,7 +124,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
     self.owner[name] = newOwner
     env.info("Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
 
-    self.map:redrawZone(name, rgb[newOwner])
+    self.map:redrawZone(name, newOwner, self:getZone(name).point)
     if formerOwner ~= "neutral" then
         self.map:drawFrontline(self:getPerimeterEdges(formerOwner, true), formerOwner)
     end
@@ -682,7 +682,7 @@ function ControlZones:requestOrders()
             env.info("    constructing task for "..params.group)
             local task = self:constructTask(params)
             self:setGroupTask(params.group, task)
-            self.map:drawDirective(self:getZone(params.origin.name).point, self:getZone(params.destination.name).point)
+            self.map:drawDirective(self:getZone(params.origin.name).point, self:getZone(params.destination.name).point, cmd.color)
         end
     end
 end
