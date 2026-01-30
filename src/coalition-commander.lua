@@ -152,7 +152,7 @@ function CoalitionCommander:designateAssault()
     end
     local randomReserves = frontlineReserves[math.random(#frontlineReserves)]
 
-    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent)
+    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent, true)
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
 
     --for now, choose single group

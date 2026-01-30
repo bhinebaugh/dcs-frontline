@@ -85,9 +85,6 @@ function Map:drawEdges(edges)
 end
 
 function Map:drawFrontline(edges, color)
-    local opponentColor = color == "blue" and "red" or "blue"
-    local heading = mist.utils.getHeadingPoints(self.center[color], self.center[opponentColor])
-
     --first erase any existing lines
     if self.markers.front[color] then
         for _, id in pairs(self.markers.front[color]) do
@@ -99,17 +96,11 @@ function Map:drawFrontline(edges, color)
     local sides = self:getVisibility(color, "frontlines")
     for _, side in pairs(sides) do
         for _, zonePoints in pairs(edges) do
-            local lineId1 = self:getNewMarker()
-            local lineId2 = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId1)
-            table.insert(self.markers.front[color], lineId2)
+            local lineId = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId)
             local lineColor = rgb[color]
-            --need zone points
-            local z1, z2 = zonePoints.p1, zonePoints.p2
-            local p1A, p1B = mist.projectPoint(z1, 2000, heading), mist.projectPoint(z1, 2200, heading)
-            local p2A, p2B = mist.projectPoint(z2, 2000, heading), mist.projectPoint(z2, 2200, heading)
-            trigger.action.lineToAll(side, lineId1, p1A, p2A, lineColor, 1)
-            trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
+            trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
+            -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
         end
     end
 end

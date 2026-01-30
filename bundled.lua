@@ -430,7 +430,7 @@ function CoalitionCommander:designateAssault()
     end
     local randomReserves = frontlineReserves[math.random(#frontlineReserves)]
 
-    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent)
+    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent, true)
     local target = enemyNeighbors[math.random(#enemyNeighbors)]
 
     --for now, choose single group
@@ -599,10 +599,10 @@ function ControlZones:changeZoneOwner(name, newOwner)
 
     self.map:redrawZone(name, newOwner, self:getZone(name).point)
     if formerOwner ~= "neutral" then
-        self.map:drawFrontline(self:getPerimeterEdges(formerOwner, true), formerOwner)
+        self.map:drawFrontline(self:calculateFrontlinePoints(formerOwner), formerOwner)
     end
     if newOwner ~= "neutral" then
-        self.map:drawFrontline(self:getPerimeterEdges(newOwner, true), newOwner)
+        self.map:drawFrontline(self:calculateFrontlinePoints(newOwner), newOwner)
     end
 end
 
@@ -662,14 +662,14 @@ function ControlZones:hasNeighbor(key, neighborKey)
     return false
 end
 
-function ControlZones:getNeighbors(key, color)
+function ControlZones:getNeighbors(key, color, includeNeutral)
     local color = color or nil
     if not color then
         return self.neighbors[key] or {}
     end
     local different = {}
     for _, n in ipairs(self.neighbors[key]) do
-        if self.owner[n] == color then
+        if self.owner[n] == color or (includeNeutral and self.owner[n] == "neutral") then
             table.insert(different, n)
         end
     end
@@ -843,7 +843,7 @@ function ControlZones:triangleHasEdge(tri, v1, v2)
            (tri[3] == v1 and tri[1] == v2) or (tri[1] == v1 and tri[3] == v2)
 end
 
--- Get perimeter edges facing another color
+-- Get perimeter edges of the provided color that are facing another color
 function ControlZones:getPerimeterZones(color)
     if not self.triangles then
         self:buildDelaunayIndex()
@@ -889,7 +889,7 @@ function ControlZones:getPerimeterZones(color)
     return frontZones
 end
 
-function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table of pairs of zone names (default) or center points of those zones
+function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table of pairs of zone names (default) or positions of those zones
     if not self.triangles then
         self:buildDelaunayIndex()
     end
@@ -924,9 +924,9 @@ function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table o
                 if not edgeSet[edgeKey] then
                     edgeSet[edgeKey] = true
                     if returnPoints then
-                        table.insert(edges, {p1 = self:getZone(key1).point, p2 = self:getZone(key2).point})
+                        table.insert(edges, {p1 = self:getZone(key1).point, p2 = self:getZone(key2).point, o1 = self:getZone(tri[v3]).point})
                     else
-                        table.insert(edges, {p1 = key1, p2 = key2})
+                        table.insert(edges, {p1 = key1, p2 = key2, o1 = tri[v3]})
                     end
                 end
             end
@@ -934,6 +934,37 @@ function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table o
     end
     
     return edges
+end
+
+function ControlZones:calculateFrontlinePoints(color)
+    local frontEdges = self:getPerimeterEdges(color, true)
+    local opponent = color == "blue" and "red" or "blue"
+    local offsets = {1500,1700}
+    local adjustedEdges = {}
+
+    -- Offset shared edges and store in table for drawing as lines
+    for i, edge in pairs(frontEdges) do
+        local heading1 = mist.utils.getHeadingPoints(edge.p1, edge.o1)
+        local heading2 = mist.utils.getHeadingPoints(edge.p2, edge.o1)
+        for _, offset in pairs(offsets) do
+            local projectedPoint1 = mist.projectPoint(edge.p1, offset, heading1)
+            local projectedPoint2 = mist.projectPoint(edge.p2, offset, heading2)
+            table.insert(adjustedEdges, {p1 = projectedPoint1, p2 = projectedPoint2})
+        end
+    end
+
+    -- Fill the gaps comprised by triangles with a single point facing two enemy points
+    for i, edge in pairs(self:getPerimeterEdges(opponent, true)) do
+        local heading1 = mist.utils.getHeadingPoints(edge.o1, edge.p1)
+        local heading2 = mist.utils.getHeadingPoints(edge.o1, edge.p2)
+        for _, offset in pairs(offsets) do
+            local projectedPoint1 = mist.projectPoint(edge.o1, offset, heading1)
+            local projectedPoint2 = mist.projectPoint(edge.o1, offset, heading2)
+            table.insert(adjustedEdges, {p1 = projectedPoint1, p2 = projectedPoint2})
+        end
+    end
+
+    return adjustedEdges
 end
 
 function ControlZones:getAllEdges(returnPoints)
@@ -1167,8 +1198,9 @@ function ControlZones:kickoff()
     end
     self.map:drawZones(zoneInfo)
     self.map:drawEdges(self:getAllEdges(true))
-    self.map:drawFrontline(self:getPerimeterEdges("blue", true), "blue")
-    self.map:drawFrontline(self:getPerimeterEdges("red", true), "red")
+    self.map:drawFrontline(self:calculateFrontlinePoints("blue"), "blue")
+    self.map:drawFrontline(self:calculateFrontlinePoints("red"), "red")
+
     self:populateZones()
     timer.scheduleFunction(
         function(params)
@@ -1284,9 +1316,6 @@ function Map:drawEdges(edges)
 end
 
 function Map:drawFrontline(edges, color)
-    local opponentColor = color == "blue" and "red" or "blue"
-    local heading = mist.utils.getHeadingPoints(self.center[color], self.center[opponentColor])
-
     --first erase any existing lines
     if self.markers.front[color] then
         for _, id in pairs(self.markers.front[color]) do
@@ -1298,17 +1327,11 @@ function Map:drawFrontline(edges, color)
     local sides = self:getVisibility(color, "frontlines")
     for _, side in pairs(sides) do
         for _, zonePoints in pairs(edges) do
-            local lineId1 = self:getNewMarker()
-            local lineId2 = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId1)
-            table.insert(self.markers.front[color], lineId2)
+            local lineId = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId)
             local lineColor = rgb[color]
-            --need zone points
-            local z1, z2 = zonePoints.p1, zonePoints.p2
-            local p1A, p1B = mist.projectPoint(z1, 2000, heading), mist.projectPoint(z1, 2200, heading)
-            local p2A, p2B = mist.projectPoint(z2, 2000, heading), mist.projectPoint(z2, 2200, heading)
-            trigger.action.lineToAll(side, lineId1, p1A, p2A, lineColor, 1)
-            trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
+            trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
+            -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
         end
     end
 end
