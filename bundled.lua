@@ -67,7 +67,6 @@ local cz = ControlZones.new(nil, constants.groundTemplates)
 cz:setup()
 cz:constructDelaunayIndex()
 
-local perimIds = cz:findPerimeter(cz.allZones)
 cz:assignCompassMaxima()
 local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
 local height = cz.maxima.northmost.x - cz.maxima.southmost.x
@@ -937,13 +936,12 @@ function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table o
 end
 
 function ControlZones:calculateFrontlinePoints(color)
-    local frontEdges = self:getPerimeterEdges(color, true)
     local opponent = color == "blue" and "red" or "blue"
     local offsets = {1500,1700}
     local adjustedEdges = {}
 
     -- Offset shared edges and store in table for drawing as lines
-    for i, edge in pairs(frontEdges) do
+    for _, edge in pairs(self:getPerimeterEdges(color, true)) do
         local heading1 = mist.utils.getHeadingPoints(edge.p1, edge.o1)
         local heading2 = mist.utils.getHeadingPoints(edge.p2, edge.o1)
         for _, offset in pairs(offsets) do
@@ -961,6 +959,38 @@ function ControlZones:calculateFrontlinePoints(color)
             local projectedPoint1 = mist.projectPoint(edge.o1, offset, heading1)
             local projectedPoint2 = mist.projectPoint(edge.o1, offset, heading2)
             table.insert(adjustedEdges, {p1 = projectedPoint1, p2 = projectedPoint2})
+        end
+    end
+
+    -- Add extensions to each end of frontline
+    -- First find frontline zones that are also on global perimeter
+    local frontlineEdgeZones = {}
+    local globalPerimeter = self:findPerimeter(self.allZones)
+    for _, name in pairs(self:getPerimeterZones(color)) do
+        if table.contains(globalPerimeter, name) then
+            table.insert(frontlineEdgeZones, name)
+        end
+    end
+    -- Then project out from offset point along a heading away from enemy centroid
+    for _, name in pairs(frontlineEdgeZones) do
+        local neighboringEnemies = self:getNeighbors(name, opponent, true)
+        local edgeEnemy
+        for _, enemy in pairs(neighboringEnemies) do
+            if table.contains(globalPerimeter, enemy) then
+                edgeEnemy = enemy
+                break
+            end
+        end
+        if edgeEnemy then
+            local zonePt = self:getZone(name).point
+            local enemyPt = self:getZone(edgeEnemy).point
+            local heading1 = mist.utils.getHeadingPoints(zonePt, enemyPt)
+            for _, offset in pairs(offsets) do
+                local offsetZonePoint = mist.projectPoint(zonePt, offset, heading1)
+                local heading2 = mist.utils.getHeadingPoints(self.centroid[opponent], offsetZonePoint)
+                local endPoint = mist.projectPoint(offsetZonePoint, 2000, heading2)
+                table.insert(adjustedEdges, {p1 = offsetZonePoint, p2 = endPoint})
+            end
         end
     end
 

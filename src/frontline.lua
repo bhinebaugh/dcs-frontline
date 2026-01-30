@@ -23,7 +23,6 @@ local cz = ControlZones.new(nil, constants.groundTemplates)
 cz:setup()
 cz:constructDelaunayIndex()
 
-local perimIds = cz:findPerimeter(cz.allZones)
 cz:assignCompassMaxima()
 local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
 local height = cz.maxima.northmost.x - cz.maxima.southmost.x
