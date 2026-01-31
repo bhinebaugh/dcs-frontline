@@ -2,10 +2,63 @@ local constants = require("constants")
 local taskTypes = constants.taskTypes
 
 local GroupCommander = require("group-commander")
+local Objective = require("objective")
 local StrategicCommander = require("strategic-commander")
+
+-- Initial objective for Alpha is to defend the bridge
+-- near the coordinates:
+local blueDefendPosition = coord.LLtoLO(
+    42 + 32/60 + 1/3600,
+    44 + 05/60 + 38/3600
+)
+
+-- Known safe rally point for Blue forces
+local blueRallyPosition = coord.LLtoLO(
+    42 + 25/60 + 30/3600,
+    44 + 00/60 + 26/3600
+)
+
+-- Initial objective for Bravo is to reposition to the
+-- Kvemo-Khoshka village at these coordinates:
+local redRepositionPosition = coord.LLtoLO(
+    42 + 27/60 + 53/3600,
+    44 + 03/60 + 37/3600
+)
+
+-- Known safe rally point for Red forces
+local redRallyPosition = coord.LLtoLO(
+    42 + 34/60 + 0/3600,
+    44 + 06/60 + 30/3600
+)
 
 local stratBlue = StrategicCommander.new({color = "blue"})
 local stratRed = StrategicCommander.new({color = "red"})
+
+-- Assign rally points to strategic commanders
+stratBlue.rallyPoints = {
+    {position = blueRallyPosition, radius = 500}
+}
+
+stratRed.rallyPoints = {
+    {position = redRallyPosition, radius = 500}
+}
+
+-- Create and assign objectives directly
+stratBlue.objectives = {
+    Objective.new({
+        type = taskTypes.DEFEND,
+        position = blueDefendPosition,
+        radius = 500,
+    })
+}
+
+stratRed.objectives = {
+    Objective.new({
+        type = taskTypes.REPOSITION,
+        position = redRepositionPosition,
+        deadline = timer.getTime() + 1800,  -- 30 minute deadline
+    })
+}
 
 local groupA = GroupCommander.new("Alpha", {
     color = "blue",
@@ -19,44 +72,6 @@ local groupC = GroupCommander.new("Charlie", {
     color = "red",
     stratcom = stratRed
 })
-
--- Initial objective for Alpha is to defend the bridge
--- near the coordinates:
-local lat = 42 + 32/60 + 1/3600
-local lon = 44 + 05/60 + 38/3600
-local blueDefendPosition = coord.LLtoLO(lat, lon)
-
--- Initial objective for Bravo is to reposition to the
--- Kvemo-Khoshka village at these coordinates:
-local lat = 42 + 28/60 + 0/3600
-local lon = 44 + 03/60 + 30/3600
-local redRepositionPosition = coord.LLtoLO(lat, lon)
-
--- Ideally, the strategic commander would issue these orders
--- Delay the move order until mission is fully loaded
--- mist.scheduleFunction(
---     function()
---         env.info("Delayed move order execution for Bravo")
---         groupB:issueMoveOrder(redRepositionPosition)
---     end,
---     {},
---     timer.getTime() + 5  -- Wait 5 seconds after mission start
--- )
-
-stratBlue.objectives = {
-    {
-        type = taskTypes.DEFEND,
-        position = blueDefendPosition,
-        radius = 500, -- meters
-    }
-}
-
-stratRed.objectives = {
-    {
-        type = taskTypes.RALLY,
-        position = redRepositionPosition,
-    }
-}
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge

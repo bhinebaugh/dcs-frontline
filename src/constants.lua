@@ -47,6 +47,7 @@ local taskTypes = {
     RALLY = 5,
     INDIRECT = 6,
     AA = 7,
+    REPOSITION = 8,
 }
 
 local threatStatus = {
@@ -114,9 +115,11 @@ local unitClassification = {
     ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, armor = 1.5, air = 0}, strength = 2},
     
     -- Light armor / IFVs
-    ["M-113"] = {category = "armor", threats = {infantry = 3, armor = 1, air = 0}, strength = 2.5},
+    ["M-113"] = {category = "armor", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1.5},  -- APC with only .50 cal MG
+    ["BMD-1"] = {category = "armor", threats = {infantry = 4, armor = 3, air = 0}, strength = 3.5},    -- IFV with 73mm gun + ATGM
     ["M-2 Bradley"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
     ["BMP-2"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+    ["BTR-60"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
     ["BTR-80"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
     
     -- Medium armor
