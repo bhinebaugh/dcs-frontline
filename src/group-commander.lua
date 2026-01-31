@@ -6,6 +6,7 @@ local formationTypes = constants.formationTypes
 local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
+local taskTypes = constants.taskTypes
 local unitClassification = constants.unitClassification
 local vulnerabilityMatrix = constants.vulnerabilityMatrix
 local GroupCommander = {}
@@ -23,7 +24,7 @@ function GroupCommander.new(groupName, config)
     self.coalition = config.color
     self.color = config.color
     self.destination = nil
-    self.disposition = dispositionTypes.DEFEND
+    self.disposition = dispositionTypes.HOLD
     self.formationType = formationTypes.OFF_ROAD
     self.groupName = groupName
     self.initialUnitNames = self:getOwnUnitNames()
@@ -242,10 +243,13 @@ function GroupCommander:decide()
                 -- We're at objective with no threats
                 env.info(self.groupName .. " DECIDE: DEFEND (at objective, no threats)")
                 self:setDisposition(dispositionTypes.DEFEND)
-                -- Mark order as completed if we're defending at objective
+                -- Mark certain order types as completed when arriving at position
                 if self.orders.status == orderStatus.IN_PROGRESS then
-                    self.orders.status = orderStatus.COMPLETED
-                    self.orders.completedAt = timer.getTime()
+                    if self.orders.type == taskTypes.RALLY or self.orders.type == taskTypes.REINFORCE then
+                        self.orders.status = orderStatus.COMPLETED
+                        self.orders.completedAt = timer.getTime()
+                        env.info(self.groupName .. " DECIDE: Order completed (arrived at position)")
+                    end
                 end
             end
             return
@@ -260,14 +264,95 @@ function GroupCommander:decide()
             else
                 env.info(self.groupName .. " DECIDE: DEFEND (at objective, threats eliminated)")
                 self:setDisposition(dispositionTypes.DEFEND)
+                -- Mark certain order types as completed when arriving at position
+                if self.orders.status == orderStatus.IN_PROGRESS then
+                    if self.orders.type == taskTypes.RALLY or self.orders.type == taskTypes.REINFORCE then
+                        self.orders.status = orderStatus.COMPLETED
+                        self.orders.completedAt = timer.getTime()
+                        env.info(self.groupName .. " DECIDE: Order completed (arrived at position)")
+                    end
+                end
             end
             return
         end
         
         -- Check if we need to retreat based on ALR
         if strengthRatio < retreatThreshold or vulnerability > maxAcceptableVulnerability then
+            -- First check if threats are too stale to warrant retreat
+            local threatStatuses = self:checkThreatStatuses()
+            
+            -- Don't retreat if all threats are UNCONFIRMED or lower
+            if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                env.info(self.groupName .. " DECIDE: Not retreating (threats UNCONFIRMED)")
+                env.info(self.groupName .. " DECIDE: Current order type=" .. (self.orders.type or "nil") .. 
+                         " position x=" .. orderedPosition.x .. " z=" .. orderedPosition.z)
+                
+                -- If the order is a RALLY order (coordinated reinforcement), proceed to the rally point
+                if self.orders.type == taskTypes.RALLY then
+                    env.info(self.groupName .. " DECIDE: Proceeding to RALLY point")
+                    self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    if self.destination then
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                    else
+                        -- Already at rally point
+                        self:setDisposition(dispositionTypes.HOLD)
+                    end
+                    -- Resume order from STANDBY
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                else
+                    -- For REPOSITION or other orders, hold and wait for StrategicCommander reevaluation
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    -- Mark order as STANDBY for StrategicCommander reevaluation
+                    if self.orders.status == orderStatus.IN_PROGRESS then
+                        self.orders.status = orderStatus.STANDBY
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
+                end
+            -- Don't retreat if threats have been SUSPECTED for 1+ minute
+            elseif threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                env.info(self.groupName .. " DECIDE: Not retreating (threats SUSPECTED for 1+ minute)")
+                env.info(self.groupName .. " DECIDE: Current order type=" .. (self.orders.type or "nil") .. 
+                         " position x=" .. orderedPosition.x .. " z=" .. orderedPosition.z)
+                
+                -- If the order is a RALLY order (coordinated reinforcement), proceed to the rally point
+                if self.orders.type == taskTypes.RALLY then
+                    env.info(self.groupName .. " DECIDE: Proceeding to RALLY point")
+                    self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    if self.destination then
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                    else
+                        -- Already at rally point
+                        self:setDisposition(dispositionTypes.HOLD)
+                    end
+                    -- Resume order from STANDBY
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                else
+                    -- For REPOSITION or other orders, hold and wait for StrategicCommander reevaluation
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    -- Mark order as STANDBY for StrategicCommander reevaluation
+                    if self.orders.status == orderStatus.IN_PROGRESS then
+                        self.orders.status = orderStatus.STANDBY
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
+                end
             -- Check if we're already retreating or need to start
-            if self.disposition ~= dispositionTypes.RETREAT then
+            elseif self.disposition ~= dispositionTypes.RETREAT then
                 env.info(self.groupName .. " DECIDE: RETREAT (ordered, threats too strong)")
                 self:setDisposition(dispositionTypes.RETREAT)
                 -- Mark order as on standby while retreating
@@ -276,7 +361,6 @@ function GroupCommander:decide()
                 end
             else
                 -- Already retreating, check if we should transition to holding
-                local threatStatuses = self:checkThreatStatuses()
                 
                 -- If all threats are UNCONFIRMED or lower, immediately stop retreating
                 if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
@@ -284,6 +368,17 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Resume order from STANDBY now that it's safe
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
                 
@@ -293,62 +388,104 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Resume order from STANDBY now that it's safe
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
             end
             
+            -- Always retreat away from imminent threats, even for RALLY orders
+            -- Units will navigate to rally point once threats are SUSPECTED/UNCONFIRMED
             self.destination = self:calculateDestinationRelativeToThreats(threatCenter, true)
             self.lastThreatCenter = threatCenter
             
         -- Check if we can advance on threats without straying too far from ordered position
         elseif strengthRatio >= advanceThreshold and vulnerability < maxAcceptableVulnerability * 0.5 then
-            local ownPos = self:getOwnPosition()
-            if ownPos then
-                local distanceToOrdered = math.sqrt(
-                    (ownPos.x - orderedPosition.x)^2 + 
-                    (ownPos.z - orderedPosition.z)^2
-                )
-                
-                -- Only advance if we're within 3km of ordered position or moving closer
-                if distanceToOrdered < 3000 then
-                    env.info(self.groupName .. " DECIDE: ADVANCE ON THREATS (near ordered position)")
-                    self:setDisposition(dispositionTypes.ADVANCE)
-                    local advanceDestination = self:calculateDestinationRelativeToThreats(threatCenter, false)
+            -- Check if threats are too stale to pursue
+            local threatStatuses = self:checkThreatStatuses()
+            local shouldPursue = true
+            
+            -- Don't pursue if all threats are UNCONFIRMED or lower
+            if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                shouldPursue = false
+                env.info(self.groupName .. " DECIDE: Not pursuing (threats UNCONFIRMED)")
+            -- Don't pursue if threats have been SUSPECTED for 1+ minute
+            elseif threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                shouldPursue = false
+                env.info(self.groupName .. " DECIDE: Not pursuing (threats SUSPECTED for 1+ minute)")
+            end
+            
+            if shouldPursue then
+                local ownPos = self:getOwnPosition()
+                if ownPos then
+                    local distanceToOrdered = math.sqrt(
+                        (ownPos.x - orderedPosition.x)^2 + 
+                        (ownPos.z - orderedPosition.z)^2
+                    )
                     
-                    -- Verify the advance destination doesn't exceed the leash
-                    if advanceDestination then
-                        local destDistanceToOrdered = math.sqrt(
-                            (advanceDestination.x - orderedPosition.x)^2 + 
-                            (advanceDestination.z - orderedPosition.z)^2
-                        )
-                        if destDistanceToOrdered > 3000 then
-                            -- Destination would exceed leash, move back toward ordered position instead
-                            env.info(self.groupName .. " DECIDE: Advance destination exceeds leash, returning to position")
-                            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    -- Only advance if we're within 3km of ordered position or moving closer
+                    if distanceToOrdered < 3000 then
+                        env.info(self.groupName .. " DECIDE: ADVANCE ON THREATS (near ordered position)")
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                        local advanceDestination = self:calculateDestinationRelativeToThreats(threatCenter, false)
+                        
+                        -- Verify the advance destination doesn't exceed the leash
+                        if advanceDestination then
+                            local destDistanceToOrdered = math.sqrt(
+                                (advanceDestination.x - orderedPosition.x)^2 + 
+                                (advanceDestination.z - orderedPosition.z)^2
+                            )
+                            if destDistanceToOrdered > 3000 then
+                                -- Destination would exceed leash, move back toward ordered position instead
+                                env.info(self.groupName .. " DECIDE: Advance destination exceeds leash, returning to position")
+                                self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                            else
+                                self.destination = advanceDestination
+                            end
                         else
                             self.destination = advanceDestination
                         end
                     else
-                        self.destination = advanceDestination
+                        self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                        if self.destination then
+                            env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
+                            self:setDisposition(dispositionTypes.ADVANCE)
+                        else
+                            env.info(self.groupName .. " DECIDE: DEFEND (at objective, too far to advance)")
+                            self:setDisposition(dispositionTypes.DEFEND)
+                        end
                     end
                 else
                     self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
                     if self.destination then
-                        env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
+                        env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
                         self:setDisposition(dispositionTypes.ADVANCE)
                     else
-                        env.info(self.groupName .. " DECIDE: DEFEND (at objective, too far to advance)")
+                        env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
                         self:setDisposition(dispositionTypes.DEFEND)
                     end
                 end
             else
-                self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
-                if self.destination then
-                    env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
-                    self:setDisposition(dispositionTypes.ADVANCE)
-                else
-                    env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
-                    self:setDisposition(dispositionTypes.DEFEND)
+                -- Threats too stale, stop pursuing and return to defensive posture
+                self.destination = nil
+                self.lastThreatCenter = nil
+                self.lastMoveOrder = nil
+                env.info(self.groupName .. " DECIDE: HOLD (stopped pursuing stale threats)")
+                self:setDisposition(dispositionTypes.HOLD)
+                -- Clear any existing movement waypoints
+                local group = Group.getByName(self.groupName)
+                if group and group:isExist() then
+                    local controller = group:getController()
+                    controller:setTask({id = 'Hold', params = {}})
                 end
             end
             
@@ -394,13 +531,39 @@ function GroupCommander:decide()
         
         -- Make decision based on strength and vulnerability
         if strengthRatio < retreatThreshold or vulnerability > maxAcceptableVulnerability then
+            -- First check if threats are too stale to warrant retreat
+            local threatStatuses = self:checkThreatStatuses()
+            
+            -- Don't retreat if all threats are UNCONFIRMED or lower
+            if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                env.info(self.groupName .. " DECIDE: HOLD (threats UNCONFIRMED, not retreating)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self.lastMoveOrder = nil
+                -- Clear any existing movement waypoints
+                local group = Group.getByName(self.groupName)
+                if group and group:isExist() then
+                    local controller = group:getController()
+                    controller:setTask({id = 'Hold', params = {}})
+                end
+            -- Don't retreat if threats have been SUSPECTED for 1+ minute
+            elseif threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                env.info(self.groupName .. " DECIDE: HOLD (threats SUSPECTED for 1+ minute, not retreating)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self.lastMoveOrder = nil
+                -- Clear any existing movement waypoints
+                local group = Group.getByName(self.groupName)
+                if group and group:isExist() then
+                    local controller = group:getController()
+                    controller:setTask({id = 'Hold', params = {}})
+                end
             -- Check if we're already retreating or need to start
-            if self.disposition ~= dispositionTypes.RETREAT then
+            elseif self.disposition ~= dispositionTypes.RETREAT then
                 env.info(self.groupName .. " DECIDE: RETREAT")
                 self:setDisposition(dispositionTypes.RETREAT)
             else
                 -- Already retreating, check if we should transition to holding
-                local threatStatuses = self:checkThreatStatuses()
                 
                 -- If all threats are UNCONFIRMED or lower, immediately stop retreating
                 if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
@@ -408,6 +571,13 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
                 
@@ -417,6 +587,13 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
             end
@@ -822,6 +999,9 @@ function GroupCommander:classifyUnit(unitTypeName)
     if classification then
         return classification
     end
+    
+    -- Log unknown unit types to help with configuration
+    env.info("WARNING: Unknown unit type '" .. unitTypeName .. "' - using default classification")
     
     -- Default classification for unknown units
     return {category = "unknown", threats = {infantry = 1, armor = 1, air = 0}, strength = 1}

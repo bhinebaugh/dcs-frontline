@@ -1,10 +1,12 @@
 local constants = require("constants")
 local GroupCommander = require("group-commander")
+local Order = require("order")
 local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local oodaStates = constants.oodaStates
+local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
 
@@ -60,6 +62,10 @@ end
 
 function StrategicCommander:orient()
     env.info(self.color .. "StrategicCommander: ORIENT")
+    
+    -- Sync order statuses from GroupCommanders
+    self:syncOrderStatuses()
+    
     -- Analyze enemy objectives and likely courses of action
     -- Assess current objectives for liklihood of success 
     -- Set one primary objective if none exists
@@ -76,72 +82,19 @@ function StrategicCommander:decide()
     local ownGroupCommanders = self:getOwnGroupCommanders()
 
     -- Retreating forces to safe locations
-    self.retreatingGroups = {}
-    for _, commander in pairs(ownGroupCommanders) do
-        local status = commander:getStatus()
-        if status.disposition == dispositionTypes.RETREAT then
-            table.insert(self.retreatingGroups, commander)
-            table.remove(ownGroupCommanders, _)
-        end
-    end
-    env.info(
-        self.color .. "StrategicCommander: Identified " ..
-        #self.retreatingGroups .. " retreating groups."
-    )
+    self.retreatingGroups = self:extractRetreatingGroups(ownGroupCommanders)
 
+    -- Units with STANDBY orders need reevaluation
+    -- These could be units that stopped retreating due to stale threats, or any other reason
+    self.standbyGroups = self:extractStandbyGroups(ownGroupCommanders)
+    
     -- Reserves to reinforce threatened forces
-    self.reinforcementGroups = {}
-    for _, retreatingCommander in pairs(self.retreatingGroups) do
-        local status = retreatingCommander:getStatus()
-        local retreatPosition = status.destination or status.position
-        
-        -- Skip if we can't determine a retreat position
-        if not retreatPosition then
-            env.info(self.color .. "StrategicCommander: Skipping reinforcement for " .. retreatingCommander.groupName .. " (no position available)")
-        else
-            local nearestReinforcement = nil
-            local nearestDistance = math.huge
-            for _, commander in pairs(ownGroupCommanders) do
-                local commanderStatus = commander:getStatus()
-                local dist = mist.vec.mag(
-                    mist.vec.sub(commanderStatus.position, retreatPosition)
-                )
-                if dist < nearestDistance then
-                    nearestDistance = dist
-                    nearestReinforcement = commander
-                end
-            end
-            if nearestReinforcement then
-                table.insert(self.reinforcementGroups, {
-                    reinforcingCommander = nearestReinforcement,
-                    retreatingCommander = retreatingCommander,
-                    retreatPosition = retreatPosition
-                })
-                for i, commander in pairs(ownGroupCommanders) do
-                    if commander == nearestReinforcement then
-                        table.remove(ownGroupCommanders, i)
-                    end
-                end
-            end
-        end
-    end
-    env.info(
-        self.color .. "StrategicCommander: Assigned " ..
-        #self.reinforcementGroups .. " reinforcement groups."
-    )
+    self.reinforcementGroups = self:extractReinforcingGroups(ownGroupCommanders)
 
     -- Low supply groups to resupply points
     -- Reconnaissance to gather needed intelligence
     -- Reposition for coordinated action on objectives
-    self.repositioningGroups = {}
-    for _, commander in pairs(ownGroupCommanders) do
-        table.insert(self.repositioningGroups, commander)
-        table.remove(ownGroupCommanders, _)
-    end
-    env.info(
-        self.color .. "StrategicCommander: Assigned " ..
-        #self.repositioningGroups .. " repositioning groups."
-    )
+    self.rallyingGroups = self:extractRallyingGroups(ownGroupCommanders)
 
     -- Offensive actions on objectives
     -- Logistics to resupply points needing replenishment
@@ -156,34 +109,84 @@ function StrategicCommander:act()
         local retreatingCommander = retreatPair.retreatingCommander
         local retreatPosition = retreatPair.retreatPosition
 
-        -- Check if this order has already been issued (more than 100m tolerance)
-        local lastOrder = self.lastIssuedOrders[reinforcingCommander.groupName]
-        local orderChanged = not lastOrder or
-            lastOrder.type ~= taskTypes.REINFORCE or
-            math.abs(lastOrder.position.x - retreatPosition.x) > 100 or
-            math.abs(lastOrder.position.z - retreatPosition.z) > 100
+        -- Find nearest rally point to the retreating unit
+        local rallyPoint = self:findNearestRallyPoint(retreatPosition)
+        
+        if not rallyPoint then
+            env.info(self.color .. "StrategicCommander: No rally points configured, skipping reinforcement order")
+        else
+            local rallyPosition = rallyPoint.position
+            
+            -- Issue RALLY order to retreating unit
+            local retreatingLastOrder = self.lastIssuedOrders[retreatingCommander.groupName]
+            local retreatingOrderChanged = not retreatingLastOrder or
+                retreatingLastOrder.type ~= taskTypes.RALLY or
+                math.abs(retreatingLastOrder.position.x - rallyPosition.x) > 100 or
+                math.abs(retreatingLastOrder.position.z - rallyPosition.z) > 100
 
-        if orderChanged then
-            env.info(
-                self.color .. "StrategicCommander: ordering " ..
-                reinforcingCommander.groupName .. " to reinforce " ..
-                retreatingCommander.groupName .. " at position x=" ..
-                retreatPosition.x .. " z=" .. retreatPosition.z
-            )
-            reinforcingCommander:issueOrder({
-                alr = alr.MEDIUM,
-                position = retreatPosition,
-                type = taskTypes.REINFORCE,
-            })
-            self.lastIssuedOrders[reinforcingCommander.groupName] = {
-                alr = alr.MEDIUM,
-                position = {x = retreatPosition.x, z = retreatPosition.z},
-                type = taskTypes.REINFORCE,
-            }
+            if retreatingOrderChanged then
+                env.info(
+                    self.color .. "StrategicCommander: ordering " ..
+                    retreatingCommander.groupName .. " to rally at safe position x=" ..
+                    rallyPosition.x .. " z=" .. rallyPosition.z
+                )
+                
+                local retreatingOrder = Order.new({
+                    assignedTo = retreatingCommander.groupName,
+                    objective = nil,
+                    position = rallyPosition,
+                    radius = rallyPoint.radius,
+                    type = taskTypes.RALLY,
+                    alr = alr.LOW,  -- Low risk at rally point
+                    deadline = timer.getTime() + 600,  -- 10 minute deadline
+                })
+                
+                retreatingCommander:issueOrder(retreatingOrder)
+                
+                self.lastIssuedOrders[retreatingCommander.groupName] = {
+                    alr = alr.LOW,
+                    position = {x = rallyPosition.x, z = rallyPosition.z},
+                    type = taskTypes.RALLY,
+                }
+            end
+            
+            -- Issue RALLY order to reinforcing unit
+            local reinforcingLastOrder = self.lastIssuedOrders[reinforcingCommander.groupName]
+            local reinforcingOrderChanged = not reinforcingLastOrder or
+                reinforcingLastOrder.type ~= taskTypes.RALLY or
+                math.abs(reinforcingLastOrder.position.x - rallyPosition.x) > 100 or
+                math.abs(reinforcingLastOrder.position.z - rallyPosition.z) > 100
+
+            if reinforcingOrderChanged then
+                env.info(
+                    self.color .. "StrategicCommander: ordering " ..
+                    reinforcingCommander.groupName .. " to rally with " ..
+                    retreatingCommander.groupName .. " at position x=" ..
+                    rallyPosition.x .. " z=" .. rallyPosition.z
+                )
+                
+                local reinforcingOrder = Order.new({
+                    assignedTo = reinforcingCommander.groupName,
+                    objective = nil,
+                    position = rallyPosition,
+                    radius = rallyPoint.radius,
+                    type = taskTypes.RALLY,
+                    alr = alr.MEDIUM,  -- Medium risk en route to rally
+                    deadline = timer.getTime() + 600,  -- 10 minute deadline
+                })
+                
+                reinforcingCommander:issueOrder(reinforcingOrder)
+                
+                self.lastIssuedOrders[reinforcingCommander.groupName] = {
+                    alr = alr.MEDIUM,
+                    position = {x = rallyPosition.x, z = rallyPosition.z},
+                    type = taskTypes.RALLY,
+                }
+            end
         end
     end
 
-    for _, commander in pairs(self.repositioningGroups) do
+    for _, commander in pairs(self.rallyingGroups) do
         -- Assign each remaining commander to act on primary objective
         if self.prioirtyObjective then
             -- Check if this order has already been issued (more than 100m tolerance)
@@ -210,12 +213,20 @@ function StrategicCommander:act()
                     commander:updateThreatIntel(relevantThreats)
                 end
                 
-                commander:issueOrder({
-                    alr = alr.MEDIUM,
+                -- Create Order instance and add to objective
+                local order = Order.new({
+                    assignedTo = commander.groupName,
+                    objective = self.prioirtyObjective,
                     position = self.prioirtyObjective.position,
                     radius = self.prioirtyObjective.radius,
                     type = self.prioirtyObjective.type,
+                    alr = alr.MEDIUM,
+                    deadline = self.prioirtyObjective.deadline,
                 })
+                
+                self.prioirtyObjective:addOrder(order)
+                commander:issueOrder(order)
+                
                 self.lastIssuedOrders[commander.groupName] = {
                     alr = alr.MEDIUM,
                     position = {x = self.prioirtyObjective.position.x, z = self.prioirtyObjective.position.z},
@@ -227,7 +238,7 @@ function StrategicCommander:act()
     end
 end
 
-function StrategicCommander:assesObjective(objective)
+function StrategicCommander:assessObjective(objective)
     local nearbyThreats = self:getThreatsNearPosition(
         objective.position,
         10000
@@ -246,7 +257,7 @@ function StrategicCommander:assessObjectives()
     for _, objective in pairs(self.objectives) do
         -- Evaluate each objective's likelihood of success
         -- Update objective status accordingly
-        local probability = self:assesObjective(objective)
+        local probability = self:assessObjective(objective)
         if probability > highestProbability then
             highestProbability = probability
             highestProbabilityObjective = objective
@@ -269,6 +280,87 @@ function StrategicCommander:aggregateThreatsFromGroups()
         -- Merge each group's threats into strategic view
         self.threatTracker:mergeThreatIntel(status.threats)
     end
+end
+
+function StrategicCommander:extractReinforcingGroups(ownGroupCommanders)
+    local reinforcingGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.disposition == dispositionTypes.REINFORCE then
+            table.insert(reinforcingGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #reinforcingGroups .. " reinforcing groups."
+    )
+    return reinforcingGroups
+end
+
+function StrategicCommander:extractRallyingGroups(ownGroupCommanders)
+    local rallyingGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.disposition == dispositionTypes.HOLD then
+            table.insert(rallyingGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #rallyingGroups .. " rallying groups."
+    )
+    return rallyingGroups
+end
+
+function StrategicCommander:extractRetreatingGroups(ownGroupCommanders)
+    local retreatingGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.disposition == dispositionTypes.RETREAT then
+            table.insert(retreatingGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #retreatingGroups .. " retreating groups."
+    )
+    return retreatingGroups
+end
+
+function StrategicCommander:extractStandbyGroups(ownGroupCommanders)
+    local standbyGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.orderStatus == orderStatus.STANDBY then
+            table.insert(standbyGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #standbyGroups .. " standby groups."
+    )
+    return standbyGroups
+end
+
+function StrategicCommander:findNearestRallyPoint(position)
+    -- Find the nearest rally point to the given position
+    if not self.rallyPoints or #self.rallyPoints == 0 then
+        return nil
+    end
+    local nearestRallyPoint = nil
+    local nearestDistance = math.huge
+    for _, rallyPoint in ipairs(self.rallyPoints) do
+        local dist = mist.vec.mag(mist.vec.sub(rallyPoint.position, position))
+        if dist < nearestDistance then
+            nearestDistance = dist
+            nearestRallyPoint = rallyPoint
+        end
+    end
+    return nearestRallyPoint
 end
 
 function StrategicCommander:getOwnGroupCommanders()
@@ -302,6 +394,31 @@ function StrategicCommander:getThreatsNearPosition(position, radius)
     end
     
     return nearbyThreats
+end
+
+function StrategicCommander:syncOrderStatuses()
+    -- Query GroupCommanders for their order status and update Order objects
+    local groupCommanders = self:getOwnGroupCommanders()
+    
+    for _, commander in pairs(groupCommanders) do
+        local status = commander:getStatus()
+        
+        -- Find this group's order in our objectives
+        for _, objective in ipairs(self.objectives) do
+            for _, order in ipairs(objective.orders) do
+                if order.assignedTo == commander.groupName then
+                    -- Update order status from group commander's report
+                    if status.orderStatus and status.orderStatus ~= order.status then
+                        env.info(self.color .. "StrategicCommander: Order for " .. 
+                                commander.groupName .. " status changed: " .. 
+                                order.status .. " -> " .. status.orderStatus)
+                        order.status = status.orderStatus
+                        objective.updatedAt = timer.getTime()
+                    end
+                end
+            end
+        end
+    end
 end
 
 return StrategicCommander

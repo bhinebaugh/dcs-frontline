@@ -46,10 +46,63 @@ local constants = require("constants")
 local taskTypes = constants.taskTypes
 
 local GroupCommander = require("group-commander")
+local Objective = require("objective")
 local StrategicCommander = require("strategic-commander")
+
+-- Initial objective for Alpha is to defend the bridge
+-- near the coordinates:
+local blueDefendPosition = coord.LLtoLO(
+    42 + 32/60 + 1/3600,
+    44 + 05/60 + 38/3600
+)
+
+-- Known safe rally point for Blue forces
+local blueRallyPosition = coord.LLtoLO(
+    42 + 25/60 + 30/3600,
+    44 + 00/60 + 26/3600
+)
+
+-- Initial objective for Bravo is to reposition to the
+-- Kvemo-Khoshka village at these coordinates:
+local redRepositionPosition = coord.LLtoLO(
+    42 + 27/60 + 53/3600,
+    44 + 03/60 + 37/3600
+)
+
+-- Known safe rally point for Red forces
+local redRallyPosition = coord.LLtoLO(
+    42 + 34/60 + 0/3600,
+    44 + 06/60 + 30/3600
+)
 
 local stratBlue = StrategicCommander.new({color = "blue"})
 local stratRed = StrategicCommander.new({color = "red"})
+
+-- Assign rally points to strategic commanders
+stratBlue.rallyPoints = {
+    {position = blueRallyPosition, radius = 500}
+}
+
+stratRed.rallyPoints = {
+    {position = redRallyPosition, radius = 500}
+}
+
+-- Create and assign objectives directly
+stratBlue.objectives = {
+    Objective.new({
+        type = taskTypes.DEFEND,
+        position = blueDefendPosition,
+        radius = 500,
+    })
+}
+
+stratRed.objectives = {
+    Objective.new({
+        type = taskTypes.REPOSITION,
+        position = redRepositionPosition,
+        deadline = timer.getTime() + 1800,  -- 30 minute deadline
+    })
+}
 
 local groupA = GroupCommander.new("Alpha", {
     color = "blue",
@@ -63,44 +116,6 @@ local groupC = GroupCommander.new("Charlie", {
     color = "red",
     stratcom = stratRed
 })
-
--- Initial objective for Alpha is to defend the bridge
--- near the coordinates:
-local lat = 42 + 32/60 + 1/3600
-local lon = 44 + 05/60 + 38/3600
-local blueDefendPosition = coord.LLtoLO(lat, lon)
-
--- Initial objective for Bravo is to reposition to the
--- Kvemo-Khoshka village at these coordinates:
-local lat = 42 + 28/60 + 0/3600
-local lon = 44 + 03/60 + 30/3600
-local redRepositionPosition = coord.LLtoLO(lat, lon)
-
--- Ideally, the strategic commander would issue these orders
--- Delay the move order until mission is fully loaded
--- mist.scheduleFunction(
---     function()
---         env.info("Delayed move order execution for Bravo")
---         groupB:issueMoveOrder(redRepositionPosition)
---     end,
---     {},
---     timer.getTime() + 5  -- Wait 5 seconds after mission start
--- )
-
-stratBlue.objectives = {
-    {
-        type = taskTypes.DEFEND,
-        position = blueDefendPosition,
-        radius = 500, -- meters
-    }
-}
-
-stratRed.objectives = {
-    {
-        type = taskTypes.RALLY,
-        position = redRepositionPosition,
-    }
-}
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge
@@ -117,11 +132,13 @@ end)
 __bundle_register("strategic-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local GroupCommander = require("group-commander")
+local Order = require("order")
 local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local oodaStates = constants.oodaStates
+local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
 
@@ -177,6 +194,10 @@ end
 
 function StrategicCommander:orient()
     env.info(self.color .. "StrategicCommander: ORIENT")
+    
+    -- Sync order statuses from GroupCommanders
+    self:syncOrderStatuses()
+    
     -- Analyze enemy objectives and likely courses of action
     -- Assess current objectives for liklihood of success 
     -- Set one primary objective if none exists
@@ -193,72 +214,19 @@ function StrategicCommander:decide()
     local ownGroupCommanders = self:getOwnGroupCommanders()
 
     -- Retreating forces to safe locations
-    self.retreatingGroups = {}
-    for _, commander in pairs(ownGroupCommanders) do
-        local status = commander:getStatus()
-        if status.disposition == dispositionTypes.RETREAT then
-            table.insert(self.retreatingGroups, commander)
-            table.remove(ownGroupCommanders, _)
-        end
-    end
-    env.info(
-        self.color .. "StrategicCommander: Identified " ..
-        #self.retreatingGroups .. " retreating groups."
-    )
+    self.retreatingGroups = self:extractRetreatingGroups(ownGroupCommanders)
 
+    -- Units with STANDBY orders need reevaluation
+    -- These could be units that stopped retreating due to stale threats, or any other reason
+    self.standbyGroups = self:extractStandbyGroups(ownGroupCommanders)
+    
     -- Reserves to reinforce threatened forces
-    self.reinforcementGroups = {}
-    for _, retreatingCommander in pairs(self.retreatingGroups) do
-        local status = retreatingCommander:getStatus()
-        local retreatPosition = status.destination or status.position
-        
-        -- Skip if we can't determine a retreat position
-        if not retreatPosition then
-            env.info(self.color .. "StrategicCommander: Skipping reinforcement for " .. retreatingCommander.groupName .. " (no position available)")
-        else
-            local nearestReinforcement = nil
-            local nearestDistance = math.huge
-            for _, commander in pairs(ownGroupCommanders) do
-                local commanderStatus = commander:getStatus()
-                local dist = mist.vec.mag(
-                    mist.vec.sub(commanderStatus.position, retreatPosition)
-                )
-                if dist < nearestDistance then
-                    nearestDistance = dist
-                    nearestReinforcement = commander
-                end
-            end
-            if nearestReinforcement then
-                table.insert(self.reinforcementGroups, {
-                    reinforcingCommander = nearestReinforcement,
-                    retreatingCommander = retreatingCommander,
-                    retreatPosition = retreatPosition
-                })
-                for i, commander in pairs(ownGroupCommanders) do
-                    if commander == nearestReinforcement then
-                        table.remove(ownGroupCommanders, i)
-                    end
-                end
-            end
-        end
-    end
-    env.info(
-        self.color .. "StrategicCommander: Assigned " ..
-        #self.reinforcementGroups .. " reinforcement groups."
-    )
+    self.reinforcementGroups = self:extractReinforcingGroups(ownGroupCommanders)
 
     -- Low supply groups to resupply points
     -- Reconnaissance to gather needed intelligence
     -- Reposition for coordinated action on objectives
-    self.repositioningGroups = {}
-    for _, commander in pairs(ownGroupCommanders) do
-        table.insert(self.repositioningGroups, commander)
-        table.remove(ownGroupCommanders, _)
-    end
-    env.info(
-        self.color .. "StrategicCommander: Assigned " ..
-        #self.repositioningGroups .. " repositioning groups."
-    )
+    self.rallyingGroups = self:extractRallyingGroups(ownGroupCommanders)
 
     -- Offensive actions on objectives
     -- Logistics to resupply points needing replenishment
@@ -273,34 +241,84 @@ function StrategicCommander:act()
         local retreatingCommander = retreatPair.retreatingCommander
         local retreatPosition = retreatPair.retreatPosition
 
-        -- Check if this order has already been issued (more than 100m tolerance)
-        local lastOrder = self.lastIssuedOrders[reinforcingCommander.groupName]
-        local orderChanged = not lastOrder or
-            lastOrder.type ~= taskTypes.REINFORCE or
-            math.abs(lastOrder.position.x - retreatPosition.x) > 100 or
-            math.abs(lastOrder.position.z - retreatPosition.z) > 100
+        -- Find nearest rally point to the retreating unit
+        local rallyPoint = self:findNearestRallyPoint(retreatPosition)
+        
+        if not rallyPoint then
+            env.info(self.color .. "StrategicCommander: No rally points configured, skipping reinforcement order")
+        else
+            local rallyPosition = rallyPoint.position
+            
+            -- Issue RALLY order to retreating unit
+            local retreatingLastOrder = self.lastIssuedOrders[retreatingCommander.groupName]
+            local retreatingOrderChanged = not retreatingLastOrder or
+                retreatingLastOrder.type ~= taskTypes.RALLY or
+                math.abs(retreatingLastOrder.position.x - rallyPosition.x) > 100 or
+                math.abs(retreatingLastOrder.position.z - rallyPosition.z) > 100
 
-        if orderChanged then
-            env.info(
-                self.color .. "StrategicCommander: ordering " ..
-                reinforcingCommander.groupName .. " to reinforce " ..
-                retreatingCommander.groupName .. " at position x=" ..
-                retreatPosition.x .. " z=" .. retreatPosition.z
-            )
-            reinforcingCommander:issueOrder({
-                alr = alr.MEDIUM,
-                position = retreatPosition,
-                type = taskTypes.REINFORCE,
-            })
-            self.lastIssuedOrders[reinforcingCommander.groupName] = {
-                alr = alr.MEDIUM,
-                position = {x = retreatPosition.x, z = retreatPosition.z},
-                type = taskTypes.REINFORCE,
-            }
+            if retreatingOrderChanged then
+                env.info(
+                    self.color .. "StrategicCommander: ordering " ..
+                    retreatingCommander.groupName .. " to rally at safe position x=" ..
+                    rallyPosition.x .. " z=" .. rallyPosition.z
+                )
+                
+                local retreatingOrder = Order.new({
+                    assignedTo = retreatingCommander.groupName,
+                    objective = nil,
+                    position = rallyPosition,
+                    radius = rallyPoint.radius,
+                    type = taskTypes.RALLY,
+                    alr = alr.LOW,  -- Low risk at rally point
+                    deadline = timer.getTime() + 600,  -- 10 minute deadline
+                })
+                
+                retreatingCommander:issueOrder(retreatingOrder)
+                
+                self.lastIssuedOrders[retreatingCommander.groupName] = {
+                    alr = alr.LOW,
+                    position = {x = rallyPosition.x, z = rallyPosition.z},
+                    type = taskTypes.RALLY,
+                }
+            end
+            
+            -- Issue RALLY order to reinforcing unit
+            local reinforcingLastOrder = self.lastIssuedOrders[reinforcingCommander.groupName]
+            local reinforcingOrderChanged = not reinforcingLastOrder or
+                reinforcingLastOrder.type ~= taskTypes.RALLY or
+                math.abs(reinforcingLastOrder.position.x - rallyPosition.x) > 100 or
+                math.abs(reinforcingLastOrder.position.z - rallyPosition.z) > 100
+
+            if reinforcingOrderChanged then
+                env.info(
+                    self.color .. "StrategicCommander: ordering " ..
+                    reinforcingCommander.groupName .. " to rally with " ..
+                    retreatingCommander.groupName .. " at position x=" ..
+                    rallyPosition.x .. " z=" .. rallyPosition.z
+                )
+                
+                local reinforcingOrder = Order.new({
+                    assignedTo = reinforcingCommander.groupName,
+                    objective = nil,
+                    position = rallyPosition,
+                    radius = rallyPoint.radius,
+                    type = taskTypes.RALLY,
+                    alr = alr.MEDIUM,  -- Medium risk en route to rally
+                    deadline = timer.getTime() + 600,  -- 10 minute deadline
+                })
+                
+                reinforcingCommander:issueOrder(reinforcingOrder)
+                
+                self.lastIssuedOrders[reinforcingCommander.groupName] = {
+                    alr = alr.MEDIUM,
+                    position = {x = rallyPosition.x, z = rallyPosition.z},
+                    type = taskTypes.RALLY,
+                }
+            end
         end
     end
 
-    for _, commander in pairs(self.repositioningGroups) do
+    for _, commander in pairs(self.rallyingGroups) do
         -- Assign each remaining commander to act on primary objective
         if self.prioirtyObjective then
             -- Check if this order has already been issued (more than 100m tolerance)
@@ -327,12 +345,20 @@ function StrategicCommander:act()
                     commander:updateThreatIntel(relevantThreats)
                 end
                 
-                commander:issueOrder({
-                    alr = alr.MEDIUM,
+                -- Create Order instance and add to objective
+                local order = Order.new({
+                    assignedTo = commander.groupName,
+                    objective = self.prioirtyObjective,
                     position = self.prioirtyObjective.position,
                     radius = self.prioirtyObjective.radius,
                     type = self.prioirtyObjective.type,
+                    alr = alr.MEDIUM,
+                    deadline = self.prioirtyObjective.deadline,
                 })
+                
+                self.prioirtyObjective:addOrder(order)
+                commander:issueOrder(order)
+                
                 self.lastIssuedOrders[commander.groupName] = {
                     alr = alr.MEDIUM,
                     position = {x = self.prioirtyObjective.position.x, z = self.prioirtyObjective.position.z},
@@ -344,7 +370,7 @@ function StrategicCommander:act()
     end
 end
 
-function StrategicCommander:assesObjective(objective)
+function StrategicCommander:assessObjective(objective)
     local nearbyThreats = self:getThreatsNearPosition(
         objective.position,
         10000
@@ -363,7 +389,7 @@ function StrategicCommander:assessObjectives()
     for _, objective in pairs(self.objectives) do
         -- Evaluate each objective's likelihood of success
         -- Update objective status accordingly
-        local probability = self:assesObjective(objective)
+        local probability = self:assessObjective(objective)
         if probability > highestProbability then
             highestProbability = probability
             highestProbabilityObjective = objective
@@ -386,6 +412,87 @@ function StrategicCommander:aggregateThreatsFromGroups()
         -- Merge each group's threats into strategic view
         self.threatTracker:mergeThreatIntel(status.threats)
     end
+end
+
+function StrategicCommander:extractReinforcingGroups(ownGroupCommanders)
+    local reinforcingGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.disposition == dispositionTypes.REINFORCE then
+            table.insert(reinforcingGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #reinforcingGroups .. " reinforcing groups."
+    )
+    return reinforcingGroups
+end
+
+function StrategicCommander:extractRallyingGroups(ownGroupCommanders)
+    local rallyingGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.disposition == dispositionTypes.HOLD then
+            table.insert(rallyingGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #rallyingGroups .. " rallying groups."
+    )
+    return rallyingGroups
+end
+
+function StrategicCommander:extractRetreatingGroups(ownGroupCommanders)
+    local retreatingGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.disposition == dispositionTypes.RETREAT then
+            table.insert(retreatingGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #retreatingGroups .. " retreating groups."
+    )
+    return retreatingGroups
+end
+
+function StrategicCommander:extractStandbyGroups(ownGroupCommanders)
+    local standbyGroups = {}
+    for _, commander in pairs(ownGroupCommanders) do
+        local status = commander:getStatus()
+        if status.orderStatus == orderStatus.STANDBY then
+            table.insert(standbyGroups, commander)
+            table.remove(ownGroupCommanders, _)
+        end
+    end
+    env.info(
+        self.color .. "StrategicCommander: Identified " ..
+        #standbyGroups .. " standby groups."
+    )
+    return standbyGroups
+end
+
+function StrategicCommander:findNearestRallyPoint(position)
+    -- Find the nearest rally point to the given position
+    if not self.rallyPoints or #self.rallyPoints == 0 then
+        return nil
+    end
+    local nearestRallyPoint = nil
+    local nearestDistance = math.huge
+    for _, rallyPoint in ipairs(self.rallyPoints) do
+        local dist = mist.vec.mag(mist.vec.sub(rallyPoint.position, position))
+        if dist < nearestDistance then
+            nearestDistance = dist
+            nearestRallyPoint = rallyPoint
+        end
+    end
+    return nearestRallyPoint
 end
 
 function StrategicCommander:getOwnGroupCommanders()
@@ -419,6 +526,31 @@ function StrategicCommander:getThreatsNearPosition(position, radius)
     end
     
     return nearbyThreats
+end
+
+function StrategicCommander:syncOrderStatuses()
+    -- Query GroupCommanders for their order status and update Order objects
+    local groupCommanders = self:getOwnGroupCommanders()
+    
+    for _, commander in pairs(groupCommanders) do
+        local status = commander:getStatus()
+        
+        -- Find this group's order in our objectives
+        for _, objective in ipairs(self.objectives) do
+            for _, order in ipairs(objective.orders) do
+                if order.assignedTo == commander.groupName then
+                    -- Update order status from group commander's report
+                    if status.orderStatus and status.orderStatus ~= order.status then
+                        env.info(self.color .. "StrategicCommander: Order for " .. 
+                                commander.groupName .. " status changed: " .. 
+                                order.status .. " -> " .. status.orderStatus)
+                        order.status = status.orderStatus
+                        objective.updatedAt = timer.getTime()
+                    end
+                end
+            end
+        end
+    end
 end
 
 return StrategicCommander
@@ -694,6 +826,7 @@ local taskTypes = {
     RALLY = 5,
     INDIRECT = 6,
     AA = 7,
+    REPOSITION = 8,
 }
 
 local threatStatus = {
@@ -761,9 +894,11 @@ local unitClassification = {
     ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, armor = 1.5, air = 0}, strength = 2},
     
     -- Light armor / IFVs
-    ["M-113"] = {category = "armor", threats = {infantry = 3, armor = 1, air = 0}, strength = 2.5},
+    ["M-113"] = {category = "armor", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1.5},  -- APC with only .50 cal MG
+    ["BMD-1"] = {category = "armor", threats = {infantry = 4, armor = 3, air = 0}, strength = 3.5},    -- IFV with 73mm gun + ATGM
     ["M-2 Bradley"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
     ["BMP-2"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
+    ["BTR-60"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
     ["BTR-80"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
     
     -- Medium armor
@@ -827,6 +962,71 @@ return {
 }
 
 end)
+__bundle_register("order", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local orderStatus = constants.orderStatus
+
+-- Order class for tracking individual group orders issued by Strategic Commander
+-- Each order is assigned to a specific group and references its parent objective
+
+local Order = {}
+Order.__index = Order
+
+function Order.new(config)
+    local self = setmetatable({}, Order)
+    
+    -- Required fields
+    self.assignedTo = config.assignedTo  -- groupName string
+    self.objective = config.objective     -- reference to parent Objective
+    self.position = config.position       -- {x, z}
+    self.type = config.type               -- taskTypes constant
+    
+    -- Optional fields with defaults
+    self.alr = config.alr or constants.acceptableLevelsOfRisk.MEDIUM
+    self.radius = config.radius or 500
+    self.deadline = config.deadline       -- nil or timer.getTime() + duration
+    
+    -- Status tracking (set by GroupCommander)
+    self.status = orderStatus.ASSIGNED
+    self.assignedAt = timer.getTime()
+    self.startedAt = nil
+    self.completedAt = nil
+    self.abortReason = nil
+    
+    return self
+end
+
+-- Get a summary of order state for reporting
+function Order:getSummary()
+    return {
+        assignedTo = self.assignedTo,
+        status = self.status,
+        type = self.type,
+        position = self.position,
+        assignedAt = self.assignedAt,
+        startedAt = self.startedAt,
+        completedAt = self.completedAt,
+        abortReason = self.abortReason,
+        timeSinceAssigned = timer.getTime() - self.assignedAt,
+    }
+end
+
+-- Check if order is still active (not completed or aborted)
+function Order:isActive()
+    return self.status == orderStatus.ASSIGNED or 
+           self.status == orderStatus.IN_PROGRESS or 
+           self.status == orderStatus.STANDBY
+end
+
+-- Check if order is finished (completed or aborted)
+function Order:isFinished()
+    return self.status == orderStatus.COMPLETED or 
+           self.status == orderStatus.ABORTED
+end
+
+return Order
+
+end)
 __bundle_register("group-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local ThreatTracker = require("threat-tracker")
@@ -836,6 +1036,7 @@ local formationTypes = constants.formationTypes
 local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
+local taskTypes = constants.taskTypes
 local unitClassification = constants.unitClassification
 local vulnerabilityMatrix = constants.vulnerabilityMatrix
 local GroupCommander = {}
@@ -853,7 +1054,7 @@ function GroupCommander.new(groupName, config)
     self.coalition = config.color
     self.color = config.color
     self.destination = nil
-    self.disposition = dispositionTypes.DEFEND
+    self.disposition = dispositionTypes.HOLD
     self.formationType = formationTypes.OFF_ROAD
     self.groupName = groupName
     self.initialUnitNames = self:getOwnUnitNames()
@@ -1072,10 +1273,13 @@ function GroupCommander:decide()
                 -- We're at objective with no threats
                 env.info(self.groupName .. " DECIDE: DEFEND (at objective, no threats)")
                 self:setDisposition(dispositionTypes.DEFEND)
-                -- Mark order as completed if we're defending at objective
+                -- Mark certain order types as completed when arriving at position
                 if self.orders.status == orderStatus.IN_PROGRESS then
-                    self.orders.status = orderStatus.COMPLETED
-                    self.orders.completedAt = timer.getTime()
+                    if self.orders.type == taskTypes.RALLY or self.orders.type == taskTypes.REINFORCE then
+                        self.orders.status = orderStatus.COMPLETED
+                        self.orders.completedAt = timer.getTime()
+                        env.info(self.groupName .. " DECIDE: Order completed (arrived at position)")
+                    end
                 end
             end
             return
@@ -1090,14 +1294,95 @@ function GroupCommander:decide()
             else
                 env.info(self.groupName .. " DECIDE: DEFEND (at objective, threats eliminated)")
                 self:setDisposition(dispositionTypes.DEFEND)
+                -- Mark certain order types as completed when arriving at position
+                if self.orders.status == orderStatus.IN_PROGRESS then
+                    if self.orders.type == taskTypes.RALLY or self.orders.type == taskTypes.REINFORCE then
+                        self.orders.status = orderStatus.COMPLETED
+                        self.orders.completedAt = timer.getTime()
+                        env.info(self.groupName .. " DECIDE: Order completed (arrived at position)")
+                    end
+                end
             end
             return
         end
         
         -- Check if we need to retreat based on ALR
         if strengthRatio < retreatThreshold or vulnerability > maxAcceptableVulnerability then
+            -- First check if threats are too stale to warrant retreat
+            local threatStatuses = self:checkThreatStatuses()
+            
+            -- Don't retreat if all threats are UNCONFIRMED or lower
+            if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                env.info(self.groupName .. " DECIDE: Not retreating (threats UNCONFIRMED)")
+                env.info(self.groupName .. " DECIDE: Current order type=" .. (self.orders.type or "nil") .. 
+                         " position x=" .. orderedPosition.x .. " z=" .. orderedPosition.z)
+                
+                -- If the order is a RALLY order (coordinated reinforcement), proceed to the rally point
+                if self.orders.type == taskTypes.RALLY then
+                    env.info(self.groupName .. " DECIDE: Proceeding to RALLY point")
+                    self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    if self.destination then
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                    else
+                        -- Already at rally point
+                        self:setDisposition(dispositionTypes.HOLD)
+                    end
+                    -- Resume order from STANDBY
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                else
+                    -- For REPOSITION or other orders, hold and wait for StrategicCommander reevaluation
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    -- Mark order as STANDBY for StrategicCommander reevaluation
+                    if self.orders.status == orderStatus.IN_PROGRESS then
+                        self.orders.status = orderStatus.STANDBY
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
+                end
+            -- Don't retreat if threats have been SUSPECTED for 1+ minute
+            elseif threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                env.info(self.groupName .. " DECIDE: Not retreating (threats SUSPECTED for 1+ minute)")
+                env.info(self.groupName .. " DECIDE: Current order type=" .. (self.orders.type or "nil") .. 
+                         " position x=" .. orderedPosition.x .. " z=" .. orderedPosition.z)
+                
+                -- If the order is a RALLY order (coordinated reinforcement), proceed to the rally point
+                if self.orders.type == taskTypes.RALLY then
+                    env.info(self.groupName .. " DECIDE: Proceeding to RALLY point")
+                    self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    if self.destination then
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                    else
+                        -- Already at rally point
+                        self:setDisposition(dispositionTypes.HOLD)
+                    end
+                    -- Resume order from STANDBY
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                else
+                    -- For REPOSITION or other orders, hold and wait for StrategicCommander reevaluation
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    -- Mark order as STANDBY for StrategicCommander reevaluation
+                    if self.orders.status == orderStatus.IN_PROGRESS then
+                        self.orders.status = orderStatus.STANDBY
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
+                end
             -- Check if we're already retreating or need to start
-            if self.disposition ~= dispositionTypes.RETREAT then
+            elseif self.disposition ~= dispositionTypes.RETREAT then
                 env.info(self.groupName .. " DECIDE: RETREAT (ordered, threats too strong)")
                 self:setDisposition(dispositionTypes.RETREAT)
                 -- Mark order as on standby while retreating
@@ -1106,7 +1391,6 @@ function GroupCommander:decide()
                 end
             else
                 -- Already retreating, check if we should transition to holding
-                local threatStatuses = self:checkThreatStatuses()
                 
                 -- If all threats are UNCONFIRMED or lower, immediately stop retreating
                 if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
@@ -1114,6 +1398,17 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Resume order from STANDBY now that it's safe
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
                 
@@ -1123,62 +1418,104 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Resume order from STANDBY now that it's safe
+                    if self.orders.status == orderStatus.STANDBY then
+                        self.orders.status = orderStatus.IN_PROGRESS
+                    end
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
             end
             
+            -- Always retreat away from imminent threats, even for RALLY orders
+            -- Units will navigate to rally point once threats are SUSPECTED/UNCONFIRMED
             self.destination = self:calculateDestinationRelativeToThreats(threatCenter, true)
             self.lastThreatCenter = threatCenter
             
         -- Check if we can advance on threats without straying too far from ordered position
         elseif strengthRatio >= advanceThreshold and vulnerability < maxAcceptableVulnerability * 0.5 then
-            local ownPos = self:getOwnPosition()
-            if ownPos then
-                local distanceToOrdered = math.sqrt(
-                    (ownPos.x - orderedPosition.x)^2 + 
-                    (ownPos.z - orderedPosition.z)^2
-                )
-                
-                -- Only advance if we're within 3km of ordered position or moving closer
-                if distanceToOrdered < 3000 then
-                    env.info(self.groupName .. " DECIDE: ADVANCE ON THREATS (near ordered position)")
-                    self:setDisposition(dispositionTypes.ADVANCE)
-                    local advanceDestination = self:calculateDestinationRelativeToThreats(threatCenter, false)
+            -- Check if threats are too stale to pursue
+            local threatStatuses = self:checkThreatStatuses()
+            local shouldPursue = true
+            
+            -- Don't pursue if all threats are UNCONFIRMED or lower
+            if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                shouldPursue = false
+                env.info(self.groupName .. " DECIDE: Not pursuing (threats UNCONFIRMED)")
+            -- Don't pursue if threats have been SUSPECTED for 1+ minute
+            elseif threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                shouldPursue = false
+                env.info(self.groupName .. " DECIDE: Not pursuing (threats SUSPECTED for 1+ minute)")
+            end
+            
+            if shouldPursue then
+                local ownPos = self:getOwnPosition()
+                if ownPos then
+                    local distanceToOrdered = math.sqrt(
+                        (ownPos.x - orderedPosition.x)^2 + 
+                        (ownPos.z - orderedPosition.z)^2
+                    )
                     
-                    -- Verify the advance destination doesn't exceed the leash
-                    if advanceDestination then
-                        local destDistanceToOrdered = math.sqrt(
-                            (advanceDestination.x - orderedPosition.x)^2 + 
-                            (advanceDestination.z - orderedPosition.z)^2
-                        )
-                        if destDistanceToOrdered > 3000 then
-                            -- Destination would exceed leash, move back toward ordered position instead
-                            env.info(self.groupName .. " DECIDE: Advance destination exceeds leash, returning to position")
-                            self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                    -- Only advance if we're within 3km of ordered position or moving closer
+                    if distanceToOrdered < 3000 then
+                        env.info(self.groupName .. " DECIDE: ADVANCE ON THREATS (near ordered position)")
+                        self:setDisposition(dispositionTypes.ADVANCE)
+                        local advanceDestination = self:calculateDestinationRelativeToThreats(threatCenter, false)
+                        
+                        -- Verify the advance destination doesn't exceed the leash
+                        if advanceDestination then
+                            local destDistanceToOrdered = math.sqrt(
+                                (advanceDestination.x - orderedPosition.x)^2 + 
+                                (advanceDestination.z - orderedPosition.z)^2
+                            )
+                            if destDistanceToOrdered > 3000 then
+                                -- Destination would exceed leash, move back toward ordered position instead
+                                env.info(self.groupName .. " DECIDE: Advance destination exceeds leash, returning to position")
+                                self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                            else
+                                self.destination = advanceDestination
+                            end
                         else
                             self.destination = advanceDestination
                         end
                     else
-                        self.destination = advanceDestination
+                        self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
+                        if self.destination then
+                            env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
+                            self:setDisposition(dispositionTypes.ADVANCE)
+                        else
+                            env.info(self.groupName .. " DECIDE: DEFEND (at objective, too far to advance)")
+                            self:setDisposition(dispositionTypes.DEFEND)
+                        end
                     end
                 else
                     self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
                     if self.destination then
-                        env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION (too far to advance)")
+                        env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
                         self:setDisposition(dispositionTypes.ADVANCE)
                     else
-                        env.info(self.groupName .. " DECIDE: DEFEND (at objective, too far to advance)")
+                        env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
                         self:setDisposition(dispositionTypes.DEFEND)
                     end
                 end
             else
-                self.destination = self:getDestinationToObjective(orderedPosition, orderedRadius)
-                if self.destination then
-                    env.info(self.groupName .. " DECIDE: MOVE TO ORDERED POSITION")
-                    self:setDisposition(dispositionTypes.ADVANCE)
-                else
-                    env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
-                    self:setDisposition(dispositionTypes.DEFEND)
+                -- Threats too stale, stop pursuing and return to defensive posture
+                self.destination = nil
+                self.lastThreatCenter = nil
+                self.lastMoveOrder = nil
+                env.info(self.groupName .. " DECIDE: HOLD (stopped pursuing stale threats)")
+                self:setDisposition(dispositionTypes.HOLD)
+                -- Clear any existing movement waypoints
+                local group = Group.getByName(self.groupName)
+                if group and group:isExist() then
+                    local controller = group:getController()
+                    controller:setTask({id = 'Hold', params = {}})
                 end
             end
             
@@ -1224,13 +1561,39 @@ function GroupCommander:decide()
         
         -- Make decision based on strength and vulnerability
         if strengthRatio < retreatThreshold or vulnerability > maxAcceptableVulnerability then
+            -- First check if threats are too stale to warrant retreat
+            local threatStatuses = self:checkThreatStatuses()
+            
+            -- Don't retreat if all threats are UNCONFIRMED or lower
+            if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
+                env.info(self.groupName .. " DECIDE: HOLD (threats UNCONFIRMED, not retreating)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self.lastMoveOrder = nil
+                -- Clear any existing movement waypoints
+                local group = Group.getByName(self.groupName)
+                if group and group:isExist() then
+                    local controller = group:getController()
+                    controller:setTask({id = 'Hold', params = {}})
+                end
+            -- Don't retreat if threats have been SUSPECTED for 1+ minute
+            elseif threatStatuses.allSuspectedOrUnconfirmed and threatStatuses.timeSinceLastObservation >= 60 then
+                env.info(self.groupName .. " DECIDE: HOLD (threats SUSPECTED for 1+ minute, not retreating)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self.lastMoveOrder = nil
+                -- Clear any existing movement waypoints
+                local group = Group.getByName(self.groupName)
+                if group and group:isExist() then
+                    local controller = group:getController()
+                    controller:setTask({id = 'Hold', params = {}})
+                end
             -- Check if we're already retreating or need to start
-            if self.disposition ~= dispositionTypes.RETREAT then
+            elseif self.disposition ~= dispositionTypes.RETREAT then
                 env.info(self.groupName .. " DECIDE: RETREAT")
                 self:setDisposition(dispositionTypes.RETREAT)
             else
                 -- Already retreating, check if we should transition to holding
-                local threatStatuses = self:checkThreatStatuses()
                 
                 -- If all threats are UNCONFIRMED or lower, immediately stop retreating
                 if threatStatuses.hasUnconfirmed or (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
@@ -1238,6 +1601,13 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
                 
@@ -1247,6 +1617,13 @@ function GroupCommander:decide()
                     self:setDisposition(dispositionTypes.HOLD)
                     self.destination = nil
                     self.lastThreatCenter = nil
+                    self.lastMoveOrder = nil
+                    -- Clear any existing movement waypoints
+                    local group = Group.getByName(self.groupName)
+                    if group and group:isExist() then
+                        local controller = group:getController()
+                        controller:setTask({id = 'Hold', params = {}})
+                    end
                     return
                 end
             end
@@ -1653,6 +2030,9 @@ function GroupCommander:classifyUnit(unitTypeName)
         return classification
     end
     
+    -- Log unknown unit types to help with configuration
+    env.info("WARNING: Unknown unit type '" .. unitTypeName .. "' - using default classification")
+    
     -- Default classification for unknown units
     return {category = "unknown", threats = {infantry = 1, armor = 1, air = 0}, strength = 1}
 end
@@ -2006,6 +2386,161 @@ function GroupCommander:setROE(roeLevel)
 end
 
 return GroupCommander
+
+end)
+__bundle_register("objective", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local taskTypes = constants.taskTypes
+
+-- Objective class for strategic-level goals
+-- Each objective may have multiple orders assigned to different groups
+-- Tracks overall objective status and completion criteria
+
+local Objective = {}
+Objective.__index = Objective
+
+-- Objective status values
+local ObjectiveStatus = {
+    ACTIVE = "Active",       -- Objective is being pursued
+    ACHIEVED = "Achieved",   -- Objective successfully completed
+    FAILED = "Failed",       -- Objective could not be completed
+    CANCELED = "Canceled",   -- Objective was canceled by strategic commander
+}
+
+function Objective.new(config)
+    local self = setmetatable({}, Objective)
+    
+    -- Required fields
+    self.type = config.type           -- taskTypes constant (DEFEND, RALLY, etc.)
+    self.position = config.position   -- {x, z}
+    
+    -- Optional fields with defaults
+    self.radius = config.radius or 500
+    self.deadline = config.deadline   -- nil or timer.getTime() + duration
+    
+    -- Status tracking
+    self.status = ObjectiveStatus.ACTIVE
+    self.createdAt = timer.getTime()
+    self.updatedAt = timer.getTime()
+    self.achievedAt = nil
+    self.failedAt = nil
+    
+    -- Associated orders
+    self.orders = {}  -- array of Order objects
+    
+    return self
+end
+
+-- Add an order to this objective
+function Objective:addOrder(order)
+    table.insert(self.orders, order)
+    -- Ensure bidirectional reference
+    order.objective = self
+    self.updatedAt = timer.getTime()
+end
+
+-- Remove an order from this objective
+function Objective:removeOrder(order)
+    for i, existingOrder in ipairs(self.orders) do
+        if existingOrder == order then
+            table.remove(self.orders, i)
+            self.updatedAt = timer.getTime()
+            return true
+        end
+    end
+    return false
+end
+
+-- Get counts of orders by status
+function Objective:getOrderStatusCounts()
+    local counts = {
+        assigned = 0,
+        inProgress = 0,
+        standby = 0,
+        completed = 0,
+        aborted = 0,
+        total = #self.orders
+    }
+    
+    local orderStatus = constants.orderStatus
+    for _, order in ipairs(self.orders) do
+        if order.status == orderStatus.ASSIGNED then
+            counts.assigned = counts.assigned + 1
+        elseif order.status == orderStatus.IN_PROGRESS then
+            counts.inProgress = counts.inProgress + 1
+        elseif order.status == orderStatus.STANDBY then
+            counts.standby = counts.standby + 1
+        elseif order.status == orderStatus.COMPLETED then
+            counts.completed = counts.completed + 1
+        elseif order.status == orderStatus.ABORTED then
+            counts.aborted = counts.aborted + 1
+        end
+    end
+    
+    return counts
+end
+
+-- Get all active orders (not completed or aborted)
+function Objective:getActiveOrders()
+    local active = {}
+    for _, order in ipairs(self.orders) do
+        if order:isActive() then
+            table.insert(active, order)
+        end
+    end
+    return active
+end
+
+-- Get all finished orders (completed or aborted)
+function Objective:getFinishedOrders()
+    local finished = {}
+    for _, order in ipairs(self.orders) do
+        if order:isFinished() then
+            table.insert(finished, order)
+        end
+    end
+    return finished
+end
+
+-- Mark objective as achieved
+function Objective:markAchieved()
+    self.status = ObjectiveStatus.ACHIEVED
+    self.achievedAt = timer.getTime()
+    self.updatedAt = timer.getTime()
+end
+
+-- Mark objective as failed
+function Objective:markFailed(reason)
+    self.status = ObjectiveStatus.FAILED
+    self.failedAt = timer.getTime()
+    self.failReason = reason
+    self.updatedAt = timer.getTime()
+end
+
+-- Mark objective as canceled
+function Objective:markCanceled()
+    self.status = ObjectiveStatus.CANCELED
+    self.updatedAt = timer.getTime()
+end
+
+-- Get a summary of objective state for reporting
+function Objective:getSummary()
+    local statusCounts = self:getOrderStatusCounts()
+    
+    return {
+        type = self.type,
+        status = self.status,
+        position = self.position,
+        radius = self.radius,
+        createdAt = self.createdAt,
+        orderCounts = statusCounts,
+        timeSinceCreated = timer.getTime() - self.createdAt,
+    }
+end
+
+Objective.Status = ObjectiveStatus
+
+return Objective
 
 end)
 return __bundle_require("__root")
