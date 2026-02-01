@@ -63,7 +63,6 @@ function Order:start()
     if self.status == orderStatus.ASSIGNED then
         self.status = orderStatus.IN_PROGRESS
         self.startedAt = timer.getTime()
-        env.info("Order for " .. self.assignedTo .. " started (type: " .. self.type .. ")")
     end
 end
 
@@ -72,7 +71,6 @@ function Order:complete()
     if self:isActive() then
         self.status = orderStatus.COMPLETED
         self.completedAt = timer.getTime()
-        env.info("Order for " .. self.assignedTo .. " completed (type: " .. self.type .. ")")
     end
 end
 
@@ -82,7 +80,6 @@ function Order:abort(reason)
         self.status = orderStatus.ABORTED
         self.abortReason = reason
         self.completedAt = timer.getTime()
-        env.info("Order for " .. self.assignedTo .. " aborted (type: " .. self.type .. ", reason: " .. reason .. ")")
     end
 end
 

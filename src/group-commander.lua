@@ -14,7 +14,7 @@ GroupCommander.__index = GroupCommander
 GroupCommander.instances = {}
 
 local oodaInterval = 10.0 -- seconds
-local detectionRadius = 15000 -- meters
+local detectionRadius = 8000 -- meters
 
 function GroupCommander.new(groupName, config)
     local self = setmetatable({}, GroupCommander)
@@ -89,11 +89,10 @@ function GroupCommander:observe()
     end
     
     -- Use ThreatDetector to get visible threats
-    local enemyCoalition = self.coalition == "red" and "blue" or "red"
     local detected = ThreatDetector.detectUnits(
         ThreatDetector.getUnitsFromGroups({group}),
         detectionRadius,
-        enemyCoalition,
+        self.coalition,  -- "red" or "blue"
         2,  -- Observer altitude offset
         2   -- Target altitude offset
     )
@@ -102,8 +101,6 @@ function GroupCommander:observe()
     for _, unit in ipairs(detected.enemy) do
         table.insert(visibleThreatNames, unit:getName())
     end
-    
-    env.info(self.groupName .. " OBSERVE: " .. #visibleThreatNames .. " threats detected with LOS")
     
     -- Build observed unit data for threats we can see (no unit refs stored)
     local observedThreats = {}
@@ -123,11 +120,10 @@ function GroupCommander:observe()
     
     -- Check for expected threats we didn't see
     local ownPos = self:getOwnPosition()
+    local expectedCount = 0
     if ownPos then
         local expectedInArea = self.threatTracker:expectedThreats(ownPos, detectionRadius)
-        if #expectedInArea > 0 then
-            env.info(self.groupName .. " OBSERVE: Expected " .. #expectedInArea .. " threats in detection radius")
-        end
+        expectedCount = #expectedInArea
         for _, threatName in ipairs(expectedInArea) do
             -- If we expected to see it but didn't, update status
             local wasSeen = false
@@ -165,7 +161,10 @@ function GroupCommander:observe()
     -- Age threats and progress their status
     self.threatTracker:ageThreats()
     
-    env.info(self.groupName .. " OBSERVE: " .. self.threatTracker:count() .. " threats in memory")
+    -- Single consolidated OBSERVE summary
+    local memoryCount = self.threatTracker:count()
+    local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
+    env.info(self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
 end
 
 function GroupCommander:orient()
@@ -244,15 +243,15 @@ function GroupCommander:assessOrderContext()
     
     -- Determine thresholds based on ALR
     local orderedALR = self.orders.alr or alr.LOW
-    local retreatThreshold = 0.6
-    local maxAcceptableVulnerability = 20.0
+    local retreatThreshold = 0.4
+    local maxAcceptableVulnerability = 45.0
     
     if orderedALR == alr.LOW then
         retreatThreshold = 0.8
         maxAcceptableVulnerability = 15.0
     elseif orderedALR == alr.HIGH then
-        retreatThreshold = 0.4
-        maxAcceptableVulnerability = 30.0
+        retreatThreshold = 0.2
+        maxAcceptableVulnerability = 60.0
     end
     
     -- Store order context
@@ -300,13 +299,30 @@ end
 
 function GroupCommander:analyzeThreatCapabilities()
     -- Get threat units from threat tracker
+    -- Only include threats that are Observed or recently Suspected (not stale)
     local threats = self.threatTracker:getThreats()
     local threatUnits = {}
+    local currentTime = timer.getTime()
     
     for unitName, threatData in pairs(threats) do
-        local unit = Unit.getByName(unitName)
-        if unit then
-            table.insert(threatUnits, unit)
+        -- Only include threats that are actively relevant
+        local includeInAnalysis = false
+        
+        if threatData.status == "Observed" then
+            includeInAnalysis = true
+        elseif threatData.status == "Suspected" and threatData.lastSighting then
+            -- Include suspected threats if seen within last 60 seconds
+            local timeSinceLastSeen = currentTime - threatData.lastSighting
+            if timeSinceLastSeen < 60 then
+                includeInAnalysis = true
+            end
+        end
+        
+        if includeInAnalysis then
+            local unit = Unit.getByName(unitName)
+            if unit and unit:isExist() then
+                table.insert(threatUnits, unit)
+            end
         end
     end
     
@@ -371,29 +387,27 @@ function GroupCommander:assessThreats()
             favorability = math.huge
         end
         
-        -- Log assessment
-        local allyStr = self.allyIntel and self.allyIntel.count > 0 and 
-                       (" +allies: " .. self.allyIntel.count) or ""
-        env.info(self.groupName .. " ORIENT: Us (" .. self.ownForceStrength.count .. 
-                 " units: Inf=" .. self.ownForceStrength.composition.infantry .. 
-                 " LAr=" .. self.ownForceStrength.composition["light-armor"] .. 
-                 " HAr=" .. self.ownForceStrength.composition["heavy-armor"] .. 
-                 allyStr .. ") vs Them (" .. threatAnalysis.count .. 
-                 " units: Inf=" .. threatAnalysis.composition.infantry .. 
-                 " LAr=" .. threatAnalysis.composition["light-armor"] .. 
-                 " HAr=" .. threatAnalysis.composition["heavy-armor"] .. 
-                 ") Favorability: " .. string.format("%.2f", favorability))
+        -- Log assessment in compact format with ally contribution
+        local allyStr = ""
+        if self.allyIntel and self.allyIntel.count > 0 then
+            allyStr = " +Ally:" .. self.allyIntel.count .. 
+                      "(" .. self.allyIntel.composition.infantry .. "/" .. 
+                      self.allyIntel.composition["light-armor"] .. "/" .. 
+                      self.allyIntel.composition["heavy-armor"] .. ")"
+        end
+        env.info(self.groupName .. " ORIENT: Us:" .. self.ownForceStrength.count .. 
+                 "(" .. self.ownForceStrength.composition.infantry .. "/" .. 
+                 self.ownForceStrength.composition["light-armor"] .. "/" .. 
+                 self.ownForceStrength.composition["heavy-armor"] .. ")" .. allyStr .. 
+                 " vs Them:" .. threatAnalysis.count .. 
+                 "(" .. threatAnalysis.composition.infantry .. "/" .. 
+                 threatAnalysis.composition["light-armor"] .. "/" .. 
+                 threatAnalysis.composition["heavy-armor"] .. 
+                 ") Fav:" .. string.format("%.2f", favorability))
     end
     
-    -- Determine if threats are stale (not fresh enough to act on)
-    local threatsAreStale = false
-    if threatStatuses.hasUnconfirmed or 
-       (threatStatuses.observed == 0 and threatStatuses.suspected == 0) then
-        threatsAreStale = true
-    elseif threatStatuses.allSuspectedOrUnconfirmed and 
-           threatStatuses.timeSinceLastObservation >= 60 then
-        threatsAreStale = true
-    end
+    -- Determine if threats are stale using ThreatTracker utility
+    local threatsAreStale = self.threatTracker:isIntelStale(60)
     
     -- Store consolidated threat assessment
     self.threatAssessment = {
@@ -403,7 +417,8 @@ function GroupCommander:assessThreats()
         center = threatCenter,
         vulnerability = vulnerability,
         favorability = favorability,
-        stale = threatsAreStale
+        stale = threatsAreStale,
+        hasRecentIntel = self.threatTracker:hasRecentThreats(120)  -- Any intel within 2 minutes
     }
 end
 
@@ -490,14 +505,6 @@ function GroupCommander:calculateThreatCenter()
         end
     end
     
-    if validCount > 0 then
-        local statusStr = ""
-        for status, cnt in pairs(statusCounts) do
-            statusStr = statusStr .. status .. ":" .. cnt .. " "
-        end
-        env.info(self.groupName .. " DECIDE: Calculating threat center from " .. validCount .. " threats (" .. statusStr .. ")")
-    end
-    
     if validCount == 0 then
         return nil
     end
@@ -552,7 +559,7 @@ function GroupCommander:decideAdvanceOnThreats()
     local threat = self.threatAssessment
     local context = self.orderContext
     
-    env.info(self.groupName .. " DECIDE: ADVANCE on threats (strong position)")
+    env.info(self.groupName .. " DECIDE: ADVANCE (on threats, Fav:" .. string.format("%.2f", threat.favorability) .. ")")
     self:setDisposition(dispositionTypes.ADVANCE)
     
     local advanceDestination = self:calculateDestinationRelativeToThreats(threat.center, false)
@@ -565,7 +572,7 @@ function GroupCommander:decideAdvanceOnThreats()
         )
         
         if destDist > context.leashDistance then
-            env.info(self.groupName .. " DECIDE: Advance exceeds leash, returning to position")
+            env.info(self.groupName .. " DECIDE: ADVANCE (leash limit, returning)")
             self.destination = self:getDestinationToObjective(context.position, context.radius)
         else
             self.destination = advanceDestination
@@ -579,13 +586,14 @@ end
 function GroupCommander:decideMoveToOrdered()
     local context = self.orderContext
     
-    self:setDisposition(dispositionTypes.DEFEND)
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     
     if self.destination then
-        env.info(self.groupName .. " DECIDE: DEFEND, moving to ordered position")
+        self:setDisposition(dispositionTypes.ADVANCE)
+        env.info(self.groupName .. " DECIDE: ADVANCE (moving to objective)")
     else
-        env.info(self.groupName .. " DECIDE: DEFEND at objective")
+        self:setDisposition(dispositionTypes.DEFEND)
+        env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
         
         -- Complete order if defending at objective
         if context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE then
@@ -600,11 +608,11 @@ function GroupCommander:decideWithNoThreats()
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     
     if self.destination then
-        env.info(self.groupName .. " DECIDE: ADVANCE to ordered position (no threats)")
         self:setDisposition(dispositionTypes.ADVANCE)
+        env.info(self.groupName .. " DECIDE: ADVANCE (no threats, to objective)")
     else
-        env.info(self.groupName .. " DECIDE: DEFEND at objective (no threats)")
         self:setDisposition(dispositionTypes.DEFEND)
+        env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
         
         -- Complete RALLY/REINFORCE orders when arriving at position
         if context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE then
@@ -616,14 +624,15 @@ end
 -- Decide action when threats are stale/unconfirmed
 function GroupCommander:decideWithStaleThreats()
     local context = self.orderContext
-    env.info(self.groupName .. " DECIDE: Threats stale, proceeding with orders")
     
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     
     if self.destination then
         self:setDisposition(dispositionTypes.ADVANCE)
+        env.info(self.groupName .. " DECIDE: ADVANCE (stale threats, to objective)")
     else
         self:setDisposition(dispositionTypes.HOLD)
+        env.info(self.groupName .. " DECIDE: HOLD (stale threats, at objective)")
         
         -- Complete RALLY/REINFORCE orders when arriving at position
         if context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE then
@@ -782,12 +791,15 @@ function GroupCommander:handleOrderDecisions()
     -- Start order if just assigned
     if self.orders.status == orderStatus.ASSIGNED then
         self.orders:start()
+        env.info(self.groupName .. " DECIDE: Starting order " .. self:taskTypeName(self.orders.type) .. 
+                 " @ " .. string.format("%.0f,%.0f", self.orders.position.x, self.orders.position.z) .. 
+                 " r:" .. self.orders.radius .. " ALR:" .. self.orders.alr)
     end
     
     -- Check for order expiration
     if self.orders:isExpired() then
         self.orders:complete()
-        env.info(self.groupName .. " DECIDE: Order deadline reached")
+        env.info(self.groupName .. " DECIDE: Order complete (deadline)")
         return
     end
     
@@ -819,10 +831,66 @@ function GroupCommander:handleOrderDecisions()
         return
     end
     
-    -- Threats are stale, ignore them
-    if threat.stale then
-        self:decideWithStaleThreats()
+    -- RECON orders complete when threats are detected (that's the point of recon!)
+    if context.type == taskTypes.RECON then
+        env.info(self.groupName .. " DECIDE: RECON complete - threats detected")
+        self.orders:complete()
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
         return
+    end
+    
+    -- RALLY orders: if threats are closer than rally destination, engage them directly
+    -- ASSAULT orders should commit - don't check, just fight
+    if context.type == taskTypes.RALLY and threat.center then
+        local ownPos = self:getOwnPosition()
+        if ownPos then
+            local distanceToThreat = math.sqrt(
+                (ownPos.x - threat.center.x)^2 + 
+                (ownPos.z - threat.center.z)^2
+            )
+            local distanceToDestination = math.sqrt(
+                (ownPos.x - context.position.x)^2 + 
+                (ownPos.z - context.position.z)^2
+            )
+            
+            -- If threat is significantly closer than rally point, abandon rally and engage
+            -- Use 70% threshold to avoid flip-flopping
+            if distanceToThreat < distanceToDestination * 0.7 then
+                env.info(self.groupName .. " DECIDE: Threat closer than rally point, engaging directly")
+                
+                -- Abort the rally order and engage autonomously
+                self.orders:abort("closer_threat")
+                
+                -- Strong position, advance on threats
+                if threat.favorability >= advanceThreshold and 
+                   threat.vulnerability.overall < context.maxAcceptableVulnerability * 0.5 then
+                    env.info(self.groupName .. " DECIDE: ADVANCE (Fav:" .. string.format("%.2f", threat.favorability) .. ")")
+                    self:setDisposition(dispositionTypes.ADVANCE)
+                    self.destination = self:calculateDestinationRelativeToThreats(threat.center, false)
+                else
+                    -- Hold position and engage from here
+                    env.info(self.groupName .. " DECIDE: HOLD (moderate, Fav:" .. string.format("%.2f", threat.favorability) .. ")")
+                    self:setDisposition(dispositionTypes.HOLD)
+                    self.destination = nil
+                    self:stopMovement()
+                end
+                return
+            end
+        end
+    end
+    
+    -- Threats are stale but maintain course if we have recent intel
+    if threat.stale then
+        -- If we have recent intel (within 2 minutes), maintain current course
+        if threat.hasRecentIntel then
+            env.info(self.groupName .. " DECIDE: Maintaining course (threat intel temporarily stale)")
+            -- Continue previous action, don't change course for temporary intel gaps
+            return  -- Maintain current disposition/destination
+        else
+            self:decideWithStaleThreats()
+            return
+        end
     end
     
     -- Strong position, can advance on threats
@@ -846,26 +914,42 @@ function GroupCommander:handleAutonomousDecisions()
     local advanceThreshold = 1.5
     local maxAcceptableVulnerability = 20.0
     
+    -- Add hysteresis based on current disposition to prevent rapid state changes
+    -- If already retreating, make it slightly easier to continue retreating
+    -- If already advancing, make it slightly easier to continue advancing
+    local hysteresis = 0.15
+    if self.disposition == dispositionTypes.RETREAT then
+        retreatThreshold = retreatThreshold + hysteresis
+    elseif self.disposition == dispositionTypes.ADVANCE then
+        advanceThreshold = advanceThreshold - hysteresis
+    end
+    
     -- No threats, hold position
     if threat.count == 0 or not threat.center then
-        env.info(self.groupName .. " DECIDE: HOLD (autonomous, no threats)")
+        env.info(self.groupName .. " DECIDE: HOLD (no threats)")
         self:setDisposition(dispositionTypes.HOLD)
         self.destination = nil
         return
     end
     
-    -- Threats are stale, hold position
+    -- Threats are stale but maintain course if we have recent intel
     if threat.stale then
-        env.info(self.groupName .. " DECIDE: HOLD (autonomous, threats stale)")
-        self:setDisposition(dispositionTypes.HOLD)
-        self.destination = nil
-        self:stopMovement()
-        return
+        if threat.hasRecentIntel then
+            env.info(self.groupName .. " DECIDE: Maintaining course (threat intel temporarily stale)")
+            -- Maintain current disposition, don't change course on temporary intel gaps
+            return
+        else
+            env.info(self.groupName .. " DECIDE: HOLD (stale threats)")
+            self:setDisposition(dispositionTypes.HOLD)
+            self.destination = nil
+            self:stopMovement()
+            return
+        end
     end
     
     -- Weak position, retreat
     if threat.favorability < retreatThreshold or threat.vulnerability.overall > maxAcceptableVulnerability then
-        env.info(self.groupName .. " DECIDE: RETREAT (autonomous, weak position)")
+        env.info(self.groupName .. " DECIDE: RETREAT (Fav:" .. string.format("%.2f", threat.favorability) .. ")")
         self:setDisposition(dispositionTypes.RETREAT)
         self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
         self.lastThreatCenter = threat.center
@@ -874,21 +958,23 @@ function GroupCommander:handleAutonomousDecisions()
     
     -- Strong position, advance
     if threat.favorability >= advanceThreshold and threat.vulnerability.overall < maxAcceptableVulnerability * 0.5 then
-        env.info(self.groupName .. " DECIDE: ADVANCE (autonomous, strong position)")
+        env.info(self.groupName .. " DECIDE: ADVANCE (Fav:" .. string.format("%.2f", threat.favorability) .. ")")
         self:setDisposition(dispositionTypes.ADVANCE)
         self.destination = self:calculateDestinationRelativeToThreats(threat.center, false)
         return
     end
     
     -- Moderate position, hold
-    env.info(self.groupName .. " DECIDE: HOLD (autonomous, moderate position)")
+    env.info(self.groupName .. " DECIDE: HOLD (moderate, Fav:" .. string.format("%.2f", threat.favorability) .. ")")
     self:setDisposition(dispositionTypes.HOLD)
     self.destination = nil
     self:stopMovement()
 end
 
 function GroupCommander:issueMoveOrder(point)
-    env.info("Issuing move order for " .. self.groupName .. " to x=" .. point.x .. " z=" .. point.z)
+    -- Convert x/z to lat/lon for logging
+    local lat, lon = coord.LOtoLL({x = point.x, y = 0, z = point.z})
+    env.info(self.groupName .. " DECIDE: Move to " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
     
     -- Verify group exists
     local group = Group.getByName(self.groupName)
@@ -911,15 +997,42 @@ function GroupCommander:issueMoveOrder(point)
         }
     end
     
+    -- Calculate distance to destination first (needed for road logic)
+    local distance = nil
+    local ownPos = self:getOwnPosition()
+    if ownPos then
+        distance = math.sqrt(
+            (point.x - ownPos.x)^2 + 
+            (point.z - ownPos.z)^2
+        )
+    end
+    
+    -- Decide whether to use roads based on situation and distance
+    -- Default to ignoring roads since DCS pathfinding is often problematic
+    local ignoreRoads = true
+    
+    -- Only use roads for long-distance movements (>15km) when not in combat
+    if distance and distance > 15000 and self.disposition ~= dispositionTypes.RETREAT then
+        ignoreRoads = false
+    end
+    
+    -- Set destination radius based on whether using roads
+    -- Per MIST docs: roads are auto-used if distance > 1.3 * radius
+    -- So we need larger radius to prevent roads being used at medium ranges
+    local destRadius = 100
+    if not ignoreRoads and distance then
+        -- For road movements, use larger radius (10% of distance, max 500m)
+        destRadius = math.min(500, distance * 0.1)
+    end
+    
     local destination = {
         point = point,
-        radius = 100
+        radius = destRadius
     }
     local formation = "Cone"
     local heading = 0
     local speed = 100
-    local ignoreRoads = false
-    
+        
     mist.groupToPoint(
         self.groupName,
         destination,
@@ -956,17 +1069,14 @@ function GroupCommander:setALR(riskLevel)
 end
 
 function GroupCommander:setDisposition(dispositionType)
-    env.info("Setting disposition to " .. dispositionType .. " for group of color " .. self.color)
     self.disposition = dispositionType
 end
-
 function GroupCommander:setFormation(formationType)
     env.info("Setting formation to " .. formationType .. " for group of color " .. self.color)
     self.formationType = formationType
 end
 
 function GroupCommander:setROE(roeLevel)
-    env.info("Setting ROE to " .. roeLevel .. " for group " .. self.groupName)
     local group = Group.getByName(self.groupName)
     if group and group:isExist() then
         local controller = group:getController()
@@ -1012,6 +1122,15 @@ function GroupCommander:stopMovement()
         controller:setTask({id = 'Hold', params = {}})
     end
     self.lastMoveOrder = nil
+end
+
+function GroupCommander:taskTypeName(taskType)
+    for name, value in pairs(taskTypes) do
+        if value == taskType then
+            return name
+        end
+    end
+    return tostring(taskType)
 end
 
 return GroupCommander
