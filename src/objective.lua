@@ -65,7 +65,6 @@ function Objective:getOrderStatusCounts()
     local counts = {
         assigned = 0,
         inProgress = 0,
-        standby = 0,
         completed = 0,
         aborted = 0,
         total = #self.orders
@@ -77,8 +76,6 @@ function Objective:getOrderStatusCounts()
             counts.assigned = counts.assigned + 1
         elseif order.status == orderStatus.IN_PROGRESS then
             counts.inProgress = counts.inProgress + 1
-        elseif order.status == orderStatus.STANDBY then
-            counts.standby = counts.standby + 1
         elseif order.status == orderStatus.COMPLETED then
             counts.completed = counts.completed + 1
         elseif order.status == orderStatus.ABORTED then

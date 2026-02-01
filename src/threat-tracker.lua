@@ -47,9 +47,6 @@ function ThreatTracker:updateThreats(observedUnits)
             threat.position = unitData.position
             threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
             threat.lastSighting = currentTime
-            if oldStatus ~= threatStatus.OBSERVED then
-                env.info(self.observerName .. " ThreatTracker: " .. unitData.name .. " status changed from " .. oldStatus .. " to OBSERVED")
-            end
             
             -- Add new sighting
             table.insert(threat.sightings, {
@@ -126,7 +123,6 @@ function ThreatTracker:markThreatStatus(unitName, status)
         threat.status = status
         if oldStatus ~= status then
             threat.statusChangedAt = timer.getTime()
-            env.info(self.observerName .. " ThreatTracker: " .. unitName .. " status changed from " .. oldStatus .. " to " .. status)
         end
     end
 end
@@ -180,14 +176,12 @@ function ThreatTracker:ageThreats()
         
         -- Progress UNCONFIRMED → LOST after 5 minutes
         if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
-            env.info(self.observerName .. " ThreatTracker: " .. unitName .. " status changed from Unconfirmed to Lost (5+ minutes)")
             threat.status = threatStatus.LOST
             threat.statusChangedAt = currentTime
         end
         
         -- Remove LOST or ELIMINATED threats after 10 minutes
         if (threat.status == threatStatus.LOST or threat.status == threatStatus.ELIMINATED) and timeInStatus > 600 then
-            env.info(self.observerName .. " ThreatTracker: Removing " .. unitName .. " (" .. threat.status .. " for 10+ minutes)")
             table.insert(toRemove, unitName)
         end
     end
@@ -196,6 +190,77 @@ function ThreatTracker:ageThreats()
     for _, unitName in ipairs(toRemove) do
         self.threats[unitName] = nil
     end
+end
+
+-- Check if we have any recently observed or suspected threats
+-- Returns: true if there are threats with fresh intel (within maxAge seconds)
+function ThreatTracker:hasRecentThreats(maxAge)
+    local currentTime = timer.getTime()
+    maxAge = maxAge or 120  -- Default 2 minutes
+    
+    for _, threat in pairs(self.threats) do
+        if threat.lastSighting then
+            local age = currentTime - threat.lastSighting
+            if age <= maxAge and (threat.status == "Observed" or threat.status == "Suspected") then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+-- Get the most recent sighting time across all threats
+-- Returns: timestamp of most recent sighting, or 0 if no threats
+function ThreatTracker:getMostRecentSightingTime()
+    local mostRecent = 0
+    
+    for _, threat in pairs(self.threats) do
+        if threat.lastSighting and threat.lastSighting > mostRecent then
+            mostRecent = threat.lastSighting
+        end
+    end
+    
+    return mostRecent
+end
+
+-- Check if threat intel is stale (no fresh observations recently)
+-- Returns: true if no observed threats and last sighting was > maxAge ago
+function ThreatTracker:isIntelStale(maxAge)
+    local currentTime = timer.getTime()
+    maxAge = maxAge or 60  -- Default 60 seconds
+    
+    -- Check if we have any currently observed threats
+    local hasObserved = false
+    local hasSuspected = false
+    
+    for _, threat in pairs(self.threats) do
+        if threat.status == "Observed" then
+            hasObserved = true
+            break
+        elseif threat.status == "Suspected" then
+            hasSuspected = true
+        end
+    end
+    
+    -- If we have observed threats, intel is fresh
+    if hasObserved then
+        return false
+    end
+    
+    -- If we only have suspected threats, check how old they are
+    if not hasSuspected then
+        return true  -- No observed or suspected threats at all
+    end
+    
+    -- Check time since last sighting
+    local mostRecentSighting = self:getMostRecentSightingTime()
+    if mostRecentSighting == 0 then
+        return true
+    end
+    
+    local timeSinceLastSighting = currentTime - mostRecentSighting
+    return timeSinceLastSighting >= maxAge
 end
 
 -- Cull threats that haven't been observed recently (for future use)

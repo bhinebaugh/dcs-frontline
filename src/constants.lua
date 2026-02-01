@@ -66,7 +66,6 @@ local statusTypes = {
 local orderStatus = {
     ASSIGNED = "Assigned",       -- Order received, not yet acted upon
     IN_PROGRESS = "In Progress", -- Actively executing order
-    STANDBY = "Standby",         -- Temporarily unable to execute (e.g., retreating from threats)
     COMPLETED = "Completed",     -- Successfully completed or deadline reached
     ABORTED = "Aborted",        -- Mission no longer possible or canceled
 }

@@ -20,9 +20,13 @@ local blueRallyPosition = coord.LLtoLO(
 
 -- Initial objective for Bravo is to reposition to the
 -- Kvemo-Khoshka village at these coordinates:
+-- local redAttackPosition = coord.LLtoLO(
+--     42 + 37/60 + 03/3600,
+--     41 + 44/60 + 0/3600
+-- )
 local redAttackPosition = coord.LLtoLO(
-    42 + 37/60 + 03/3600,
-    41 + 44/60 + 0/3600
+    44 + 5/60 + 10/3600,
+    44 + 16/60 + 35/3600
 )
 
 -- Known safe rally point for Red forces
@@ -47,7 +51,7 @@ opsRed.rallyPoints = {
 opsBlue.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
-        position = blueAttackPosition,
+        position = redAttackPosition,
         radius = 500,
     })
 }
