@@ -93,77 +93,52 @@ local rulesOfEngagement = {
 -- Unit classification and threat ratings
 -- Each unit type has threat values against infantry, armor, and air
 local unitClassification = {
-    -- Infantry units
-    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
-    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, armor = 0.5, air = 0}, strength = 1.2},
-    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1},
-    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, armor = 4, air = 0}, strength = 1.5},
+    -- Infantry units (foot soldiers)
+    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
+    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
+    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
+    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 3}},
     
-    -- Light vehicles / Trucks
-    ["Hummer"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
-    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, armor = 0.5, air = 0}, strength = 1.5},
-    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 0.8},
-    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
-    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, armor = 0, air = 0}, strength = 1},
+    -- Soft-skinned vehicles (unarmored trucks, transport)
+    ["Hummer"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
     
-    -- Scout vehicles
-    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 3, armor = 2, air = 0}, strength = 2},
-    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, armor = 1.5, air = 0}, strength = 2},
+    -- Scout vehicles (armed soft-skinned)
+    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    ["M1045 HMMWV TOW"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 7, ["heavy-armor"] = 6, support = 4}},
+    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    ["Tigr_233036"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
     
-    -- Light armor / IFVs
-    ["M-113"] = {category = "armor", threats = {infantry = 2, armor = 0.5, air = 0}, strength = 1.5},  -- APC with only .50 cal MG
-    ["BMD-1"] = {category = "armor", threats = {infantry = 4, armor = 3, air = 0}, strength = 3.5},    -- IFV with 73mm gun + ATGM
-    ["M-2 Bradley"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
-    ["BMP-2"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
-    ["BTR-60"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
-    ["BTR-80"] = {category = "armor", threats = {infantry = 4, armor = 2, air = 0}, strength = 3},
+    -- Light armor (APCs, IFVs)
+    ["M-113"] = {category = "light-armor", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
+    ["BMD-1"] = {category = "light-armor", threats = {infantry = 5, ["light-armor"] = 4, ["heavy-armor"] = 2, support = 3}},
+    ["M-2 Bradley"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
+    ["BMP-2"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 2, support = 4}},
+    ["BMP-3"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
+    ["BTR-60"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    ["BTR-80"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
     
-    -- Medium armor
-    ["M-1 Abrams"] = {category = "armor", threats = {infantry = 3, armor = 8, air = 0}, strength = 8},
-    ["T-72B"] = {category = "armor", threats = {infantry = 3, armor = 7, air = 0}, strength = 7},
-    ["T-80U"] = {category = "armor", threats = {infantry = 3, armor = 7.5, air = 0}, strength = 7.5},
+    -- Heavy armor (MBTs)
+    ["M-1 Abrams"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 8, support = 7}},
+    ["T-72B"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7, support = 7}},
+    ["T-80U"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7.5, support = 7}},
     
-    -- Air defense
-    ["Avenger"] = {category = "armor", threats = {infantry = 1, armor = 0, air = 6}, strength = 3},
-    ["Vulcan"] = {category = "armor", threats = {infantry = 2, armor = 1, air = 5}, strength = 3},
-    ["Strela-10M3"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
-    ["Strela-1 9P31"] = {category = "armor", threats = {infantry = 0, armor = 0, air = 5}, strength = 3},
+    -- Support units (AA systems)
+    ["Avenger"] = {category = "support", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
+    ["Vulcan"] = {category = "support", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 2}},
+    ["Strela-10M3"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
+    ["Strela-1 9P31"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
     
-    -- Artillery
-    ["M-109"] = {category = "armor", threats = {infantry = 6, armor = 4, air = 0}, strength = 5},
-    ["2S9 Nona"] = {category = "armor", threats = {infantry = 5, armor = 3, air = 0}, strength = 4},
-}
-
--- Vulnerability modifiers based on unit category
-local vulnerabilityMatrix = {
-    infantry = {
-        infantry = 1.0,  -- Infantry vs infantry weapons
-        armor = 0.3,     -- Infantry vs armor weapons (takes cover, dispersed)
-        air = 0.2,        -- Infantry vs air weapons (small target)
-        antiair = 0.4     -- Infantry vs anti-air weapons
-    },
-    armor = {
-        infantry = 0.5,  -- Armor vs infantry weapons (some resistance)
-        armor = 1.2,     -- Armor vs armor weapons (vulnerable to AT)
-        air = 0.8,        -- Armor vs air weapons
-        antiair = 0.6     -- Armor vs anti-air weapons
-    },
-    air = {
-        infantry = 0.4,  -- Air vs infantry weapons (less effective)
-        armor = 0.7,     -- Air vs armor weapons
-        air = 1.0,        -- Air vs air weapons
-        antiair = 1.5     -- Air vs anti-air weapons (highly vulnerable)
-    },
-    antiair = {
-        infantry = 0.6,  -- AA vs infantry weapons
-        armor = 0.9,     -- AA vs armor weapons
-        air = 1.3,        -- AA vs air weapons (highly effective)
-        antiair = 1.0     -- AA vs anti-air weapons
-    }
+    -- Support units (Artillery)
+    ["M-109"] = {category = "support", threats = {infantry = 8, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 5}},
+    ["2S9 Nona"] = {category = "support", threats = {infantry = 7, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
 }
 
 return {
@@ -178,6 +153,5 @@ return {
     taskTypes = taskTypes,
     threatStatus = threatStatus,
     statusTypes = statusTypes,
-    unitClassification = unitClassification,
-    vulnerabilityMatrix = vulnerabilityMatrix
+    unitClassification = unitClassification
 }

@@ -7,28 +7,28 @@ local OperationalCommander = require("operational-commander")
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
-local blueDefendPosition = coord.LLtoLO(
-    42 + 32/60 + 1/3600,
-    44 + 05/60 + 38/3600
+local blueAttackPosition = coord.LLtoLO(
+    42 + 35/60 + 31/3600,
+    41 + 56/60 + 26/3600
 )
 
 -- Known safe rally point for Blue forces
 local blueRallyPosition = coord.LLtoLO(
-    42 + 25/60 + 30/3600,
-    44 + 00/60 + 26/3600
+    42 + 20/60 + 50/3600,
+    41 + 50/60 + 50/3600
 )
 
 -- Initial objective for Bravo is to reposition to the
 -- Kvemo-Khoshka village at these coordinates:
-local redRepositionPosition = coord.LLtoLO(
-    42 + 27/60 + 53/3600,
-    44 + 03/60 + 37/3600
+local redAttackPosition = coord.LLtoLO(
+    42 + 37/60 + 03/3600,
+    41 + 44/60 + 0/3600
 )
 
 -- Known safe rally point for Red forces
 local redRallyPosition = coord.LLtoLO(
-    42 + 34/60 + 0/3600,
-    44 + 06/60 + 30/3600
+    42 + 43/60 + 53/3600,
+    42 + 02/60 + 56/3600
 )
 
 local opsBlue = OperationalCommander.new({color = "blue"})
@@ -47,7 +47,7 @@ opsRed.rallyPoints = {
 opsBlue.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
-        position = blueDefendPosition,
+        position = blueAttackPosition,
         radius = 500,
     })
 }
@@ -55,16 +55,16 @@ opsBlue.objectives = {
 opsRed.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
-        position = redRepositionPosition,
+        position = redAttackPosition,
         deadline = timer.getTime() + 1800,  -- 30 minute deadline
     })
 }
 
-local function createGroupCommandersForFilter(filterTable, color, opsCommander)
-    local groupNames = mist.makeGroupTable(filterTable) or {}
-    for _, groupName in ipairs(groupNames) do
-        local group = Group.getByName(groupName)
-        if group and group:isExist() and group:getCategory() == Group.Category.GROUND then
+local function createGroupCommandersForCoalition(coalitionSide, color, opsCommander)
+    local groups = coalition.getGroups(coalitionSide, Group.Category.GROUND) or {}
+    for _, group in ipairs(groups) do
+        if group and group:isExist() then
+            local groupName = group:getName()
             GroupCommander.new(groupName, {
                 color = color,
                 stratcom = opsCommander
@@ -73,16 +73,14 @@ local function createGroupCommandersForFilter(filterTable, color, opsCommander)
     end
 end
 
-createGroupCommandersForFilter({"[blue]"}, "blue", opsBlue)
-createGroupCommandersForFilter({"[red]"}, "red", opsRed)
+createGroupCommandersForCoalition(coalition.side.BLUE, "blue", opsBlue)
+createGroupCommandersForCoalition(coalition.side.RED, "red", opsRed)
 
 -- ## General scenario setup
--- 1. Bravo encounters Alpha overlooking the bridge
---   - Should spot them when near Kvemo-Roka villag
---   - at a fork in the road
--- 2. Bravo retreats up either branch of the fork
--- 3. Alpha pursues, but loses sight due to terrain
--- 4. Alpha breaks off pursuit and returns to defend the bridge
--- 5. Bravo reports enemy position to strategic command
--- 6. Strategic command dispatches reinforcements to assist Bravo
--- 7. Bravo attempts to continue to Kvemo-Khoshka village after the threat is removed
+-- 1. Blue pushes up to secure the town North of Zugdidi
+-- 2. Red pushes southwest to seize Gali
+-- 3. Each faction should start with recon units scouting ahead
+-- 4. As they make contact, assault orders should be given
+-- 7. Each faction should commit forces until one side is destroyed
+-- 8. Individual groups will retreat despite orders, if they take heavy losses
+
