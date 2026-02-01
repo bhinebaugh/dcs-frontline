@@ -5,7 +5,7 @@
 local ThreatDetector = {}
 
 -- Default detection parameters
-local DEFAULT_DETECTION_RADIUS = 15000 -- meters
+local DEFAULT_DETECTION_RADIUS = 8000 -- meters
 local DEFAULT_OBSERVER_ALTITUDE = 2 -- meters above unit position
 local DEFAULT_TARGET_ALTITUDE = 2 -- meters above unit position
 
@@ -66,6 +66,29 @@ function ThreatDetector.getUnitsFromGroupNames(groupNames)
 end
 
 -- ============================================================================
+-- COALITION HELPERS
+-- ============================================================================
+
+-- Convert coalition string to number
+-- Accepts: "red", "blue", "neutral" or numbers 0, 1, 2
+-- Returns: 0=neutral, 1=red, 2=blue
+function ThreatDetector.coalitionToNumber(coalition)
+    if type(coalition) == "number" then
+        return coalition
+    end
+    
+    if coalition == "red" then
+        return 1
+    elseif coalition == "blue" then
+        return 2
+    elseif coalition == "neutral" then
+        return 0
+    end
+    
+    return nil
+end
+
+-- ============================================================================
 -- DETECTION PROBABILITY
 -- ============================================================================
 
@@ -94,6 +117,7 @@ end
 -- Returns units grouped by coalition: {friendly = {...}, enemy = {...}, neutral = {...}}
 function ThreatDetector.detectUnitsInRadius(observerUnits, detectionRadius, observerCoalition)
     local radius = detectionRadius or DEFAULT_DETECTION_RADIUS
+    local coalition = ThreatDetector.coalitionToNumber(observerCoalition)
     
     if not observerUnits or #observerUnits == 0 then
         return {friendly = {}, enemy = {}, neutral = {}}
@@ -143,8 +167,8 @@ function ThreatDetector.detectUnitsInRadius(observerUnits, detectionRadius, obse
                     
                     -- Classify by coalition
                     -- Coalition: 0=neutral, 1=red, 2=blue
-                    if observerCoalition then
-                        if unitCoalition == observerCoalition then
+                    if coalition then
+                        if unitCoalition == coalition then
                             table.insert(detected.friendly, unit)
                         elseif unitCoalition == 0 then
                             table.insert(detected.neutral, unit)
@@ -208,12 +232,13 @@ function ThreatDetector.filterByLOS(observerUnits, targetUnits, detectionRadius,
         return {}
     end
     
-    -- Use MIST LOS check
+    -- Use MIST LOS check with radius filter
     local losResults = mist.getUnitsLOS(
         observerNames,
         obsAlt,
         targetNames,
-        tgtAlt
+        tgtAlt,
+        radius  -- Maximum detection range
     )
     
     if not losResults or #losResults == 0 then
