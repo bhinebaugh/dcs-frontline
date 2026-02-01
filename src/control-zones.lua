@@ -12,6 +12,7 @@ function ControlZones.new(namedZones, groundTemplates)
         self.zonesByName = {}   --full zone details indexed by zone name
         self.owner = {}
         self.neighbors = {}
+        self.edges = {}
         self.front = {
             blue = {},
             red = {}
@@ -373,7 +374,7 @@ end
 -- Get perimeter edges of the provided color that are facing another color
 function ControlZones:getPerimeterZones(color)
     if not self.triangles then
-        self:buildDelaunayIndex()
+        self:constructDelaunayIndex()
     end
     
     local frontZones = {}
@@ -418,7 +419,7 @@ end
 
 function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table of pairs of zone names (default) or positions of those zones
     if not self.triangles then
-        self:buildDelaunayIndex()
+        self:constructDelaunayIndex()
     end
     
     local edges = {}
@@ -525,15 +526,29 @@ function ControlZones:calculateFrontlinePoints(color)
     return adjustedEdges
 end
 
-function ControlZones:getAllEdges(returnPoints)
+function ControlZones:getEdge(z1, z2)
+    local edgeKey = z1 < z2 and (z1 .. "-" .. z2) or (z2 .. "-" .. z1)
+    return self.edges[edgeKey]
+end
+
+function ControlZones:getAllEdges()
     if not self.triangles then
-        self:buildDelaunayIndex()
+        self:constructDelaunayIndex()
+    end
+    if not self.edges then
+        self:precalculateConnections()
     end
 
-    local edges = {}
+    return self.edges
+end
+
+function ControlZones:precalculateConnections()
+    if not self.triangles then
+        self:constructDelaunayIndex()
+    end
     local edgeSet = {}  -- to avoid duplicates
 
-    --examine each triangle
+    -- Examine each triangle
     for l, tri in ipairs(self.triangles) do
         -- Check each edge of the triangle
         local triPairs = {
@@ -545,19 +560,36 @@ function ControlZones:getAllEdges(returnPoints)
             local v1, v2 = pair[1], pair[2]
             local key1, key2 = tri[v1], tri[v2]
             local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
-            
+
             if not edgeSet[edgeKey] then
                 edgeSet[edgeKey] = true
-                if returnPoints then
-                    table.insert(edges, {p1 = self:getZone(key1).point, p2 = self:getZone(key2).point})
-                else
-                    table.insert(edges, {p1 = key1, p2 = key2})
-                end
+                local z1, z2 = self:getZone(key1), self:getZone(key2)
+                local distance = mist.utils.get2DDist(z1.point, z2.point)
+                local roadPath = land.findPathOnRoads("roads", z1.x, z1.y, z2.x, z2.y)
+                local roadDistance = mist.getPathLength(roadPath)
+                local allowable_detour = 1.4
+                local cross_country = roadDistance / distance > allowable_detour
+
+                -- Depending on number of zones and their separation, it could be speed things up
+                -- to not bother with full calculation if road path is obviously inefficient
+                -- local cutoff = distance * 2
+                -- local roadDistance, _ = mist.getPathLength(roadPath, cutoff)
+
+                self.edges[edgeKey] = {
+                    p1 = z1.point,
+                    p2 = z2.point,
+                    distance = {
+                        straight = distance,
+                        road = roadDistance,
+                    },
+                    crosscountry = cross_country,
+                    terrainDifficulty = 0,
+                }
             end
         end
     end
 
-    return edges
+    return self.edges
 end
 
 function ControlZones:assignCompassMaxima()
@@ -626,6 +658,9 @@ end
 function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
     local zn = self:getZone(zoneName)
     local unitSet = {}
+
+    -- Disposition.getSimpleZones()
+
     local xoff = math.random(-40, 40)
     local yoff = math.random(-40, 40)
     for j, unitName in pairs(template) do
@@ -755,7 +790,7 @@ function ControlZones:kickoff()
         zoneInfo[name] = {color = color, point = self:getZone(name).point}
     end
     self.map:drawZones(zoneInfo)
-    self.map:drawEdges(self:getAllEdges(true))
+    self.map:drawEdges(self:getAllEdges())
     self.map:drawFrontline(self:calculateFrontlinePoints("blue"), "blue")
     self.map:drawFrontline(self:calculateFrontlinePoints("red"), "red")
 
