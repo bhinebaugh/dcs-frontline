@@ -659,14 +659,19 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
     local zn = self:getZone(zoneName)
     local unitSet = {}
 
-    -- Disposition.getSimpleZones()
+    local searchRadius = zn.radius
+    local clearRadius = 50
+    local spots = Disposition.getSimpleZones(zn.point, searchRadius, clearRadius, #template)
 
-    local xoff = math.random(-40, 40)
-    local yoff = math.random(-40, 40)
+    if #spots < #template then
+        env.info("!! not enough spots for spawning all units in "..zoneName..". spots found: "..#spots.." of "..#template)
+        for i=1, #template do
+            if not spots[i] then spots[i] = mist.getRandomPointInZone(zoneName) end
+        end
+    end
+
     for j, unitName in pairs(template) do
-        table.insert(unitSet, j, { type = unitName, x = zn.x + xoff, y = zn.y + yoff})
-        xoff = xoff + math.random(-22, 22)
-        yoff = yoff + math.random(-22, 22)
+        table.insert(unitSet, j, { type = unitName, x = spots[j].x, y = spots[j].y})
     end
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
