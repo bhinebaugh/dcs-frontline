@@ -42,8 +42,10 @@ local __bundle_require, __bundle_loaded, __bundle_register, __bundle_modules = (
 	return require, loaded, register, modules
 end)(require)
 __bundle_register("__root", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- requires MIST to be loaded first
+-- DO SCRIPT FILE: mist.lua
 --[[ This is handy for development, so that you don't need to delete and re-add the individual scripts in the ME when you make a change.  These will not be packaged with the .miz, so you shouldn't use this script loader for packaging .miz files for other machines/users.  You'll want to add each script individually with a DO SCRIPT FILE ]]--
---assert(loadfile("C:\\Users\\Kelvin\\Documents\\code\\RotorOps\\scripts\\RotorOps.lua"))()
+-- DO SCRIPT: assert(loadfile("C:\\Users\\username\\...\\bundled.lua"))()
 
 require("table") --Load modified standard libraries
 
@@ -54,18 +56,11 @@ local UnitLostHandler = require("handlers").UnitLostHandler --Load event handler
 
 local constants = require("constants") --Load constants
 
---get zones whose names start with 'control'
---get their coordinates
---grow from opposing start points somehow
---or split the cluster
--- choose a start zone
--- add a connected zone (one of closest zones)
-
-
 local cz = ControlZones.new(nil, constants.groundTemplates)
 
 cz:setup()
 cz:constructDelaunayIndex()
+cz:precalculateConnections()
 
 cz:assignCompassMaxima()
 local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
@@ -484,6 +479,7 @@ function ControlZones.new(namedZones, groundTemplates)
         self.zonesByName = {}   --full zone details indexed by zone name
         self.owner = {}
         self.neighbors = {}
+        self.edges = {}
         self.front = {
             blue = {},
             red = {}
@@ -514,6 +510,10 @@ end
 
 function ControlZones:addCommander(side, c)
     self.commanders[side] = c
+end
+
+function ControlZones:getOpponent(color)
+    return color == "blue" and "red" or "blue"
 end
 
 function ControlZones:setup(options)
@@ -636,7 +636,7 @@ function ControlZones:updateZoneOwner(zoneName)
             end
         elseif ownerColor and #groundInZone[ownerColor] <= 0 then
             env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
-            local opponentColor = ownerColor == "blue" and "red" or "blue"
+            local opponentColor = self:getOpponent(ownerColor)
             if #groundInZone[opponentColor] > 0 then
                 self:changeZoneOwner(zoneName, opponentColor)
             else
@@ -845,7 +845,7 @@ end
 -- Get perimeter edges of the provided color that are facing another color
 function ControlZones:getPerimeterZones(color)
     if not self.triangles then
-        self:buildDelaunayIndex()
+        self:constructDelaunayIndex()
     end
     
     local frontZones = {}
@@ -890,7 +890,7 @@ end
 
 function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table of pairs of zone names (default) or positions of those zones
     if not self.triangles then
-        self:buildDelaunayIndex()
+        self:constructDelaunayIndex()
     end
     
     local edges = {}
@@ -936,7 +936,7 @@ function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table o
 end
 
 function ControlZones:calculateFrontlinePoints(color)
-    local opponent = color == "blue" and "red" or "blue"
+    local opponent = self:getOpponent(color)
     local offsets = {1500,1700}
     local adjustedEdges = {}
 
@@ -997,15 +997,29 @@ function ControlZones:calculateFrontlinePoints(color)
     return adjustedEdges
 end
 
-function ControlZones:getAllEdges(returnPoints)
+function ControlZones:getEdge(z1, z2)
+    local edgeKey = z1 < z2 and (z1 .. "-" .. z2) or (z2 .. "-" .. z1)
+    return self.edges[edgeKey]
+end
+
+function ControlZones:getAllEdges()
     if not self.triangles then
-        self:buildDelaunayIndex()
+        self:constructDelaunayIndex()
+    end
+    if not self.edges then
+        self:precalculateConnections()
     end
 
-    local edges = {}
+    return self.edges
+end
+
+function ControlZones:precalculateConnections()
+    if not self.triangles then
+        self:constructDelaunayIndex()
+    end
     local edgeSet = {}  -- to avoid duplicates
 
-    --examine each triangle
+    -- Examine each triangle
     for l, tri in ipairs(self.triangles) do
         -- Check each edge of the triangle
         local triPairs = {
@@ -1017,19 +1031,36 @@ function ControlZones:getAllEdges(returnPoints)
             local v1, v2 = pair[1], pair[2]
             local key1, key2 = tri[v1], tri[v2]
             local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
-            
+
             if not edgeSet[edgeKey] then
                 edgeSet[edgeKey] = true
-                if returnPoints then
-                    table.insert(edges, {p1 = self:getZone(key1).point, p2 = self:getZone(key2).point})
-                else
-                    table.insert(edges, {p1 = key1, p2 = key2})
-                end
+                local z1, z2 = self:getZone(key1), self:getZone(key2)
+                local distance = mist.utils.get2DDist(z1.point, z2.point)
+                local roadPath = land.findPathOnRoads("roads", z1.x, z1.y, z2.x, z2.y)
+                local roadDistance = mist.getPathLength(roadPath)
+                local allowable_detour = 1.4
+                local cross_country = roadDistance / distance > allowable_detour
+
+                -- Depending on number of zones and their separation, it could be speed things up
+                -- to not bother with full calculation if road path is obviously inefficient
+                -- local cutoff = distance * 2
+                -- local roadDistance, _ = mist.getPathLength(roadPath, cutoff)
+
+                self.edges[edgeKey] = {
+                    p1 = z1.point,
+                    p2 = z2.point,
+                    distance = {
+                        straight = distance,
+                        road = roadDistance,
+                    },
+                    crosscountry = cross_country,
+                    terrainDifficulty = 0,
+                }
             end
         end
     end
 
-    return edges
+    return self.edges
 end
 
 function ControlZones:assignCompassMaxima()
@@ -1095,15 +1126,48 @@ function ControlZones:getNewGroupId()
     return self.groupCounter
 end
 
-function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
+function ControlZones:orientToClosestEnemy(zoneName)
+    local opponent = self:getOpponent(self.owner[zoneName])
+    local enemyNeighbors = self:getNeighbors(zoneName, opponent)
+    local nearestEnemy
+    local dist = math.huge
+    for _, enemyZone in pairs(enemyNeighbors) do
+        local newDist = self:getEdge(zoneName, enemyZone).distance.straight
+        if newDist < dist then
+            nearestEnemy = enemyZone
+            dist = newDist
+        end
+    end
+    local heading
+    if nearestEnemy then
+        heading = mist.utils.getHeadingPoints(self:getZone(zoneName).point, self:getZone(nearestEnemy).point)
+        env.info("-> Orienting units in"..zoneName..": "..mist.utils.toDegree(heading))
+    else
+        heading =  mist.utils.getHeadingPoints(self.centroid[self.owner[zoneName]], self.centroid[opponent])
+        env.info("!? could not find nearestEnemy (might not be frontline zone)")
+    end
+    return heading
+end
+
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
     local zn = self:getZone(zoneName)
     local unitSet = {}
-    local xoff = math.random(-40, 40)
-    local yoff = math.random(-40, 40)
+
+    local searchRadius = zn.radius
+    local clearRadius = 50
+    local spots = Disposition.getSimpleZones(zn.point, searchRadius, clearRadius, #template)
+
+    if #spots < #template then
+        env.info("!! not enough spots for spawning all units in "..zoneName..". spots found: "..#spots.." of "..#template)
+        for i=1, #template do
+            if not spots[i] then spots[i] = mist.getRandomPointInZone(zoneName) end
+        end
+    end
+
     for j, unitName in pairs(template) do
-        table.insert(unitSet, j, { type = unitName, x = zn.x + xoff, y = zn.y + yoff})
-        xoff = xoff + math.random(-22, 22)
-        yoff = yoff + math.random(-22, 22)
+        local variance = math.random(-4, 4)/10
+        local hdg = heading + variance
+        table.insert(unitSet, j, { type = unitName, x = spots[j].x, y = spots[j].y, heading = hdg})
     end
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
@@ -1195,16 +1259,18 @@ function ControlZones:populateZones()
     for _, cmd in pairs(self.commanders) do
         --a single group for each zone to start
         local zones = self:getCluster(cmd.color)
+        local avgHeading =  mist.utils.getHeadingPoints(self.centroid[cmd.color], self.centroid[self:getOpponent(cmd.color)])
         local reinforcements = cmd:chooseZoneReinforcements(zones)
         for zoneName, data in pairs(reinforcements) do
-            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template, avgHeading)
         end
 
         --front zones get an additional group
         local frontlineZones = self:getPerimeterZones(cmd.color)
         reinforcements = cmd:chooseZoneReinforcements(frontlineZones)
         for zoneName, data in pairs(reinforcements) do
-            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+            local heading = self:orientToClosestEnemy(zoneName)
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template, heading)
         end
     end
 end
@@ -1227,7 +1293,7 @@ function ControlZones:kickoff()
         zoneInfo[name] = {color = color, point = self:getZone(name).point}
     end
     self.map:drawZones(zoneInfo)
-    self.map:drawEdges(self:getAllEdges(true))
+    self.map:drawEdges(self:getAllEdges())
     self.map:drawFrontline(self:calculateFrontlinePoints("blue"), "blue")
     self.map:drawFrontline(self:calculateFrontlinePoints("red"), "red")
 

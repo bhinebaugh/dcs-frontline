@@ -45,6 +45,10 @@ function ControlZones:addCommander(side, c)
     self.commanders[side] = c
 end
 
+function ControlZones:getOpponent(color)
+    return color == "blue" and "red" or "blue"
+end
+
 function ControlZones:setup(options)
     options = options or {}
 
@@ -165,7 +169,7 @@ function ControlZones:updateZoneOwner(zoneName)
             end
         elseif ownerColor and #groundInZone[ownerColor] <= 0 then
             env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
-            local opponentColor = ownerColor == "blue" and "red" or "blue"
+            local opponentColor = self:getOpponent(ownerColor)
             if #groundInZone[opponentColor] > 0 then
                 self:changeZoneOwner(zoneName, opponentColor)
             else
@@ -465,7 +469,7 @@ function ControlZones:getPerimeterEdges(color, returnPoints) --returns a table o
 end
 
 function ControlZones:calculateFrontlinePoints(color)
-    local opponent = color == "blue" and "red" or "blue"
+    local opponent = self:getOpponent(color)
     local offsets = {1500,1700}
     local adjustedEdges = {}
 
@@ -655,7 +659,30 @@ function ControlZones:getNewGroupId()
     return self.groupCounter
 end
 
-function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
+function ControlZones:orientToClosestEnemy(zoneName)
+    local opponent = self:getOpponent(self.owner[zoneName])
+    local enemyNeighbors = self:getNeighbors(zoneName, opponent)
+    local nearestEnemy
+    local dist = math.huge
+    for _, enemyZone in pairs(enemyNeighbors) do
+        local newDist = self:getEdge(zoneName, enemyZone).distance.straight
+        if newDist < dist then
+            nearestEnemy = enemyZone
+            dist = newDist
+        end
+    end
+    local heading
+    if nearestEnemy then
+        heading = mist.utils.getHeadingPoints(self:getZone(zoneName).point, self:getZone(nearestEnemy).point)
+        env.info("-> Orienting units in"..zoneName..": "..mist.utils.toDegree(heading))
+    else
+        heading =  mist.utils.getHeadingPoints(self.centroid[self.owner[zoneName]], self.centroid[opponent])
+        env.info("!? could not find nearestEnemy (might not be frontline zone)")
+    end
+    return heading
+end
+
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
     local zn = self:getZone(zoneName)
     local unitSet = {}
 
@@ -671,7 +698,9 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template)
     end
 
     for j, unitName in pairs(template) do
-        table.insert(unitSet, j, { type = unitName, x = spots[j].x, y = spots[j].y})
+        local variance = math.random(-4, 4)/10
+        local hdg = heading + variance
+        table.insert(unitSet, j, { type = unitName, x = spots[j].x, y = spots[j].y, heading = hdg})
     end
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
@@ -763,16 +792,18 @@ function ControlZones:populateZones()
     for _, cmd in pairs(self.commanders) do
         --a single group for each zone to start
         local zones = self:getCluster(cmd.color)
+        local avgHeading =  mist.utils.getHeadingPoints(self.centroid[cmd.color], self.centroid[self:getOpponent(cmd.color)])
         local reinforcements = cmd:chooseZoneReinforcements(zones)
         for zoneName, data in pairs(reinforcements) do
-            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template, avgHeading)
         end
 
         --front zones get an additional group
         local frontlineZones = self:getPerimeterZones(cmd.color)
         reinforcements = cmd:chooseZoneReinforcements(frontlineZones)
         for zoneName, data in pairs(reinforcements) do
-            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template)
+            local heading = self:orientToClosestEnemy(zoneName)
+            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template, heading)
         end
     end
 end
