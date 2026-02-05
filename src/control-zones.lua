@@ -654,9 +654,57 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
-function ControlZones:getNewGroupId()
-    self.groupCounter = self.groupCounter + 1
-    return self.groupCounter
+function ControlZones:spawnFARP(color, point)
+    local searchRadius = 1000
+    local clearRadius = 120
+    local spot = Disposition.getSimpleZones(point, searchRadius, clearRadius, 1)
+    if spot[1] == nil then
+        env.info("Location for FARP could not be found within "..searchRadius.."m of "..point.x..", "..point.z)
+        return false
+    end
+
+    local coal = color == "blue" and country.id.USA or country.id.RUSSIA
+    local farp = {
+        ["category"] = "Heliports",
+        ["shape_name"] = "FARPS", -- "invisiblefarp"  | "FARP"           | "FARP_SINGLE_01"
+        ["type"] = "FARP",        -- "Invisible FARP" | "SINGLE_HELIPAD" | "FARP_SINGLE_01"
+        ["unitId"] = mist.getNextUnitId(),
+        ["x"] = spot[1].x,
+        ["y"] = spot[1].y,
+        ["name"] = color.." FARP "..math.random(1000,9999),
+        ["heading"] = 0,
+        ["dead"] = false,
+        ["dynamicSpawn"] = true,
+        ["allowHotStart"] = true
+        -- ["dynamicCargo"]
+    }
+    coalition.addStaticObject(coal, farp)
+
+    local farp_stock = {
+        blue = {
+            "UH-1H",
+            "AH-64D_BLK_II",
+        },
+        red = {
+            "Mi-8MT",
+            "Mi-24P",
+            "Ka-50_3",
+        }
+    }
+    timer.scheduleFunction(
+        function (info)
+            local farpObj = Airbase.getByName(info.name)
+            local wh = farpObj:getWarehouse()
+            for _, item in pairs(farp_stock[info.color]) do
+                wh:setItem(item, 4)
+            end
+            wh:setLiquidAmount(0, 1000)
+        end,
+        {name = farp.name, color = color},
+        timer.getTime()+5
+    )
+
+    return true -- or farp name or id
 end
 
 function ControlZones:orientToClosestEnemy(zoneName)
@@ -829,6 +877,11 @@ function ControlZones:kickoff()
     self.map:drawEdges(self:getAllEdges())
     self.map:drawFrontline(self:calculateFrontlinePoints("blue"), "blue")
     self.map:drawFrontline(self:calculateFrontlinePoints("red"), "red")
+
+    for side, _ in pairs(self.commanders) do
+        local pt = mist.utils.makeVec3(self.centroid[side])
+        self:spawnFARP(side, pt)
+    end
 
     self:populateZones()
     timer.scheduleFunction(
