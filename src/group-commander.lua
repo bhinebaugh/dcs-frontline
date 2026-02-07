@@ -1,4 +1,5 @@
 local constants = require("constants")
+local OODACommander = require("ooda-commander")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
@@ -10,6 +11,8 @@ local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
 local GroupCommander = {}
+
+setmetatable(GroupCommander, {__index = OODACommander})
 GroupCommander.__index = GroupCommander
 GroupCommander.instances = {}
 
@@ -17,7 +20,11 @@ local oodaInterval = 10.0 -- seconds
 local detectionRadius = 8000 -- meters
 
 function GroupCommander.new(groupName, config)
-    local self = setmetatable({}, GroupCommander)
+    -- Initialize parent class (sets up OODA loop scheduling)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, GroupCommander)
+    
+    -- GroupCommander-specific initialization
     self.alr = alr.LOW
     self.coalition = config.color
     self.color = config.color
@@ -32,7 +39,6 @@ function GroupCommander.new(groupName, config)
     local initialStatus = self:getStatusReport()
     self.initialAmmoCount = initialStatus.ammoCount
     
-    self.oodaState = oodaStates.OBSERVE
     self.orders = nil
     self.lastMoveOrder = nil
     self.ownForceStrength = nil
@@ -46,18 +52,10 @@ function GroupCommander.new(groupName, config)
     self.fuelRemaining = 1.0  -- Start at 100%
     self.lastPosition = nil
     self.lastObserveTime = timer.getTime()
-
-    self.oodaOffset = math.random() * oodaInterval
     
     -- Register this instance
     table.insert(GroupCommander.instances, self)
     
-    mist.scheduleFunction(
-        GroupCommander.oodaTick,
-        {self},
-        timer.getTime() + self.oodaOffset,
-        oodaInterval
-    )
     return self
 end
 
@@ -73,22 +71,6 @@ function GroupCommander.getInstances(coalition)
         end
     end
     return filtered
-end
-
-function GroupCommander:oodaTick()
-    if self.oodaState == oodaStates.OBSERVE then
-        self:observe()
-        self.oodaState = oodaStates.ORIENT
-    elseif self.oodaState == oodaStates.ORIENT then
-        self:orient()
-        self.oodaState = oodaStates.DECIDE
-    elseif self.oodaState == oodaStates.DECIDE then
-        self:decide()
-        self.oodaState = oodaStates.ACT
-    elseif self.oodaState == oodaStates.ACT then
-        self:act()
-        self.oodaState = oodaStates.OBSERVE
-    end
 end
 
 function GroupCommander:observe()

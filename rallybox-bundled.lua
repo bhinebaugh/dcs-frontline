@@ -137,6 +137,7 @@ end)
 __bundle_register("operational-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local GroupCommander = require("group-commander")
+local OODACommander = require("ooda-commander")
 local Order = require("order")
 local ThreatTracker = require("threat-tracker")
 
@@ -147,16 +148,18 @@ local taskTypes = constants.taskTypes
 local dispositionTypes = constants.dispositionTypes
 
 local OperationalCommander = {}
+setmetatable(OperationalCommander, {__index = OODACommander})
 OperationalCommander.__index = OperationalCommander
 
 local oodaInterval = 30.0 -- seconds
 
 function OperationalCommander.new(config)
-    local self = setmetatable({}, OperationalCommander)
+    -- Initialize parent class (sets up OODA loop scheduling)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, OperationalCommander)
 
+    -- OperationalCommander-specific initialization
     self.color = config.color or "white"
-    self.oodaState = oodaStates.OBSERVE
-    self.oodaOffset = math.random() * oodaInterval
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
     self.objectives = {}
     self.lastIssuedOrders = {}
@@ -169,29 +172,7 @@ function OperationalCommander.new(config)
     self.assaultStagingDistance = config.assaultStagingDistance or 10000
     self.maxReconGroups = config.maxReconGroups or 1
 
-    mist.scheduleFunction(
-        OperationalCommander.oodaTick,
-        {self},
-        timer.getTime() + self.oodaOffset,
-        oodaInterval
-    )
     return self
-end
-
-function OperationalCommander:oodaTick()
-    if self.oodaState == oodaStates.OBSERVE then
-        self:observe()
-        self.oodaState = oodaStates.ORIENT
-    elseif self.oodaState == oodaStates.ORIENT then
-        self:orient()
-        self.oodaState = oodaStates.DECIDE
-    elseif self.oodaState == oodaStates.DECIDE then
-        self:decide()
-        self.oodaState = oodaStates.ACT
-    elseif self.oodaState == oodaStates.ACT then
-        self:act()
-        self.oodaState = oodaStates.OBSERVE
-    end
 end
 
 function OperationalCommander:observe()
@@ -2393,8 +2374,68 @@ end
 return Order
 
 end)
+__bundle_register("ooda-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local oodaStates = constants.oodaStates
+
+local OODACommander = {}
+OODACommander.__index = OODACommander
+
+function OODACommander.new(config)
+    local self = setmetatable({}, OODACommander)
+
+    local oodaInterval = config.interval or 10
+
+    self.oodaState = oodaStates.OBSERVE
+    self.oodaOffset = math.random() * oodaInterval
+
+    mist.scheduleFunction(
+        OODACommander.oodaTick,
+        {self},
+        timer.getTime() + self.oodaOffset,
+        oodaInterval
+    )
+    return self
+end
+
+function OODACommander:oodaTick()
+    if self.oodaState == oodaStates.OBSERVE then
+        self:observe()
+        self.oodaState = oodaStates.ORIENT
+    elseif self.oodaState == oodaStates.ORIENT then
+        self:orient()
+        self.oodaState = oodaStates.DECIDE
+    elseif self.oodaState == oodaStates.DECIDE then
+        self:decide()
+        self.oodaState = oodaStates.ACT
+    elseif self.oodaState == oodaStates.ACT then
+        self:act()
+        self.oodaState = oodaStates.OBSERVE
+    end
+end
+
+function OODACommander:observe()
+    error("OODACommander subclass must implement observe()")
+end
+
+function OODACommander:orient()
+    error("OODACommander subclass must implement orient()")
+end
+
+function OODACommander:decide()
+    error("OODACommander subclass must implement decide()")
+end
+
+function OODACommander:act()
+    error("OODACommander subclass must implement act()")
+end
+
+return OODACommander
+
+end)
 __bundle_register("group-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
+local OODACommander = require("ooda-commander")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
@@ -2406,6 +2447,8 @@ local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
 local GroupCommander = {}
+
+setmetatable(GroupCommander, {__index = OODACommander})
 GroupCommander.__index = GroupCommander
 GroupCommander.instances = {}
 
@@ -2413,7 +2456,11 @@ local oodaInterval = 10.0 -- seconds
 local detectionRadius = 8000 -- meters
 
 function GroupCommander.new(groupName, config)
-    local self = setmetatable({}, GroupCommander)
+    -- Initialize parent class (sets up OODA loop scheduling)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, GroupCommander)
+    
+    -- GroupCommander-specific initialization
     self.alr = alr.LOW
     self.coalition = config.color
     self.color = config.color
@@ -2428,7 +2475,6 @@ function GroupCommander.new(groupName, config)
     local initialStatus = self:getStatusReport()
     self.initialAmmoCount = initialStatus.ammoCount
     
-    self.oodaState = oodaStates.OBSERVE
     self.orders = nil
     self.lastMoveOrder = nil
     self.ownForceStrength = nil
@@ -2442,18 +2488,10 @@ function GroupCommander.new(groupName, config)
     self.fuelRemaining = 1.0  -- Start at 100%
     self.lastPosition = nil
     self.lastObserveTime = timer.getTime()
-
-    self.oodaOffset = math.random() * oodaInterval
     
     -- Register this instance
     table.insert(GroupCommander.instances, self)
     
-    mist.scheduleFunction(
-        GroupCommander.oodaTick,
-        {self},
-        timer.getTime() + self.oodaOffset,
-        oodaInterval
-    )
     return self
 end
 
@@ -2469,22 +2507,6 @@ function GroupCommander.getInstances(coalition)
         end
     end
     return filtered
-end
-
-function GroupCommander:oodaTick()
-    if self.oodaState == oodaStates.OBSERVE then
-        self:observe()
-        self.oodaState = oodaStates.ORIENT
-    elseif self.oodaState == oodaStates.ORIENT then
-        self:orient()
-        self.oodaState = oodaStates.DECIDE
-    elseif self.oodaState == oodaStates.DECIDE then
-        self:decide()
-        self.oodaState = oodaStates.ACT
-    elseif self.oodaState == oodaStates.ACT then
-        self:act()
-        self.oodaState = oodaStates.OBSERVE
-    end
 end
 
 function GroupCommander:observe()

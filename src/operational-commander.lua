@@ -1,5 +1,6 @@
 local constants = require("constants")
 local GroupCommander = require("group-commander")
+local OODACommander = require("ooda-commander")
 local Order = require("order")
 local ThreatTracker = require("threat-tracker")
 
@@ -10,16 +11,18 @@ local taskTypes = constants.taskTypes
 local dispositionTypes = constants.dispositionTypes
 
 local OperationalCommander = {}
+setmetatable(OperationalCommander, {__index = OODACommander})
 OperationalCommander.__index = OperationalCommander
 
 local oodaInterval = 30.0 -- seconds
 
 function OperationalCommander.new(config)
-    local self = setmetatable({}, OperationalCommander)
+    -- Initialize parent class (sets up OODA loop scheduling)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, OperationalCommander)
 
+    -- OperationalCommander-specific initialization
     self.color = config.color or "white"
-    self.oodaState = oodaStates.OBSERVE
-    self.oodaOffset = math.random() * oodaInterval
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
     self.objectives = {}
     self.lastIssuedOrders = {}
@@ -32,29 +35,7 @@ function OperationalCommander.new(config)
     self.assaultStagingDistance = config.assaultStagingDistance or 10000
     self.maxReconGroups = config.maxReconGroups or 1
 
-    mist.scheduleFunction(
-        OperationalCommander.oodaTick,
-        {self},
-        timer.getTime() + self.oodaOffset,
-        oodaInterval
-    )
     return self
-end
-
-function OperationalCommander:oodaTick()
-    if self.oodaState == oodaStates.OBSERVE then
-        self:observe()
-        self.oodaState = oodaStates.ORIENT
-    elseif self.oodaState == oodaStates.ORIENT then
-        self:orient()
-        self.oodaState = oodaStates.DECIDE
-    elseif self.oodaState == oodaStates.DECIDE then
-        self:decide()
-        self.oodaState = oodaStates.ACT
-    elseif self.oodaState == oodaStates.ACT then
-        self:act()
-        self.oodaState = oodaStates.OBSERVE
-    end
 end
 
 function OperationalCommander:observe()
