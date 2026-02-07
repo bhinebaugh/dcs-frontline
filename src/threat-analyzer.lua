@@ -146,38 +146,22 @@ function ThreatAnalyzer.analyzeUnits(units)
     return analysis
 end
 
--- Calculate vulnerability of a force to enemy capabilities
--- Uses reverse lookup: enemy's offensive capability against each of our unit types
-function ThreatAnalyzer.calculateVulnerability(forceAnalysis, enemyAnalysis)
-    local vulnerability = {
-        overall = 0,
-        fromInfantry = 0,
-        fromArmor = 0,
-        fromAir = 0
-    }
-    
-    -- Calculate composition ratios
-    local totalCount = forceAnalysis.count
-    if totalCount == 0 then
-        return vulnerability
+-- Calculate combat power of a force against an enemy
+-- Returns how much damage this force can inflict on the enemy based on actual unit counts
+function ThreatAnalyzer.calculateCombatPower(forceAnalysis, enemyAnalysis)
+    if forceAnalysis.count == 0 or enemyAnalysis.count == 0 then
+        return 0
     end
     
-    local infantryRatio = forceAnalysis.composition.infantry / totalCount
-    local lightArmorRatio = forceAnalysis.composition["light-armor"] / totalCount
-    local heavyArmorRatio = forceAnalysis.composition["heavy-armor"] / totalCount
-    local supportRatio = forceAnalysis.composition.support / totalCount
+    -- Calculate damage we can do to each enemy unit type (capability * enemy count)
+    local damageToInfantry = forceAnalysis.offensiveCapability.vsInfantry * enemyAnalysis.composition.infantry
+    local damageToArmor = forceAnalysis.offensiveCapability.vsArmor * 
+                          (enemyAnalysis.composition["light-armor"] + enemyAnalysis.composition["heavy-armor"])
+    local damageToSupport = forceAnalysis.offensiveCapability.vsAir * enemyAnalysis.composition.support
     
-    -- Combined armor ratio for vulnerability calculation
-    local armorRatio = lightArmorRatio + heavyArmorRatio
+    local totalPower = damageToInfantry + damageToArmor + damageToSupport
     
-    -- Enemy's offensive capability against our unit types = our vulnerability
-    vulnerability.fromInfantry = infantryRatio * enemyAnalysis.offensiveCapability.vsInfantry
-    vulnerability.fromArmor = armorRatio * enemyAnalysis.offensiveCapability.vsArmor
-    vulnerability.fromAir = supportRatio * enemyAnalysis.offensiveCapability.vsAir
-    
-    vulnerability.overall = vulnerability.fromInfantry + vulnerability.fromArmor + vulnerability.fromAir
-    
-    return vulnerability
+    return totalPower
 end
 
 -- ============================================================================
@@ -221,16 +205,16 @@ function ThreatAnalyzer.compareForces(friendlyUnits, enemyUnits)
         }
     end
     
-    -- Calculate mutual vulnerabilities
-    local friendlyVulnerability = ThreatAnalyzer.calculateVulnerability(friendlyAnalysis, enemyAnalysis)
-    local enemyVulnerability = ThreatAnalyzer.calculateVulnerability(enemyAnalysis, friendlyAnalysis)
+    -- Calculate combat power for both sides
+    local friendlyPower = ThreatAnalyzer.calculateCombatPower(friendlyAnalysis, enemyAnalysis)
+    local enemyPower = ThreatAnalyzer.calculateCombatPower(enemyAnalysis, friendlyAnalysis)
     
-    -- Calculate favorability as ratio of enemy vulnerability to friendly vulnerability
+    -- Calculate favorability as ratio of our power to their power
     -- Higher = we can hurt them more than they can hurt us
     local favorability = 1.0
-    if friendlyVulnerability.overall > 0 then
-        favorability = enemyVulnerability.overall / friendlyVulnerability.overall
-    elseif enemyVulnerability.overall > 0 then
+    if enemyPower > 0 then
+        favorability = friendlyPower / enemyPower
+    elseif friendlyPower > 0 then
         favorability = math.huge
     end
     
@@ -238,8 +222,8 @@ function ThreatAnalyzer.compareForces(friendlyUnits, enemyUnits)
         favorability = favorability,
         friendly = friendlyAnalysis,
         enemy = enemyAnalysis,
-        friendlyVulnerability = friendlyVulnerability,
-        enemyVulnerability = enemyVulnerability
+        friendlyPower = friendlyPower,
+        enemyPower = enemyPower
     }
 end
 
