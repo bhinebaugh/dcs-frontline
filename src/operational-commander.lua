@@ -7,6 +7,7 @@ local alr = constants.acceptableLevelsOfRisk
 local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
+local dispositionTypes = constants.dispositionTypes
 
 local OperationalCommander = {}
 OperationalCommander.__index = OperationalCommander
@@ -28,7 +29,7 @@ function OperationalCommander.new(config)
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
-    self.assaultStagingDistance = config.assaultStagingDistance or 4000
+    self.assaultStagingDistance = config.assaultStagingDistance or 10000
     self.maxReconGroups = config.maxReconGroups or 1
 
     mist.scheduleFunction(
@@ -112,36 +113,48 @@ function OperationalCommander:reviewAndCancelObsoleteOrders()
                     
                     -- RALLY orders: Cancel if threats no longer exist or position is now behind new threats
                     if order.type == taskTypes.RALLY then
-                        local activeThreats = self:countActiveThreats(currentThreats)
-                        if activeThreats == 0 then
+                        -- Don't cancel just because threats went to MEMORY - require total absence
+                        local totalThreats = self:countThreats(currentThreats)
+                        if totalThreats == 0 then
                             shouldCancel = true
-                            cancelReason = "rally threats no longer active"
+                            cancelReason = "rally threats no longer exist"
                         else
-                            -- Check if the rally position is now strategically irrelevant
-                            -- (e.g., new threats appeared closer to the unit than the rally point)
+                            -- Check if threats appeared between the unit and rally point
+                            -- (Don't cancel just because threats are at the objective we're rallying toward)
                             local commander = self:getCommanderByName(order.assignedTo)
                             if commander then
                                 local commanderStatus = commander:getStatus()
                                 if commanderStatus.position then
-                                    -- Find closest current threat to the unit
-                                    local closestThreatDist = math.huge
+                                    -- Distance to rally point
+                                    local distToRally = mist.vec.mag(mist.vec.sub(commanderStatus.position, order.position))
+                                    
+                                    -- Distance from rally point to objective
+                                    local rallyToObjective = mist.vec.mag(mist.vec.sub(order.position, order.objective.position))
+                                    
+                                    -- Only cancel if threats appeared much closer than the rally point
+                                    -- AND are not near the objective (which is expected)
+                                    local threatBlockingRally = false
                                     for unitName, threat in pairs(currentThreats) do
                                         if threat.position then
-                                            local dist = mist.vec.mag(mist.vec.sub(commanderStatus.position, threat.position))
-                                            if dist < closestThreatDist then
-                                                closestThreatDist = dist
+                                            local distToThreat = mist.vec.mag(mist.vec.sub(commanderStatus.position, threat.position))
+                                            local threatToObjective = mist.vec.mag(mist.vec.sub(threat.position, order.objective.position))
+                                            
+                                            -- Threat is blocking if it's:
+                                            -- 1. Much closer than rally point (within 25% of rally distance)
+                                            -- 2. NOT near the objective (more than 2km from objective)
+                                            -- 3. Unit is still far from rally (more than 2km)
+                                            if distToThreat < distToRally * 0.25 and 
+                                               threatToObjective > 2000 and 
+                                               distToRally > 2000 then
+                                                threatBlockingRally = true
+                                                break
                                             end
                                         end
                                     end
                                     
-                                    -- Distance to rally point
-                                    local distToRally = mist.vec.mag(mist.vec.sub(commanderStatus.position, order.position))
-                                    
-                                    -- Only cancel if: threats are closer AND unit is still far from rally point
-                                    -- If already close to rally (within 1km), let them complete it
-                                    if closestThreatDist < distToRally * 0.5 and distToRally > 1000 then
+                                    if threatBlockingRally then
                                         shouldCancel = true
-                                        cancelReason = "threats closer than rally point"
+                                        cancelReason = "threats blocking path to rally point"
                                     end
                                 end
                             end
@@ -246,6 +259,8 @@ function OperationalCommander:act()
                 position = {x = order.position.x, z = order.position.z},
                 radius = order.radius,
                 type = order.type,
+                issuedAt = timer.getTime(),
+                threatCenter = plan.threatCenter,  -- Store threat center for rally orders
             }
             issuedCount = issuedCount + 1
             
@@ -310,17 +325,26 @@ function OperationalCommander:planObjectiveOrders(objective)
                 self:planRallyOrders(objective, threatsNearObjective)
             end
         elseif lastOrderType == taskTypes.RALLY then
-            -- Only proceed to ASSAULT if rallies were completed, not just aborted
-            -- If rallies were aborted (e.g., units engaged threats directly), they're autonomous
-            if lastCompletedCount > 0 then
-                -- Some rallies completed, proceed to ASSAULT
-                self:planAssaultOrders(objective, threatsNearObjective)
-            else
-                -- All rallies were aborted - units are likely engaging autonomously
-                -- Issue new rally orders only if threats still exist
+            -- Only proceed to ASSAULT once ALL rallies complete
+            -- This ensures a fully coordinated assault with all forces
+            local totalRallies = lastCompletedCount + lastAbortedCount
+            
+            if lastAbortedCount == totalRallies then
+                -- All rallies were aborted (e.g., units engaged threats directly)
+                -- They're fighting autonomously now
+                -- Issue new rally orders only if threats still exist and units need coordination
                 if threatCount > 0 then
+                    env.info("*** " .. self.color .. " Ops: All rallies aborted, reissuing rally orders")
                     self:planRallyOrders(objective, threatsNearObjective)
                 end
+            elseif lastCompletedCount == totalRallies then
+                -- All rallies completed, launch coordinated assault
+                env.info("*** " .. self.color .. " Ops: All " .. totalRallies .. " rallies completed, launching assault")
+                self:planAssaultOrders(objective, threatsNearObjective)
+            else
+                -- Some rallies still in progress, wait for all to complete
+                env.info("*** " .. self.color .. " Ops: Waiting for rallies to complete (" .. 
+                         lastCompletedCount .. "/" .. totalRallies .. " done)")
             end
         elseif lastOrderType == taskTypes.ASSAULT then
             if threatCount == 0 then
@@ -379,9 +403,47 @@ function OperationalCommander:planRallyOrders(objective, threats)
         threatCenter = objective.position
     end
     
+    -- Filter out commanders who recently completed a rally at a similar threat center
+    -- This prevents churning rally orders when threat center moves slightly
+    local filteredCommanders = {}
+    local currentTime = timer.getTime()
+    for _, commander in ipairs(availableCommanders) do
+        local lastOrder = self.lastIssuedOrders[commander.groupName]
+        local skipRally = false
+        
+        if lastOrder and lastOrder.type == taskTypes.RALLY then
+            -- Check if this was a recent rally (within last 60 seconds)
+            local timeSinceRally = currentTime - (lastOrder.issuedAt or 0)
+            if timeSinceRally < 60 and lastOrder.threatCenter then
+                -- Check if threat center moved significantly (>1.5km threshold)
+                local dx = threatCenter.x - lastOrder.threatCenter.x
+                local dz = threatCenter.z - lastOrder.threatCenter.z
+                local distance = math.sqrt(dx * dx + dz * dz)
+                
+                if distance < 1500 then
+                    env.info("*** " .. self.color .. " Ops: Skipping " .. commander.groupName .. 
+                             " for rally (recently rallied, threat center similar: " .. 
+                             string.format("%.0f", distance) .. "m shift)")
+                    skipRally = true
+                end
+            end
+        end
+        
+        if not skipRally then
+            table.insert(filteredCommanders, commander)
+        end
+    end
+    
+    env.info("*** " .. self.color .. " Ops planRallyOrders: " .. #filteredCommanders .. " after filtering recent rallies")
+    
+    if #filteredCommanders == 0 then
+        env.info("*** " .. self.color .. " Ops planRallyOrders: No commanders after filtering")
+        return
+    end
+    
     -- Select best units for assault based on threat composition and proximity
     -- Prioritize units that can arrive quickly enough and have good matchups
-    local scoredCommanders = self:scoreCommandersForAssault(availableCommanders, threats, threatCenter)
+    local scoredCommanders = self:scoreCommandersForAssault(filteredCommanders, threats, threatCenter)
     
     env.info("*** " .. self.color .. " Ops planRallyOrders: " .. #scoredCommanders .. " scored commanders")
     
@@ -417,19 +479,19 @@ function OperationalCommander:planRallyOrders(objective, threats)
             assignedTo = commander.groupName,
             objective = objective,
             position = stagingPos,
-            radius = 300,
+            radius = 500,
             type = taskTypes.RALLY,
             alr = alr.MEDIUM,
             deadline = timer.getTime() + 600,
         })
         
-        self:addPlannedOrder(commander, order)
+        self:addPlannedOrder(commander, order, threats, threatCenter)
     end
 end
 
 function OperationalCommander:calculateAssaultStagingPositions(threatCenter, selectedCommanders)
     -- Calculate rally positions spread around the threat to create flanking/converging attack
-    -- Position units in an arc or circle around the threat at staging distance
+    -- Rally positions form an arc on the allied side (never crossing through threat interior)
     local positions = {}
     local distance = self.assaultStagingDistance
     local numUnits = #selectedCommanders
@@ -438,9 +500,9 @@ function OperationalCommander:calculateAssaultStagingPositions(threatCenter, sel
         return positions
     end
     
-    -- Calculate the average direction from which units are approaching
-    local avgDirX = 0
-    local avgDirZ = 0
+    -- Step 1-3: Find the center of the allied group (centroid of all rallying units)
+    local alliedCenterX = 0
+    local alliedCenterZ = 0
     local validCount = 0
     
     for _, commanderInfo in ipairs(selectedCommanders) do
@@ -448,32 +510,36 @@ function OperationalCommander:calculateAssaultStagingPositions(threatCenter, sel
         local status = commander:getStatus()
         
         if status.position then
-            local dx = status.position.x - threatCenter.x
-            local dz = status.position.z - threatCenter.z
-            local dist = math.sqrt(dx * dx + dz * dz)
-            
-            if dist > 1 then
-                avgDirX = avgDirX + dx / dist
-                avgDirZ = avgDirZ + dz / dist
-                validCount = validCount + 1
-            end
+            alliedCenterX = alliedCenterX + status.position.x
+            alliedCenterZ = alliedCenterZ + status.position.z
+            validCount = validCount + 1
         end
     end
     
-    -- Determine base angle for spread
-    local baseAngle = 0
-    if validCount > 0 then
-        -- Average approach direction
-        avgDirX = avgDirX / validCount
-        avgDirZ = avgDirZ / validCount
-        baseAngle = math.atan2(avgDirZ, avgDirX)
+    if validCount == 0 then
+        -- Fallback: no valid positions
+        return positions
     end
     
-    -- Spread units in an arc centered on the approach direction
-    -- Arc width depends on number of units (narrow for few, wider for many)
-    local arcWidth = math.min(math.pi, math.pi * 0.4 + (numUnits - 1) * 0.3)  -- 72° to 180°
-    local angleStep = numUnits > 1 and arcWidth / (numUnits - 1) or 0
-    local startAngle = baseAngle - arcWidth / 2
+    alliedCenterX = alliedCenterX / validCount
+    alliedCenterZ = alliedCenterZ / validCount
+    
+    -- Step 4: Draw line from allied center to threat center
+    local dx = threatCenter.x - alliedCenterX
+    local dz = threatCenter.z - alliedCenterZ
+    local approachAngle = math.atan2(dz, dx)
+    
+    -- Step 5: The ideal rally point is where this line intersects the circle on the near side
+    -- This is the point opposite the approach direction (allies approach from behind this point)
+    local idealAngle = approachAngle + math.pi  -- Flip 180° to get near side from allied perspective
+    
+    -- Step 6-8: Distribute units along an arc ±60° from ideal point (120° total span)
+    local arcSpan = math.rad(120)  -- Total arc width
+    local halfArc = arcSpan / 2    -- ±60° from ideal
+    
+    -- Calculate positions evenly distributed along the arc
+    local angleStep = numUnits > 1 and arcSpan / (numUnits - 1) or 0
+    local startAngle = idealAngle - halfArc
     
     for i = 1, numUnits do
         local angle = startAngle + (i - 1) * angleStep
@@ -491,7 +557,132 @@ end
 function OperationalCommander:planOrdersForIdleUnits()
     local idleUnits = self:getAvailableGroupCommanders()
     
-    if #idleUnits == 0 then
+    -- Also check ALL units (even those with orders) for combat-ineffective retreaters
+    -- that need REPOSITION orders to stop endless retreat
+    if not self.groupCommanders then
+        self.groupCommanders = self:getOwnGroupCommanders()
+    end
+    
+    local allUnits = {}
+    for _, commander in ipairs(self.groupCommanders) do
+        table.insert(allUnits, commander)
+    end
+    
+    if #idleUnits == 0 and #allUnits == 0 then
+        return
+    end
+    
+    -- Separate units into combat-effective and combat-ineffective
+    local effectiveUnits = {}
+    local ineffectiveUnits = {}
+    
+    -- Check idle units first
+    for _, commander in ipairs(idleUnits) do
+        local statusReport = commander:getStatusReport()
+        local totalUnits = #commander.initialUnitNames
+        local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+        local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
+        local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
+        local isUnarmed = statusReport.ammoCount == 0 and not hadAmmoInitially
+        
+        -- Combat-ineffective: out of ammo, heavy casualties, or unarmed
+        if isOutOfAmmo or attritionRate > 0.4 or isUnarmed then
+            table.insert(ineffectiveUnits, commander)
+        else
+            table.insert(effectiveUnits, commander)
+        end
+    end
+    
+    -- Check ALL units for combat-ineffective retreaters without REPOSITION orders
+    for _, commander in ipairs(allUnits) do
+        -- Skip if already has REPOSITION order or is in idle list
+        local hasReposOrder = commander.orders and commander.orders:isActive() and 
+                            commander.orderContext and commander.orderContext.type == taskTypes.REPOSITION
+        local isIdle = false
+        for _, idle in ipairs(idleUnits) do
+            if idle == commander then
+                isIdle = true
+                break
+            end
+        end
+        
+        if not hasReposOrder and not isIdle then
+            local statusReport = commander:getStatusReport()
+            local totalUnits = #commander.initialUnitNames
+            local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+            local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
+            local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
+            local isUnarmed = statusReport.ammoCount == 0 and not hadAmmoInitially
+            
+            -- If combat-ineffective and currently retreating autonomously, give REPOSITION order
+            local needsReposition = false
+            if commander.disposition == dispositionTypes.RETREAT then
+                -- Combat units out of ammo or heavily damaged
+                if isOutOfAmmo or attritionRate > 0.4 then
+                    needsReposition = true
+                -- Unarmed recon units that have lost direct contact (only seeing shared intel)
+                elseif isUnarmed and commander.directLOSCount == 0 then
+                    needsReposition = true
+                end
+            end
+            
+            if needsReposition then
+                -- Abort any active orders first
+                if commander.orders and commander.orders:isActive() then
+                    commander.orders:abort("combat_ineffective_reposition")
+                end
+                table.insert(ineffectiveUnits, commander)
+            end
+        end
+    end
+    
+    -- Remove duplicates from ineffectiveUnits
+    local seen = {}
+    local uniqueIneffective = {}
+    for _, commander in ipairs(ineffectiveUnits) do
+        if not seen[commander.groupName] then
+            seen[commander.groupName] = true
+            table.insert(uniqueIneffective, commander)
+        end
+    end
+    ineffectiveUnits = uniqueIneffective
+    
+    -- Reposition combat-ineffective units to safety
+    if #ineffectiveUnits > 0 then
+        for _, commander in ipairs(ineffectiveUnits) do
+            local statusReport = commander:getStatusReport()
+            local totalUnits = #commander.initialUnitNames
+            local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+            local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
+            local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
+            
+            local reason = isOutOfAmmo and "ammo depleted" or 
+                          ("heavy casualties: " .. string.format("%.0f%%", attritionRate * 100))
+            
+            env.info("*** " .. self.color .. " Ops: Repositioning " .. commander.groupName .. 
+                     " to rear (" .. reason .. ")")
+            
+            -- Find nearest friendly objective as safe position
+            local safePosition = self:findNearestFriendlyPosition(commander)
+            
+            if safePosition then
+                local order = Order.new({
+                    assignedTo = commander.groupName,
+                    objective = nil,  -- No specific objective
+                    position = safePosition,
+                    radius = 500,
+                    type = taskTypes.REPOSITION,
+                    alr = alr.LOW,
+                    deadline = timer.getTime() + 3600,
+                })
+                
+                self:addPlannedOrder(commander, order, nil)
+            end
+        end
+    end
+    
+    -- Use remaining combat-effective units for offensive tasks
+    if #effectiveUnits == 0 then
         return
     end
     
@@ -501,13 +692,13 @@ function OperationalCommander:planOrdersForIdleUnits()
             local statusCounts = objective:getOrderStatusCounts()
             
             -- If objective has some aborted orders, send idle units to help
-            if statusCounts.aborted > 0 and #idleUnits > 0 then
+            if statusCounts.aborted > 0 and #effectiveUnits > 0 then
                 local threats = self:getThreatsNearPosition(objective.position, self.reconRadius)
                 local threatCount = self:countThreats(threats)
                 
                 if threatCount > 0 then
-                    -- Send as assault
-                    for _, commander in ipairs(idleUnits) do
+                    -- Send as assault (only combat-effective units)
+                    for _, commander in ipairs(effectiveUnits) do
                         local order = Order.new({
                             assignedTo = commander.groupName,
                             objective = objective,
@@ -952,29 +1143,48 @@ function OperationalCommander:scoreCommandersForAssault(commanders, threats, tar
                 end
                 
                 if #activeUnits > 0 then
-                    local distance = mist.vec.mag(mist.vec.sub(status.position, targetPosition))
+                    -- Get detailed status report to check combat capability
+                    local statusReport = commander:getStatusReport()
                     
-                    -- Compare forces to get favorability
-                    local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
+                    -- Skip units with no offensive capability
+                    -- - No ammo (current) means can't assault (includes both depleted and never-armed units)
+                    -- - Heavy casualties (>50% losses) means unit is combat ineffective
+                    local totalUnits = #commander.initialUnitNames
+                    local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
                     
-                    -- Higher score is better for ASSAULT
-                    -- Score based on: favorability (higher is better) - distance penalty
-                    local favorabilityScore = comparison.favorability
-                    if favorabilityScore == math.huge then
-                        favorabilityScore = 100
-                    elseif favorabilityScore == -math.huge then
-                        favorabilityScore = -100
+                    if statusReport.ammoCount == 0 then
+                        env.info("*** " .. self.color .. " Ops: Skipping " .. commander.groupName .. 
+                                 " for assault (no ammo)")
+                    elseif attritionRate > 0.3 then
+                        env.info("*** " .. self.color .. " Ops: Skipping " .. commander.groupName .. 
+                                 " for assault (heavy casualties: " .. 
+                                 string.format("%.0f%%", attritionRate * 100) .. ")")
+                    else
+                        -- Unit is combat-effective, score it for assault
+                        local distance = mist.vec.mag(mist.vec.sub(status.position, targetPosition))
+                        
+                        -- Compare forces to get favorability
+                        local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
+                        
+                        -- Higher score is better for ASSAULT
+                        -- Score based on: favorability (higher is better) - distance penalty
+                        local favorabilityScore = comparison.favorability
+                        if favorabilityScore == math.huge then
+                            favorabilityScore = 100
+                        elseif favorabilityScore == -math.huge then
+                            favorabilityScore = -100
+                        end
+                        
+                        local score = (favorabilityScore * 100) - (distance / 100)
+                        
+                        table.insert(scored, {
+                            commander = commander,
+                            score = score,
+                            distance = distance,
+                            analysis = comparison.friendly,
+                            favorability = comparison.favorability
+                        })
                     end
-                    
-                    local score = (favorabilityScore * 100) - (distance / 100)
-                    
-                    table.insert(scored, {
-                        commander = commander,
-                        score = score,
-                        distance = distance,
-                        analysis = comparison.friendly,
-                        favorability = comparison.favorability
-                    })
                 end
             end
         end
@@ -1073,6 +1283,65 @@ function OperationalCommander:calculateSupportRallyPosition(threatCenter, unitPo
         x = threatCenter.x + offsetX,
         y = threatCenter.y or 0,
         z = threatCenter.z + offsetZ
+    }
+end
+
+function OperationalCommander:findNearestFriendlyPosition(commander)
+    -- Find a safe rear position for combat-ineffective units
+    -- Prefer positions away from threats and near friendly objectives
+    local status = commander:getStatus()
+    if not status.position then
+        return nil
+    end
+    
+    -- Look for the nearest objective that's either captured or has no active threats
+    local nearestSafeObjective = nil
+    local minDistance = math.huge
+    
+    for _, objective in ipairs(self.objectives) do
+        if objective.status == "Captured" or objective.status == "Active" then
+            local dist = mist.vec.mag(mist.vec.sub(status.position, objective.position))
+            
+            -- Check if there are threats near this objective
+            local threats = self:getThreatsNearPosition(objective.position, self.reconRadius)
+            local threatCount = self:countActiveThreats(threats)
+            
+            -- Prefer objectives with no active threats
+            if threatCount == 0 and dist < minDistance then
+                minDistance = dist
+                nearestSafeObjective = objective
+            end
+        end
+    end
+    
+    -- If found a safe objective, position unit 2km behind it (away from frontline)
+    if nearestSafeObjective then
+        -- Calculate direction from objective to unit (rear direction)
+        local dx = status.position.x - nearestSafeObjective.position.x
+        local dz = status.position.z - nearestSafeObjective.position.z
+        local dist = math.sqrt(dx * dx + dz * dz)
+        
+        if dist > 1 then
+            local dirX = dx / dist
+            local dirZ = dz / dist
+            
+            -- Position 2km behind objective in same direction as unit's current position
+            return {
+                x = nearestSafeObjective.position.x + (dirX * 2000),
+                y = nearestSafeObjective.position.y or 0,
+                z = nearestSafeObjective.position.z + (dirZ * 2000)
+            }
+        else
+            -- Unit is at objective, just stay there
+            return nearestSafeObjective.position
+        end
+    end
+    
+    -- No safe objective found, move 3km away from current position toward rear
+    return {
+        x = status.position.x - 3000,
+        y = status.position.y or 0,
+        z = status.position.z
     }
 end
 
@@ -1196,7 +1465,7 @@ function OperationalCommander:syncOrderStatuses()
     end
 end
 
-function OperationalCommander:addPlannedOrder(commander, order, threats)
+function OperationalCommander:addPlannedOrder(commander, order, threats, threatCenter)
     -- Add an order to the planned orders list and mark the commander as having an order this cycle
     -- This prevents multiple orders being issued to the same unit
     if not self.plannedThisCycle[commander.groupName] then
@@ -1204,6 +1473,7 @@ function OperationalCommander:addPlannedOrder(commander, order, threats)
             commander = commander,
             order = order,
             threats = threats,
+            threatCenter = threatCenter,
         })
         self.plannedThisCycle[commander.groupName] = true
     end
