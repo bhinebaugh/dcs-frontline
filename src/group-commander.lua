@@ -27,6 +27,11 @@ function GroupCommander.new(groupName, config)
     self.groupName = groupName
     self.initialUnitNames = self:getOwnUnitNames()
     self.initialCollectiveStatus = self:getCollectiveStatus()
+    
+    -- Capture initial ammo count for percentage-based low ammo thresholds
+    local initialStatus = self:getStatusReport()
+    self.initialAmmoCount = initialStatus.ammoCount
+    
     self.oodaState = oodaStates.OBSERVE
     self.orders = nil
     self.lastMoveOrder = nil
@@ -36,6 +41,11 @@ function GroupCommander.new(groupName, config)
     self.threatAnalysis = nil
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
+    
+    -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
+    self.fuelRemaining = 1.0  -- Start at 100%
+    self.lastPosition = nil
+    self.lastObserveTime = timer.getTime()
 
     self.oodaOffset = math.random() * oodaInterval
     
@@ -86,6 +96,35 @@ function GroupCommander:observe()
     if not group or not group:isExist() then
         env.info("WARNING: " .. self.groupName .. " group does not exist - cannot observe")
         return
+    end
+    
+    -- Update simulated fuel consumption
+    local currentTime = timer.getTime()
+    local currentPos = self:getOwnPosition()
+    if currentPos and self.lastPosition then
+        -- Calculate distance traveled
+        local dx = currentPos.x - self.lastPosition.x
+        local dz = currentPos.z - self.lastPosition.z
+        local distanceTraveled = math.sqrt(dx*dx + dz*dz)
+        
+        -- Calculate time elapsed
+        local timeElapsed = currentTime - self.lastObserveTime
+        
+        -- Fuel burn rates (balanced for ground vehicles)
+        -- Movement: 250 statute miles (402km) on full tank
+        local movementBurnRate = 0.0000025  -- 100% fuel over 402,336m
+        -- Idle: 5x the drive time at 30mph (41.7 hours idle on full tank)
+        local idleBurnRate = 0.0000067  -- 100% fuel over 41.7 hours (150,012s)
+        
+        -- Apply fuel consumption
+        local movementBurn = distanceTraveled * movementBurnRate
+        local idleBurn = timeElapsed * idleBurnRate
+        self.fuelRemaining = math.max(0, self.fuelRemaining - movementBurn - idleBurn)
+    end
+    -- Only update position/time if we have a valid currentPos
+    if currentPos then
+        self.lastPosition = currentPos
+        self.lastObserveTime = currentTime
     end
     
     -- Use ThreatDetector to get visible threats
@@ -161,6 +200,9 @@ function GroupCommander:observe()
     -- Age threats and progress their status
     self.threatTracker:ageThreats()
     
+    -- Store direct LOS count for decision-making (to distinguish self-observed from shared intel)
+    self.directLOSCount = #visibleThreatNames
+    
     -- Single consolidated OBSERVE summary
     local memoryCount = self.threatTracker:count()
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
@@ -180,6 +222,11 @@ function GroupCommander:decide()
         self:setDisposition(dispositionTypes.HOLD)
         self.destination = nil
         return
+    end
+    
+    -- Check for critical status conditions that override normal decisions
+    if self:handleCriticalStatusConditions() then
+        return  -- Status condition forced a decision, skip normal flow
     end
     
     -- Handle order lifecycle
@@ -244,14 +291,11 @@ function GroupCommander:assessOrderContext()
     -- Determine thresholds based on ALR
     local orderedALR = self.orders.alr or alr.LOW
     local retreatThreshold = 0.4
-    local maxAcceptableVulnerability = 45.0
     
     if orderedALR == alr.LOW then
         retreatThreshold = 0.8
-        maxAcceptableVulnerability = 15.0
     elseif orderedALR == alr.HIGH then
         retreatThreshold = 0.2
-        maxAcceptableVulnerability = 60.0
     end
     
     -- Store order context
@@ -263,7 +307,6 @@ function GroupCommander:assessOrderContext()
         distanceToOrdered = distanceToOrdered,
         withinObjective = withinObjective,
         retreatThreshold = retreatThreshold,
-        maxAcceptableVulnerability = maxAcceptableVulnerability,
         leashDistance = 3000  -- Don't pursue threats beyond 3km from ordered position
     }
 end
@@ -349,13 +392,10 @@ function GroupCommander:assessThreats()
         threatCenter = self:calculateThreatCenter()
     end
     
-    -- Calculate vulnerability and favorability if threats exist
-    local vulnerability = {overall = 0, fromInfantry = 0, fromArmor = 0, fromAir = 0}
+    -- Calculate favorability if threats exist
     local favorability = 0
     
     if threatAnalysis.count > 0 then
-        -- Calculate our vulnerability considering our own force
-        vulnerability = ThreatAnalyzer.calculateVulnerability(self.ownForceStrength, threatAnalysis)
         
         -- If we have ally intel, include nearby allies in combined force calculation
         local combinedForce = self.ownForceStrength
@@ -377,15 +417,18 @@ function GroupCommander:assessThreats()
             }
         end
         
-        -- Calculate favorability using combined force (enemy vulnerability / combined vulnerability)
-        local enemyVulnerability = ThreatAnalyzer.calculateVulnerability(threatAnalysis, combinedForce)
-        local combinedVulnerability = ThreatAnalyzer.calculateVulnerability(combinedForce, threatAnalysis)
+        -- Calculate favorability using combined force (our power / enemy power)
+        local ourPower = ThreatAnalyzer.calculateCombatPower(combinedForce, threatAnalysis)
+        local enemyPower = ThreatAnalyzer.calculateCombatPower(threatAnalysis, combinedForce)
         
-        if combinedVulnerability.overall > 0 then
-            favorability = enemyVulnerability.overall / combinedVulnerability.overall
-        elseif enemyVulnerability.overall > 0 then
+        if enemyPower > 0 then
+            favorability = ourPower / enemyPower
+        elseif ourPower > 0 then
             favorability = math.huge
         end
+        
+        -- Get status report for logging
+        local statusReport = self:getStatusReport()
         
         -- Log assessment in compact format with ally contribution
         local allyStr = ""
@@ -404,6 +447,15 @@ function GroupCommander:assessThreats()
                  threatAnalysis.composition["light-armor"] .. "/" .. 
                  threatAnalysis.composition["heavy-armor"] .. 
                  ") Fav:" .. string.format("%.2f", favorability))
+        
+        -- Log detailed status report
+        local avgHealth = statusReport.aliveCount > 0 and (statusReport.healthPool / statusReport.aliveCount) or 0
+        env.info(self.groupName .. " STATUS: Units:" .. statusReport.aliveCount .. "/" .. #self.initialUnitNames .. 
+                 " HP:" .. string.format("%.0f", avgHealth) .. 
+                 " (low:" .. string.format("%.0f", statusReport.healthLowState or 0) .. ")" .. 
+                 " Fuel:" .. string.format("%.0f%%", statusReport.fuelRemaining * 100) .. 
+                 " Ammo:" .. statusReport.ammoCount .. 
+                 " (low:" .. (statusReport.ammmoLowState or 0) .. ")")
     end
     
     -- Determine if threats are stale using ThreatTracker utility
@@ -415,7 +467,6 @@ function GroupCommander:assessThreats()
         analysis = threatAnalysis,
         statuses = threatStatuses,
         center = threatCenter,
-        vulnerability = vulnerability,
         favorability = favorability,
         stale = threatsAreStale,
         hasRecentIntel = self.threatTracker:hasRecentThreats(120)  -- Any intel within 2 minutes
@@ -481,23 +532,85 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
     end
 end
 
-function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
-    local pos1 = unit1:getPosition().p
-    local pos2 = unit2:getPosition().p
-    return mist.utils.get2DDist(pos1, pos2)
+function GroupCommander:calculateReturnToObjective()
+    -- Calculate retreat destination back toward objective/friendly lines
+    local ownPos = self:getOwnPosition()
+    if not ownPos then
+        return nil
+    end
+    
+    local context = self.orderContext
+    if context and context.position then
+        -- Retreat toward ordered objective
+        local dx = context.position.x - ownPos.x
+        local dz = context.position.z - ownPos.z
+        local distance = math.sqrt(dx * dx + dz * dz)
+        
+        if distance > 1 then
+            -- Move 1km back toward objective
+            local retreatDistance = math.min(1000, distance)
+            return {
+                x = ownPos.x + (dx / distance) * retreatDistance,
+                y = ownPos.y,
+                z = ownPos.z + (dz / distance) * retreatDistance
+            }
+        end
+    end
+    
+    -- No specific objective, just move backward from current heading
+    return {
+        x = ownPos.x - 1000,
+        y = ownPos.y,
+        z = ownPos.z
+    }
 end
 
-function GroupCommander:calculateThreatCenter()
-    -- Calculate the average position of all threats based on last known positions
+function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
+    if not unit1 or not unit2 then
+        return nil
+    end
+    local pos1 = unit1:getPosition()
+    local pos2 = unit2:getPosition()
+    if not pos1 or not pos1.p or not pos2 or not pos2.p then
+        return nil
+    end
+    return mist.utils.get2DDist(pos1.p, pos2.p)
+end
+
+function GroupCommander:calculateThreatCenter(observedOnly)
+    -- Calculate the average position of threats based on last known positions
+    -- observedOnly: if true, only include threats directly observed by THIS unit (not shared intel)
     local sumX = 0
     local sumZ = 0
     local validCount = 0
     local statusCounts = {}
+    local currentTime = timer.getTime()
     
     local threats = self.threatTracker:getThreats()
     for unitName, threatData in pairs(threats) do
+        -- Filter to only this unit's own observations if requested
+        local includeThisThreat = true
+        if observedOnly then
+            -- Check if THIS unit has observed the threat recently (within last 30 seconds)
+            local selfObservedRecently = false
+            if threatData.sightings then
+                for _, sighting in ipairs(threatData.sightings) do
+                    if sighting.observedBy == self.groupName and 
+                       (currentTime - sighting.observedAt) < 30 then
+                        selfObservedRecently = true
+                        break
+                    end
+                end
+            end
+            
+            if not selfObservedRecently then
+                -- Skip threats not directly observed by this unit
+                includeThisThreat = false
+            end
+        end
+        
         -- Use stored position from last observation
-        if threatData.position then
+        if includeThisThreat and threatData.position then
             sumX = sumX + threatData.position.x
             sumZ = sumZ + threatData.position.z
             validCount = validCount + 1
@@ -616,6 +729,7 @@ function GroupCommander:decideWithNoThreats()
         
         -- Complete RALLY/REINFORCE orders when arriving at position
         if context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE then
+            env.info(self.groupName .. " DECIDE: Completing RALLY order (arrived at rally point)")
             self.orders:complete()
         end
     end
@@ -641,29 +755,41 @@ function GroupCommander:decideWithStaleThreats()
     end
 end
 
-function GroupCommander:getCollectiveStatus()
+function GroupCommander:getStatusReport()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then
-        return 0
+        return {
+            aliveCount = 0,
+            ammoCount = 0,
+            ammmoLowState = nil,
+            fuelRemaining = self.fuelRemaining,
+            healthPool = 0,
+            healthLowState = nil,
+        }
     end
 
     local totalCount = #self.initialUnitNames
     if totalCount == 0 then
-        return 0
+        return {
+            aliveCount = 0,
+            ammoCount = 0,
+            ammmoLowState = nil,
+            fuelRemaining = self.fuelRemaining,
+            healthPool = 0,
+            healthLowState = nil,
+        }
     end
     
     local aliveCount = 0
     local ammoCount = 0
     local ammmoLowState = nil
-    local fuelQuantity = 0
-    local fuelLowState = nil
     local healthPool = 0
     local healthLowState = nil
+    -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     for _, unitName in ipairs(self.initialUnitNames) do
         local unit = Unit.getByName(unitName)
         if unit and unit:isExist() then
             local unitAmmoTable = unit:getAmmo()
-            local unitFuel = unit:getFuel()
             local unitHealth = unit:getLife()
             
             -- Sum up all ammo counts from the table
@@ -678,15 +804,10 @@ function GroupCommander:getCollectiveStatus()
 
             aliveCount = aliveCount + 1
             ammoCount = ammoCount + unitAmmoTotal
-            fuelQuantity = fuelQuantity + unitFuel
             healthPool = healthPool + unitHealth
 
             if not ammmoLowState or unitAmmoTotal < ammmoLowState then
                 ammmoLowState = unitAmmoTotal
-            end
-
-            if not fuelLowState or unitFuel < fuelLowState then
-                fuelLowState = unitFuel
             end
 
             if not healthLowState or unitHealth < healthLowState then
@@ -699,11 +820,188 @@ function GroupCommander:getCollectiveStatus()
         aliveCount = aliveCount,
         ammoCount = ammoCount,
         ammmoLowState = ammmoLowState,
-        fuelQuantity = fuelQuantity,
-        fuelLowState = fuelLowState,
+        fuelRemaining = self.fuelRemaining,  -- Simulated fuel
         healthPool = healthPool,
         healthLowState = healthLowState,
     }
+end
+
+function GroupCommander:handleCriticalStatusConditions()
+    local statusReport = self:getStatusReport()
+    local totalCount = #self.initialUnitNames
+    local threat = self.threatAssessment
+    
+    if totalCount == 0 or statusReport.aliveCount == 0 then
+        return false  -- No units to make decisions for
+    end
+    
+    -- Calculate attrition rate
+    local attritionRate = 1 - (statusReport.aliveCount / totalCount)
+    local avgAmmoPerUnit = statusReport.ammoCount / statusReport.aliveCount
+    
+    -- Debug logging for high casualties
+    if attritionRate > 0.3 then
+        env.info(self.groupName .. " CRITICAL CHECK: Attrition=" .. 
+                 string.format("%.0f%%", attritionRate * 100) .. 
+                 " (" .. statusReport.aliveCount .. "/" .. totalCount .. ")")
+    end
+    
+    -- CRITICAL: Heavy casualties (>40% losses) - force retreat regardless of favorability
+    if attritionRate > 0.4 then
+        env.info(self.groupName .. " DECIDE: RETREAT (critical casualties: " .. 
+                 string.format("%.0f%%", attritionRate * 100) .. " losses)")
+        
+        -- Abort any active orders
+        if self.orders and self.orders:isActive() then
+            self.orders:abort("critical_casualties")
+        end
+        
+        -- Retreat to safety - use only directly observed threats for stable retreat direction
+        local observedThreatCenter = self:calculateThreatCenter(true)  -- observedOnly = true
+        if observedThreatCenter then
+            self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+        elseif threat and threat.center then
+            -- Fallback to broader threat picture if no direct observations
+            self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+        else
+            self.destination = self:calculateReturnToObjective()
+        end
+        self:setDisposition(dispositionTypes.RETREAT)
+        return true
+    end
+    
+    -- CRITICAL: No ammunition - abort assault/attack orders
+    -- Check for ANY unit with 0 ammo attempting offensive orders
+    if statusReport.ammoCount == 0 then
+        -- If we have an assault/attack order, abort it
+        if self.orders and self.orders:isActive() then
+            local context = self.orderContext
+            if context and (context.type == taskTypes.ASSAULT or context.type == taskTypes.ATTACK) then
+                env.info(self.groupName .. " DECIDE: Aborting ASSAULT (no ammunition)")
+                self.orders:abort("no_ammo")
+            end
+        end
+    end
+    
+    -- CRITICAL: Depleted ammunition - force retreat/hold (only for units that had ammo)
+    -- Units that never had ammo (recon) can continue their non-combat missions
+    if self.initialAmmoCount > 0 then
+        local criticalAmmoThreshold = self.initialAmmoCount * 0.05
+        if statusReport.ammoCount <= criticalAmmoThreshold then
+            env.info(self.groupName .. " DECIDE: HOLD (ammunition depleted)")
+            
+            -- If already engaged with threats, retreat
+            if threat.center and threat.count > 0 and not threat.stale then
+                env.info(self.groupName .. " DECIDE: RETREAT (no ammo, threats present)")
+                -- Use only directly observed threats for stable retreat direction
+                local observedThreatCenter = self:calculateThreatCenter(true)
+                if observedThreatCenter then
+                    self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+                else
+                    self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+                end
+                self:setDisposition(dispositionTypes.RETREAT)
+            else
+                -- No immediate threats, just hold position
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self:stopMovement()
+            end
+            return true
+        end
+    end
+    
+    -- WARNING: Moderate casualties (30-40% losses) - modify decision thresholds
+    if attritionRate > 0.3 then
+        -- Force retreat if favorability is marginal (< 0.8 instead of < 0.6)
+        if threat.favorability < 0.8 then
+            env.info(self.groupName .. " DECIDE: RETREAT (casualties: " .. 
+                     string.format("%.0f%%", attritionRate * 100) .. ", Fav:" .. 
+                     string.format("%.2f", threat.favorability) .. ")")
+            
+            -- Abort any active assault/attack orders
+            if self.orders and self.orders:isActive() then
+                local context = self.orderContext
+                if context and (context.type == taskTypes.ASSAULT or context.type == taskTypes.ATTACK) then
+                    env.info(self.groupName .. " DECIDE: Aborting ASSAULT due to casualties")
+                    self.orders:abort("casualties")
+                end
+            end
+            
+            -- Use only directly observed threats for stable retreat direction
+            local observedThreatCenter = self:calculateThreatCenter(true)
+            if observedThreatCenter then
+                self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+            elseif threat.center then
+                self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+            else
+                self.destination = self:calculateReturnToObjective()
+            end
+            self:setDisposition(dispositionTypes.RETREAT)
+            return true
+        end
+    end
+    
+    -- WARNING: Light-moderate casualties (20-30% losses) with unfavorable situation
+    if attritionRate > 0.2 then
+        -- Retreat early if situation is clearly unfavorable
+        if threat.favorability < 0.65 then
+            env.info(self.groupName .. " DECIDE: RETREAT (early casualties: " .. 
+                     string.format("%.0f%%", attritionRate * 100) .. ", Fav:" .. 
+                     string.format("%.2f", threat.favorability) .. ")")
+            
+            -- Abort any active assault/attack orders
+            if self.orders and self.orders:isActive() then
+                local context = self.orderContext
+                if context and (context.type == taskTypes.ASSAULT or context.type == taskTypes.ATTACK) then
+                    env.info(self.groupName .. " DECIDE: Aborting ASSAULT due to unfavorable casualties")
+                    self.orders:abort("casualties")
+                end
+            end
+            
+            if threat.center then
+                -- Use only directly observed threats for stable retreat direction
+                local observedThreatCenter = self:calculateThreatCenter(true)
+                if observedThreatCenter then
+                    self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+                else
+                    self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+                end
+            else
+                self.destination = self:calculateReturnToObjective()
+            end
+            self:setDisposition(dispositionTypes.RETREAT)
+            return true
+        end
+    end
+    
+    -- WARNING: Low ammunition - don't advance unless overwhelming advantage
+    -- Only applies to units that HAD ammo initially (not unarmed recon vehicles)
+    if self.initialAmmoCount > 0 then
+        local lowAmmoThreshold = self.initialAmmoCount * 0.2
+        if statusReport.ammoCount < lowAmmoThreshold and threat.favorability < 2.0 then
+            local ammoPercent = (statusReport.ammoCount / self.initialAmmoCount * 100)
+            env.info(self.groupName .. " DECIDE: HOLD (low ammo: " .. 
+                     string.format("%.0f%%", ammoPercent) .. " remaining, insufficient advantage)")
+            self:setDisposition(dispositionTypes.HOLD)
+            self.destination = nil
+            self:stopMovement()
+            return true
+        end
+    end
+    
+    return false  -- No critical conditions, proceed with normal decision-making
+end
+
+function GroupCommander:getCollectiveStatus()
+    local statusReport = self:getStatusReport()
+    
+    local totalCount = #self.initialUnitNames
+    if totalCount == 0 then
+        return 0
+    end
+    
+    return statusReport.aliveCount / totalCount
 end
 
 function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRadius)
@@ -820,8 +1118,15 @@ function GroupCommander:handleOrderDecisions()
     if self:shouldAbortForThreat() then
         self.orders:abort("threat_retreat")
         self:setDisposition(dispositionTypes.RETREAT)
-        self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
-        self.lastThreatCenter = threat.center
+        -- Use only directly observed threats for stable retreat direction
+        local observedThreatCenter = self:calculateThreatCenter(true)
+        if observedThreatCenter then
+            self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+            self.lastThreatCenter = observedThreatCenter
+        else
+            self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+            self.lastThreatCenter = threat.center
+        end
         return
     end
     
@@ -840,6 +1145,43 @@ function GroupCommander:handleOrderDecisions()
         return
     end
     
+    -- RALLY orders: Check if we've reached the rally point
+    if context.type == taskTypes.RALLY then
+        -- Check if we're at the rally destination
+        local atRallyPoint = (self:getDestinationToObjective(context.position, context.radius) == nil)
+        if atRallyPoint then
+            env.info(self.groupName .. " DECIDE: Reached rally point, completing RALLY order (Fav:" .. 
+                     string.format("%.2f", threat.favorability) .. ")")
+            self.orders:complete()
+            -- Hold position at rally point and defend while waiting for coordinated assault
+            self:setDisposition(dispositionTypes.HOLD)
+            self.destination = nil
+            self:stopMovement()
+            return
+        end
+    end
+    
+    -- REPOSITION orders: Move to safe position, complete when arrived
+    if context.type == taskTypes.REPOSITION then
+        local atPosition = (self:getDestinationToObjective(context.position, context.radius) == nil)
+        if atPosition then
+            env.info(self.groupName .. " DECIDE: Reached reposition point, completing order")
+            self.orders:complete()
+            self:setDisposition(dispositionTypes.HOLD)
+            self.destination = nil
+            self:stopMovement()
+            return
+        end
+        
+        -- If threats detected while repositioning, continue to destination (don't engage)
+        if threat.count > 0 then
+            env.info(self.groupName .. " DECIDE: REPOSITION - continuing to safe position (threats detected)")
+            self:setDisposition(dispositionTypes.ADVANCE)
+            self.destination = self:getDestinationToObjective(context.position, context.radius)
+            return
+        end
+    end
+    
     -- RALLY orders: if threats are closer than rally destination, engage them directly
     -- ASSAULT orders should commit - don't check, just fight
     if context.type == taskTypes.RALLY and threat.center then
@@ -855,16 +1197,16 @@ function GroupCommander:handleOrderDecisions()
             )
             
             -- If threat is significantly closer than rally point, abandon rally and engage
-            -- Use 70% threshold to avoid flip-flopping
-            if distanceToThreat < distanceToDestination * 0.7 then
+            -- Use 50% threshold to ensure units only engage if threats are genuinely in the way
+            -- With 7km rally distance, threats at objective shouldn't trigger this
+            if distanceToThreat < distanceToDestination * 0.5 then
                 env.info(self.groupName .. " DECIDE: Threat closer than rally point, engaging directly")
                 
                 -- Abort the rally order and engage autonomously
                 self.orders:abort("closer_threat")
                 
                 -- Strong position, advance on threats
-                if threat.favorability >= advanceThreshold and 
-                   threat.vulnerability.overall < context.maxAcceptableVulnerability * 0.5 then
+                if threat.favorability >= advanceThreshold then
                     env.info(self.groupName .. " DECIDE: ADVANCE (Fav:" .. string.format("%.2f", threat.favorability) .. ")")
                     self:setDisposition(dispositionTypes.ADVANCE)
                     self.destination = self:calculateDestinationRelativeToThreats(threat.center, false)
@@ -893,9 +1235,21 @@ function GroupCommander:handleOrderDecisions()
         end
     end
     
+    -- If retreating with ordered position and no direct LOS, check if contact is broken
+    if self.disposition == dispositionTypes.RETREAT then
+        if self.directLOSCount == 0 and threat.statuses then
+            if threat.statuses.observed == 0 and threat.statuses.suspected == 0 and threat.statuses.unconfirmed > 0 then
+                env.info(self.groupName .. " DECIDE: HOLD (threats unconfirmed, contact broken)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self:stopMovement()
+                return
+            end
+        end
+    end
+    
     -- Strong position, can advance on threats
     if threat.favorability >= advanceThreshold and 
-       threat.vulnerability.overall < context.maxAcceptableVulnerability * 0.5 and
        context.distanceToOrdered < context.leashDistance then
         self:decideAdvanceOnThreats()
         return
@@ -909,10 +1263,56 @@ end
 function GroupCommander:handleAutonomousDecisions()
     local threat = self.threatAssessment
     
+    -- Get status to check combat capability
+    local statusReport = self:getStatusReport()
+    
+    -- Unarmed units should not autonomously engage threats
+    -- They should hold position or retreat if threatened, but never advance
+    if statusReport.ammoCount == 0 then
+        -- No ammo - can't engage in combat
+        if threat.count > 0 and threat.center then
+            -- Threats present - retreat if unfavorable, otherwise hold
+            if threat.favorability < 0.8 then
+                env.info(self.groupName .. " DECIDE: RETREAT (unarmed, threats present, Fav:" .. 
+                         string.format("%.2f", threat.favorability) .. ")")
+                self:setDisposition(dispositionTypes.RETREAT)
+                -- Use only directly observed threats for stable retreat direction
+                local observedThreatCenter = self:calculateThreatCenter(true)
+                if observedThreatCenter then
+                    self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+                    self.lastThreatCenter = observedThreatCenter
+                else
+                    self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+                    self.lastThreatCenter = threat.center
+                end
+            else
+                env.info(self.groupName .. " DECIDE: HOLD (unarmed, threats detected)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self:stopMovement()
+            end
+        else
+            -- No threats - hold position
+            env.info(self.groupName .. " DECIDE: HOLD (unarmed, no threats)")
+            self:setDisposition(dispositionTypes.HOLD)
+            self.destination = nil
+            self:stopMovement()
+        end
+        return
+    end
+    
+    -- Check attrition to prevent heavily damaged units from advancing
+    local totalUnits = #self.initialUnitNames
+    local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+    
     -- Decision thresholds (default/medium ALR)
     local retreatThreshold = 0.6
     local advanceThreshold = 1.5
-    local maxAcceptableVulnerability = 20.0
+    
+    -- Units with heavy casualties should not advance, even if favorability looks good
+    if attritionRate > 0.4 then
+        advanceThreshold = 999  -- Effectively prevent advancing
+    end
     
     -- Add hysteresis based on current disposition to prevent rapid state changes
     -- If already retreating, make it slightly easier to continue retreating
@@ -947,17 +1347,39 @@ function GroupCommander:handleAutonomousDecisions()
         end
     end
     
+    -- If retreating and have no direct LOS to threats (only shared intel from allies),
+    -- transition to HOLD after breaking contact. This prevents endless retreat driven by ally intel.
+    if self.disposition == dispositionTypes.RETREAT then
+        if self.directLOSCount == 0 and threat.statuses then
+            -- No direct LOS, check if we've broken contact for long enough
+            if threat.statuses.observed == 0 and threat.statuses.suspected == 0 and threat.statuses.unconfirmed > 0 then
+                env.info(self.groupName .. " DECIDE: HOLD (threats unconfirmed, contact broken)")
+                self:setDisposition(dispositionTypes.HOLD)
+                self.destination = nil
+                self:stopMovement()
+                return
+            end
+        end
+    end
+    
     -- Weak position, retreat
-    if threat.favorability < retreatThreshold or threat.vulnerability.overall > maxAcceptableVulnerability then
+    if threat.favorability < retreatThreshold then
         env.info(self.groupName .. " DECIDE: RETREAT (Fav:" .. string.format("%.2f", threat.favorability) .. ")")
         self:setDisposition(dispositionTypes.RETREAT)
-        self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
-        self.lastThreatCenter = threat.center
+        -- Use only directly observed threats for stable retreat direction
+        local observedThreatCenter = self:calculateThreatCenter(true)
+        if observedThreatCenter then
+            self.destination = self:calculateDestinationRelativeToThreats(observedThreatCenter, true)
+            self.lastThreatCenter = observedThreatCenter
+        else
+            self.destination = self:calculateDestinationRelativeToThreats(threat.center, true)
+            self.lastThreatCenter = threat.center
+        end
         return
     end
     
     -- Strong position, advance
-    if threat.favorability >= advanceThreshold and threat.vulnerability.overall < maxAcceptableVulnerability * 0.5 then
+    if threat.favorability >= advanceThreshold then
         env.info(self.groupName .. " DECIDE: ADVANCE (Fav:" .. string.format("%.2f", threat.favorability) .. ")")
         self:setDisposition(dispositionTypes.ADVANCE)
         self.destination = self:calculateDestinationRelativeToThreats(threat.center, false)
@@ -972,6 +1394,12 @@ function GroupCommander:handleAutonomousDecisions()
 end
 
 function GroupCommander:issueMoveOrder(point)
+    -- Validate point parameter
+    if not point or not point.x or not point.z then
+        env.info("ERROR: " .. self.groupName .. " received invalid move order (nil or invalid point)")
+        return
+    end
+    
     -- Convert x/z to lat/lon for logging
     local lat, lon = coord.LOtoLL({x = point.x, y = 0, z = point.z})
     env.info(self.groupName .. " DECIDE: Move to " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
@@ -1039,7 +1467,7 @@ function GroupCommander:issueMoveOrder(point)
         formation,
         heading,
         speed,
-        ignoreRoads
+        true
     )
 end
 
@@ -1102,13 +1530,11 @@ function GroupCommander:shouldAbortForThreat()
     end
     
     -- Check if threat exceeds acceptable risk
-    local shouldAbort = threat.favorability < context.retreatThreshold or 
-                       threat.vulnerability.overall > context.maxAcceptableVulnerability
+    local shouldAbort = threat.favorability < context.retreatThreshold
     
     if shouldAbort then
         env.info(self.groupName .. " DECIDE: Aborting order due to threat (favorability=" .. 
-                 string.format("%.2f", threat.favorability) .. " vuln=" .. 
-                 string.format("%.1f", threat.vulnerability.overall) .. ")")
+                 string.format("%.2f", threat.favorability) .. ")")
     end
     
     return shouldAbort
