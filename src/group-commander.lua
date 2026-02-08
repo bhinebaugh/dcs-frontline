@@ -1,5 +1,6 @@
 local constants = require("constants")
 local OODACommander = require("ooda-commander")
+local SpatialAgent = require("spatial-agent")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
@@ -85,9 +86,7 @@ function GroupCommander:observe()
     local currentPos = self:getOwnPosition()
     if currentPos and self.lastPosition then
         -- Calculate distance traveled
-        local dx = currentPos.x - self.lastPosition.x
-        local dz = currentPos.z - self.lastPosition.z
-        local distanceTraveled = math.sqrt(dx*dx + dz*dz)
+        local distanceTraveled = SpatialAgent.distance2D(currentPos, self.lastPosition)
         
         -- Calculate time elapsed
         local timeElapsed = currentTime - self.lastObserveTime
@@ -158,10 +157,7 @@ function GroupCommander:observe()
                 local threat = self.threatTracker:getThreat(threatName)
                 if threat then
                     -- Check distance to last known position
-                    local distToLastKnown = math.sqrt(
-                        (ownPos.x - threat.position.x)^2 + 
-                        (ownPos.z - threat.position.z)^2
-                    )
+                    local distToLastKnown = SpatialAgent.distance2D(ownPos, threat.position)
                     
                     -- If close to last known position, mark UNCONFIRMED
                     -- Otherwise just mark SUSPECTED (we haven't checked yet)
@@ -262,10 +258,7 @@ function GroupCommander:assessOrderContext()
     local orderedRadius = self.orders.radius or 500
     
     -- Calculate distance to ordered position
-    local distanceToOrdered = math.sqrt(
-        (ownPos.x - orderedPosition.x)^2 + 
-        (ownPos.z - orderedPosition.z)^2
-    )
+    local distanceToOrdered = SpatialAgent.distance2D(ownPos, orderedPosition)
     
     -- Check if we're within the objective radius
     local withinObjective = distanceToOrdered <= orderedRadius
@@ -466,17 +459,15 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
     local dx = ownPos.x - threatCenter.x
     local dz = ownPos.z - threatCenter.z
     
+    -- TODO: Revisit this calculation for reasonable diretion choice, especially when close to threats
     -- Normalize
-    local distance = math.sqrt(dx * dx + dz * dz)
+    local dirX, dirZ, distance = SpatialAgent.normalizeVector(dx, dz)
     if distance < 1 then
         -- Too close, pick arbitrary direction
-        dx = 1
-        dz = 0
+        dirX = 1
+        dirZ = 0
         distance = 1
     end
-    
-    local dirX = dx / distance
-    local dirZ = dz / distance
     
     -- Set movement distance based on action
     if retreat then
@@ -492,10 +483,7 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
         local optimalRange = 250   -- Close to 250m for optimal engagement
         local weaponRange = 1000   -- Max weapon range is 1km
         
-        local currentDistance = math.sqrt(
-            (ownPos.x - threatCenter.x)^2 + 
-            (ownPos.z - threatCenter.z)^2
-        )
+        local currentDistance = SpatialAgent.distance2D(ownPos, threatCenter)
         
         -- If beyond weapon range, move to weapon range
         -- If within weapon range, close to optimal range for better accuracy
@@ -524,18 +512,12 @@ function GroupCommander:calculateReturnToObjective()
     local context = self.orderContext
     if context and context.position then
         -- Retreat toward ordered objective
-        local dx = context.position.x - ownPos.x
-        local dz = context.position.z - ownPos.z
-        local distance = math.sqrt(dx * dx + dz * dz)
+        local dirX, dirZ, distance = SpatialAgent.calculateDirection(ownPos, context.position)
         
-        if distance > 1 then
+        if distance and distance > 1 then
             -- Move 1km back toward objective
             local retreatDistance = math.min(1000, distance)
-            return {
-                x = ownPos.x + (dx / distance) * retreatDistance,
-                y = ownPos.y,
-                z = ownPos.z + (dz / distance) * retreatDistance
-            }
+            return SpatialAgent.calculateDestination(ownPos, dirX, dirZ, retreatDistance)
         end
     end
     
@@ -553,20 +535,17 @@ function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
     end
     local pos1 = unit1:getPosition()
     local pos2 = unit2:getPosition()
-    if not pos1 or not pos1.p or not pos2 or not pos2.p then
+    if not pos1 or not pos2 then
         return nil
     end
-    return mist.utils.get2DDist(pos1.p, pos2.p)
+    return SpatialAgent.distance2D(pos1, pos2)
 end
 
 function GroupCommander:calculateThreatCenter(observedOnly)
     -- Calculate the average position of threats based on last known positions
     -- observedOnly: if true, only include threats directly observed by THIS unit (not shared intel)
-    local sumX = 0
-    local sumZ = 0
-    local validCount = 0
-    local statusCounts = {}
     local currentTime = timer.getTime()
+    local threatsToInclude = {}
     
     local threats = self.threatTracker:getThreats()
     for unitName, threatData in pairs(threats) do
@@ -591,23 +570,13 @@ function GroupCommander:calculateThreatCenter(observedOnly)
             end
         end
         
-        -- Use stored position from last observation
-        if includeThisThreat and threatData.position then
-            sumX = sumX + threatData.position.x
-            sumZ = sumZ + threatData.position.z
-            validCount = validCount + 1
-            statusCounts[threatData.status] = (statusCounts[threatData.status] or 0) + 1
+        if includeThisThreat then
+            table.insert(threatsToInclude, threatData)
         end
     end
     
-    if validCount == 0 then
-        return nil
-    end
-    
-    return {
-        x = sumX / validCount,
-        z = sumZ / validCount
-    }
+    -- Use SpatialAgent to calculate center
+    return SpatialAgent.calculateThreatCenter(threatsToInclude)
 end
 
 function GroupCommander:checkThreatStatuses()
@@ -661,10 +630,7 @@ function GroupCommander:decideAdvanceOnThreats()
     
     -- Verify advance doesn't exceed leash
     if advanceDestination then
-        local destDist = math.sqrt(
-            (advanceDestination.x - context.position.x)^2 + 
-            (advanceDestination.z - context.position.z)^2
-        )
+        local destDist = SpatialAgent.distance2D(advanceDestination, context.position)
         
         if destDist > context.leashDistance then
             env.info(self.groupName .. " DECIDE: ADVANCE (leash limit, returning)")
@@ -994,12 +960,7 @@ function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRa
         return objectivePosition  -- Can't determine position, default to moving
     end
     
-    local distanceToObjective = math.sqrt(
-        (ownPos.x - objectivePosition.x)^2 + 
-        (ownPos.z - objectivePosition.z)^2
-    )
-    
-    if distanceToObjective <= objectiveRadius then
+    if SpatialAgent.isWithinRadius(ownPos, objectivePosition, objectiveRadius) then
         return nil  -- Within radius, stay put
     else
         return objectivePosition  -- Outside radius, move to objective
@@ -1169,14 +1130,8 @@ function GroupCommander:handleOrderDecisions()
     if context.type == taskTypes.RALLY and threat.center then
         local ownPos = self:getOwnPosition()
         if ownPos then
-            local distanceToThreat = math.sqrt(
-                (ownPos.x - threat.center.x)^2 + 
-                (ownPos.z - threat.center.z)^2
-            )
-            local distanceToDestination = math.sqrt(
-                (ownPos.x - context.position.x)^2 + 
-                (ownPos.z - context.position.z)^2
-            )
+            local distanceToThreat = SpatialAgent.distance2D(ownPos, threat.center)
+            local distanceToDestination = SpatialAgent.distance2D(ownPos, context.position)
             
             -- If threat is significantly closer than rally point, abandon rally and engage
             -- Use 50% threshold to ensure units only engage if threats are genuinely in the way
@@ -1411,10 +1366,7 @@ function GroupCommander:issueMoveOrder(point)
     local distance = nil
     local ownPos = self:getOwnPosition()
     if ownPos then
-        distance = math.sqrt(
-            (point.x - ownPos.x)^2 + 
-            (point.z - ownPos.z)^2
-        )
+        distance = SpatialAgent.distance2D(point, ownPos)
     end
     
     -- Decide whether to use roads based on situation and distance

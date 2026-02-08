@@ -2,6 +2,7 @@ local constants = require("constants")
 local GroupCommander = require("group-commander")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
+local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
@@ -107,18 +108,18 @@ function OperationalCommander:reviewAndCancelObsoleteOrders()
                                 local commanderStatus = commander:getStatus()
                                 if commanderStatus.position then
                                     -- Distance to rally point
-                                    local distToRally = mist.vec.mag(mist.vec.sub(commanderStatus.position, order.position))
+                                    local distToRally = SpatialAgent.distance2D(commanderStatus.position, order.position)
                                     
                                     -- Distance from rally point to objective
-                                    local rallyToObjective = mist.vec.mag(mist.vec.sub(order.position, order.objective.position))
+                                    local rallyToObjective = SpatialAgent.distance2D(order.position, order.objective.position)
                                     
                                     -- Only cancel if threats appeared much closer than the rally point
                                     -- AND are not near the objective (which is expected)
                                     local threatBlockingRally = false
                                     for unitName, threat in pairs(currentThreats) do
                                         if threat.position then
-                                            local distToThreat = mist.vec.mag(mist.vec.sub(commanderStatus.position, threat.position))
-                                            local threatToObjective = mist.vec.mag(mist.vec.sub(threat.position, order.objective.position))
+                                            local distToThreat = SpatialAgent.distance2D(commanderStatus.position, threat.position)
+                                            local threatToObjective = SpatialAgent.distance2D(threat.position, order.objective.position)
                                             
                                             -- Threat is blocking if it's:
                                             -- 1. Much closer than rally point (within 25% of rally distance)
@@ -379,7 +380,7 @@ function OperationalCommander:planRallyOrders(objective, threats)
     end
     
     -- Calculate center of threat cluster
-    local threatCenter = self:calculateThreatClusterCenter(threats)
+    local threatCenter = SpatialAgent.calculateThreatCenter(threats)
     if not threatCenter then
         threatCenter = objective.position
     end
@@ -397,9 +398,7 @@ function OperationalCommander:planRallyOrders(objective, threats)
             local timeSinceRally = currentTime - (lastOrder.issuedAt or 0)
             if timeSinceRally < 60 and lastOrder.threatCenter then
                 -- Check if threat center moved significantly (>1.5km threshold)
-                local dx = threatCenter.x - lastOrder.threatCenter.x
-                local dz = threatCenter.z - lastOrder.threatCenter.z
-                local distance = math.sqrt(dx * dx + dz * dz)
+                local distance = SpatialAgent.distance2D(threatCenter, lastOrder.threatCenter)
                 
                 if distance < 1500 then
                     env.info("*** " .. self.color .. " Ops: Skipping " .. commander.groupName .. 
@@ -758,7 +757,7 @@ function OperationalCommander:planResponseToDetectedThreats()
         
         if #reservesInTimeWindow > 0 then
             -- Calculate center of the threat cluster (not the friendly's position)
-            local threatCenter = self:calculateThreatClusterCenter(groupInfo.threats)
+            local threatCenter = SpatialAgent.calculateThreatCenter(groupInfo.threats)
             if not threatCenter then
                 threatCenter = groupInfo.position  -- Fallback to friendly position
             end
@@ -800,7 +799,7 @@ function OperationalCommander:planAssaultOrders(objective, threats)
     local availableCommanders = self:getAvailableGroupCommanders()
     
     -- Calculate center of threat cluster
-    local threatCenter = self:calculateThreatClusterCenter(threats)
+    local threatCenter = SpatialAgent.calculateThreatCenter(threats)
     if not threatCenter then
         threatCenter = objective.position
     end
@@ -903,7 +902,7 @@ function OperationalCommander:getCommandersByDistance(commanders, position)
     for _, commander in pairs(commanders) do
         local status = commander:getStatus()
         if status.position then
-            local dist = mist.vec.mag(mist.vec.sub(status.position, position))
+            local dist = SpatialAgent.distance2D(status.position, position)
             table.insert(list, {commander = commander, distance = dist})
         end
     end
@@ -960,8 +959,8 @@ function OperationalCommander:findNearestRallyPoint(position)
     local nearestRallyPoint = nil
     local nearestDistance = math.huge
     for _, rallyPoint in ipairs(self.rallyPoints) do
-        local dist = mist.vec.mag(mist.vec.sub(rallyPoint.position, position))
-        if dist < nearestDistance then
+        local dist = SpatialAgent.distance2D(rallyPoint.position, position)
+        if dist and dist < nearestDistance then
             nearestDistance = dist
             nearestRallyPoint = rallyPoint
         end
@@ -978,10 +977,7 @@ function OperationalCommander:getOwnGroupsNearPosition(position, radius)
     local nearbyOwnForces = {}
     for _, commander in pairs(groupCommanders) do
         local status = commander:getStatus()
-        local dist = mist.vec.mag(
-            mist.vec.sub(status.position, position)
-        )
-        if dist <= radius then
+        if SpatialAgent.isWithinRadius(status.position, position, radius) then
             table.insert(nearbyOwnForces, commander)
         end
     end
@@ -1006,8 +1002,7 @@ function OperationalCommander:getThreatsNearPosition(position, radius)
     local nearbyThreats = {}
     local allThreats = self.threatTracker:getThreats()
     for unitName, threat in pairs(allThreats) do
-        local dist = mist.vec.mag(mist.vec.sub(threat.position, position))
-        if dist <= radius then
+        if SpatialAgent.isWithinRadius(threat.position, position, radius) then
             nearbyThreats[unitName] = threat
         end
     end
@@ -1068,7 +1063,7 @@ function OperationalCommander:scoreCommandersForRecon(commanders, targetPosition
                 
                 if #activeUnits > 0 then
                     local analysis = ThreatAnalyzer.analyzeUnits(activeUnits)
-                    local distance = mist.vec.mag(mist.vec.sub(status.position, targetPosition))
+                    local distance = SpatialAgent.distance2D(status.position, targetPosition)
                     
                     -- Lower score is better for RECON
                     -- Score based on: offensive capability (lower is better) + distance + group size
@@ -1142,7 +1137,7 @@ function OperationalCommander:scoreCommandersForAssault(commanders, threats, tar
                                  string.format("%.0f%%", attritionRate * 100) .. ")")
                     else
                         -- Unit is combat-effective, score it for assault
-                        local distance = mist.vec.mag(mist.vec.sub(status.position, targetPosition))
+                        local distance = SpatialAgent.distance2D(status.position, targetPosition)
                         
                         -- Compare forces to get favorability
                         local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
@@ -1195,61 +1190,23 @@ function OperationalCommander:selectCommandersWithinTimeWindow(scoredCommanders,
     return selected
 end
 
-function OperationalCommander:calculateThreatClusterCenter(threats)
-    -- Calculate the average position of all threats
-    local sumX = 0
-    local sumZ = 0
-    local count = 0
-    
-    for _, threat in pairs(threats) do
-        if threat.position then
-            sumX = sumX + threat.position.x
-            sumZ = sumZ + threat.position.z
-            count = count + 1
-        end
-    end
-    
-    if count == 0 then
-        return nil
-    end
-    
-    return {
-        x = sumX / count,
-        y = 0,
-        z = sumZ / count
-    }
-end
-
 function OperationalCommander:calculateSupportRallyPosition(threatCenter, unitPosition, index, total)
     -- Calculate a rally position for support forces
     -- Position on the same side as the unit's current position to avoid crossing through threats
     local distance = 2000  -- 2km from threat center
     
     if unitPosition then
-        -- Calculate vector from threat to unit's current position
-        local dx = unitPosition.x - threatCenter.x
-        local dz = unitPosition.z - threatCenter.z
-        local currentDist = math.sqrt(dx * dx + dz * dz)
+        -- Calculate direction from threat to unit's current position
+        local dirX, dirZ, currentDist = SpatialAgent.calculateDirection(threatCenter, unitPosition)
         
-        if currentDist > 1 then
-            -- Normalize and place at staging distance on same side
-            local dirX = dx / currentDist
-            local dirZ = dz / currentDist
-            
+        if dirX and currentDist > 1 then
             -- Add slight angular offset based on index to spread units out
             local angleOffset = (index - 1) * (math.pi / 4) -- 45 degree spacing
-            local cosOffset = math.cos(angleOffset)
-            local sinOffset = math.sin(angleOffset)
             
             -- Rotate the direction vector
-            local rotatedX = dirX * cosOffset - dirZ * sinOffset
-            local rotatedZ = dirX * sinOffset + dirZ * cosOffset
+            local rotatedX, rotatedZ = SpatialAgent.rotateVector(dirX, dirZ, angleOffset)
             
-            return {
-                x = threatCenter.x + (rotatedX * distance),
-                y = threatCenter.y or 0,
-                z = threatCenter.z + (rotatedZ * distance)
-            }
+            return SpatialAgent.calculateDestination(threatCenter, rotatedX, rotatedZ, distance)
         end
     end
     
@@ -1257,14 +1214,10 @@ function OperationalCommander:calculateSupportRallyPosition(threatCenter, unitPo
     local angleStep = (2 * math.pi) / total
     local angle = angleStep * (index - 1)
     
-    local offsetX = math.cos(angle) * distance
-    local offsetZ = math.sin(angle) * distance
+    local dirX = math.cos(angle)
+    local dirZ = math.sin(angle)
     
-    return {
-        x = threatCenter.x + offsetX,
-        y = threatCenter.y or 0,
-        z = threatCenter.z + offsetZ
-    }
+    return SpatialAgent.calculateDestination(threatCenter, dirX, dirZ, distance)
 end
 
 function OperationalCommander:findNearestFriendlyPosition(commander)
@@ -1281,14 +1234,14 @@ function OperationalCommander:findNearestFriendlyPosition(commander)
     
     for _, objective in ipairs(self.objectives) do
         if objective.status == "Captured" or objective.status == "Active" then
-            local dist = mist.vec.mag(mist.vec.sub(status.position, objective.position))
+            local dist = SpatialAgent.distance2D(status.position, objective.position)
             
             -- Check if there are threats near this objective
             local threats = self:getThreatsNearPosition(objective.position, self.reconRadius)
             local threatCount = self:countActiveThreats(threats)
             
             -- Prefer objectives with no active threats
-            if threatCount == 0 and dist < minDistance then
+            if threatCount == 0 and dist and dist < minDistance then
                 minDistance = dist
                 nearestSafeObjective = objective
             end
@@ -1298,20 +1251,11 @@ function OperationalCommander:findNearestFriendlyPosition(commander)
     -- If found a safe objective, position unit 2km behind it (away from frontline)
     if nearestSafeObjective then
         -- Calculate direction from objective to unit (rear direction)
-        local dx = status.position.x - nearestSafeObjective.position.x
-        local dz = status.position.z - nearestSafeObjective.position.z
-        local dist = math.sqrt(dx * dx + dz * dz)
+        local dirX, dirZ, dist = SpatialAgent.calculateDirection(nearestSafeObjective.position, status.position)
         
-        if dist > 1 then
-            local dirX = dx / dist
-            local dirZ = dz / dist
-            
+        if dirX and dist > 1 then
             -- Position 2km behind objective in same direction as unit's current position
-            return {
-                x = nearestSafeObjective.position.x + (dirX * 2000),
-                y = nearestSafeObjective.position.y or 0,
-                z = nearestSafeObjective.position.z + (dirZ * 2000)
-            }
+            return SpatialAgent.calculateDestination(nearestSafeObjective.position, dirX, dirZ, 2000)
         else
             -- Unit is at objective, just stay there
             return nearestSafeObjective.position
@@ -1334,8 +1278,8 @@ function OperationalCommander:getDistanceToObjective(objective)
     for _, commander in pairs(groupCommanders) do
         local status = commander:getStatus()
         if status.position then
-            local dist = mist.vec.mag(mist.vec.sub(status.position, objective.position))
-            if dist < minDistance then
+            local dist = SpatialAgent.distance2D(status.position, objective.position)
+            if dist and dist < minDistance then
                 minDistance = dist
             end
         end
@@ -1371,7 +1315,7 @@ function OperationalCommander:planDefendOrders(objective)
                 
                 if #activeUnits > 0 then
                     local analysis = ThreatAnalyzer.analyzeUnits(activeUnits)
-                    local distance = mist.vec.mag(mist.vec.sub(status.position, objective.position))
+                    local distance = SpatialAgent.distance2D(status.position, objective.position)
                     
                     -- Score for defense: prefer stronger units that are close
                     local strength = analysis.offensiveCapability.vsArmor + analysis.offensiveCapability.vsInfantry

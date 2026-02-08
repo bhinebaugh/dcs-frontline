@@ -1,4 +1,5 @@
 local constants = require("constants")
+local SpatialAgent = require("spatial-agent")
 local threatStatus = constants.threatStatus
 
 -- Threat tracking helper for managing observed enemy units with timestamps
@@ -136,11 +137,7 @@ function ThreatTracker:expectedThreats(position, radius)
     
     for unitName, threat in pairs(self.threats) do
         if threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST then
-            local dx = threat.position.x - position.x
-            local dz = threat.position.z - position.z
-            local distance = math.sqrt(dx * dx + dz * dz)
-            
-            if distance <= radius then
+            if SpatialAgent.isWithinRadius(threat.position, position, radius) then
                 table.insert(expected, unitName)
             end
         end
