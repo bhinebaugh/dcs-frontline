@@ -1,4 +1,5 @@
 local constants = require("constants")
+local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupCommander = require("group-commander")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
@@ -560,7 +561,7 @@ function OperationalCommander:planOrdersForIdleUnits()
     for _, commander in ipairs(idleUnits) do
         local statusReport = commander:getStatusReport()
         local totalUnits = #commander.initialUnitNames
-        local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+        local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
         local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
         local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
         local isUnarmed = statusReport.ammoCount == 0 and not hadAmmoInitially
@@ -589,7 +590,7 @@ function OperationalCommander:planOrdersForIdleUnits()
         if not hasReposOrder and not isIdle then
             local statusReport = commander:getStatusReport()
             local totalUnits = #commander.initialUnitNames
-            local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+            local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
             local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
             local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
             local isUnarmed = statusReport.ammoCount == 0 and not hadAmmoInitially
@@ -632,7 +633,7 @@ function OperationalCommander:planOrdersForIdleUnits()
         for _, commander in ipairs(ineffectiveUnits) do
             local statusReport = commander:getStatusReport()
             local totalUnits = #commander.initialUnitNames
-            local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+            local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
             local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
             local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
             
@@ -1126,7 +1127,7 @@ function OperationalCommander:scoreCommandersForAssault(commanders, threats, tar
                     -- - No ammo (current) means can't assault (includes both depleted and never-armed units)
                     -- - Heavy casualties (>50% losses) means unit is combat ineffective
                     local totalUnits = #commander.initialUnitNames
-                    local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+                    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
                     
                     if statusReport.ammoCount == 0 then
                         env.info("*** " .. self.color .. " Ops: Skipping " .. commander.groupName .. 

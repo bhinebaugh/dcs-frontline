@@ -1,4 +1,5 @@
 local constants = require("constants")
+local ForceStatusAnalyzer = require("force-status-analyzer")
 local OODACommander = require("ooda-commander")
 local SpatialAgent = require("spatial-agent")
 local ThreatAnalyzer = require("threat-analyzer")
@@ -704,74 +705,7 @@ function GroupCommander:decideWithStaleThreats()
 end
 
 function GroupCommander:getStatusReport()
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return {
-            aliveCount = 0,
-            ammoCount = 0,
-            ammmoLowState = nil,
-            fuelRemaining = self.fuelRemaining,
-            healthPool = 0,
-            healthLowState = nil,
-        }
-    end
-
-    local totalCount = #self.initialUnitNames
-    if totalCount == 0 then
-        return {
-            aliveCount = 0,
-            ammoCount = 0,
-            ammmoLowState = nil,
-            fuelRemaining = self.fuelRemaining,
-            healthPool = 0,
-            healthLowState = nil,
-        }
-    end
-    
-    local aliveCount = 0
-    local ammoCount = 0
-    local ammmoLowState = nil
-    local healthPool = 0
-    local healthLowState = nil
-    -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
-    for _, unitName in ipairs(self.initialUnitNames) do
-        local unit = Unit.getByName(unitName)
-        if unit and unit:isExist() then
-            local unitAmmoTable = unit:getAmmo()
-            local unitHealth = unit:getLife()
-            
-            -- Sum up all ammo counts from the table
-            local unitAmmoTotal = 0
-            if unitAmmoTable then
-                for _, ammoEntry in ipairs(unitAmmoTable) do
-                    if ammoEntry.count then
-                        unitAmmoTotal = unitAmmoTotal + ammoEntry.count
-                    end
-                end
-            end
-
-            aliveCount = aliveCount + 1
-            ammoCount = ammoCount + unitAmmoTotal
-            healthPool = healthPool + unitHealth
-
-            if not ammmoLowState or unitAmmoTotal < ammmoLowState then
-                ammmoLowState = unitAmmoTotal
-            end
-
-            if not healthLowState or unitHealth < healthLowState then
-                healthLowState = unitHealth
-            end
-        end
-    end
-    
-    return {
-        aliveCount = aliveCount,
-        ammoCount = ammoCount,
-        ammmoLowState = ammmoLowState,
-        fuelRemaining = self.fuelRemaining,  -- Simulated fuel
-        healthPool = healthPool,
-        healthLowState = healthLowState,
-    }
+    return ForceStatusAnalyzer.getStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
 end
 
 function GroupCommander:handleCriticalStatusConditions()
@@ -784,7 +718,7 @@ function GroupCommander:handleCriticalStatusConditions()
     end
     
     -- Calculate attrition rate
-    local attritionRate = 1 - (statusReport.aliveCount / totalCount)
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalCount)
     local avgAmmoPerUnit = statusReport.ammoCount / statusReport.aliveCount
     
     -- Debug logging for high casualties
@@ -834,8 +768,7 @@ function GroupCommander:handleCriticalStatusConditions()
     -- CRITICAL: Depleted ammunition - force retreat/hold (only for units that had ammo)
     -- Units that never had ammo (recon) can continue their non-combat missions
     if self.initialAmmoCount > 0 then
-        local criticalAmmoThreshold = self.initialAmmoCount * 0.05
-        if statusReport.ammoCount <= criticalAmmoThreshold then
+        if ForceStatusAnalyzer.isAmmoCritical(statusReport.ammoCount, self.initialAmmoCount, 5) then
             env.info(self.groupName .. " DECIDE: HOLD (ammunition depleted)")
             
             -- If already engaged with threats, retreat
@@ -926,9 +859,8 @@ function GroupCommander:handleCriticalStatusConditions()
     -- WARNING: Low ammunition - don't advance unless overwhelming advantage
     -- Only applies to units that HAD ammo initially (not unarmed recon vehicles)
     if self.initialAmmoCount > 0 then
-        local lowAmmoThreshold = self.initialAmmoCount * 0.2
-        if statusReport.ammoCount < lowAmmoThreshold and threat.favorability < 2.0 then
-            local ammoPercent = (statusReport.ammoCount / self.initialAmmoCount * 100)
+        if ForceStatusAnalyzer.isAmmoLow(statusReport.ammoCount, self.initialAmmoCount, 20) and threat.favorability < 2.0 then
+            local ammoPercent = ForceStatusAnalyzer.calculateAmmoPercentage(statusReport.ammoCount, self.initialAmmoCount)
             env.info(self.groupName .. " DECIDE: HOLD (low ammo: " .. 
                      string.format("%.0f%%", ammoPercent) .. " remaining, insufficient advantage)")
             self:setDisposition(dispositionTypes.HOLD)
@@ -943,13 +875,7 @@ end
 
 function GroupCommander:getCollectiveStatus()
     local statusReport = self:getStatusReport()
-    
-    local totalCount = #self.initialUnitNames
-    if totalCount == 0 then
-        return 0
-    end
-    
-    return statusReport.aliveCount / totalCount
+    return ForceStatusAnalyzer.getCollectiveStatusFromReport(statusReport, #self.initialUnitNames)
 end
 
 function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRadius)
@@ -1240,7 +1166,7 @@ function GroupCommander:handleAutonomousDecisions()
     
     -- Check attrition to prevent heavily damaged units from advancing
     local totalUnits = #self.initialUnitNames
-    local attritionRate = totalUnits > 0 and (1 - (statusReport.aliveCount / totalUnits)) or 0
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
     
     -- Decision thresholds (default/medium ALR)
     local retreatThreshold = 0.6
