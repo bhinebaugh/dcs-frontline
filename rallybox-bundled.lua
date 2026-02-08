@@ -145,7 +145,6 @@ local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
-local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
 local dispositionTypes = constants.dispositionTypes
@@ -193,6 +192,9 @@ function OperationalCommander:observe()
 end
 
 function OperationalCommander:orient()
+    -- Clean up destroyed commanders first, before any assessment
+    self:cleanupDestroyedCommanders()
+    
     -- Sync order statuses from commanders back to order graph
     local groupCommanders = GroupCommander.getInstances(self.color)
     self.orderCoordinator:syncOrderStatuses(groupCommanders)
@@ -221,6 +223,68 @@ function OperationalCommander:orient()
     end
     if totalOrders > 0 then
         env.info("*** " .. self.color .. " Ops ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
+    end
+end
+
+-- Clean up destroyed commanders and orphaned objectives
+function OperationalCommander:cleanupDestroyedCommanders()
+    -- Remove destroyed commanders from global instances for memory cleanup
+    local allInstances = GroupCommander.getInstances()
+    local survivingInstances = {}
+    local removed = 0
+    
+    for _, instance in ipairs(allInstances) do
+        if not instance.destroyed then
+            table.insert(survivingInstances, instance)
+        else
+            removed = removed + 1
+            local groupName = instance.groupName or "unknown"
+            local coalitionName = instance.color or "unknown"
+            env.info(string.format("*** %s Ops: Removing destroyed group %s from memory", 
+                coalitionName, groupName))
+        end
+    end
+    
+    if removed > 0 then
+        GroupCommander.instances = survivingInstances
+    end
+    
+    -- Clean up orders assigned to dead groups
+    if self.orderCoordinator and self.orderCoordinator.objectives then
+        for _, objective in ipairs(self.orderCoordinator.objectives) do
+            if objective.orders then
+                for _, order in ipairs(objective.orders) do
+                    -- Check if this order is assigned to a now-destroyed group
+                    if order.status ~= constants.orderStatus.ABORTED and 
+                       order.status ~= constants.orderStatus.COMPLETED then
+                        -- Check against actual GroupCommander instances for this coalition
+                        local groupStillExists = false
+                        local wasDestroyed = false
+                        local allInstances = GroupCommander.getInstances(self.color)
+                        for _, instance in ipairs(allInstances) do
+                            if instance.groupName == order.assignedTo then
+                                groupStillExists = true
+                                if instance.destroyed then
+                                    wasDestroyed = true
+                                end
+                                break
+                            end
+                        end
+                        
+                        -- Only abort if group actually doesn't exist or is destroyed
+                        if not groupStillExists or wasDestroyed then
+                            local coalitionName = self.coalitionName or self.color or "unknown"
+                            local assignedTo = order.assignedTo or "unknown"
+                            local reason = wasDestroyed and "group destroyed" or "group missing"
+                            env.info(string.format("*** %s Ops: Aborting order for %s (%s)",
+                                coalitionName, assignedTo, reason))
+                            order.status = constants.orderStatus.ABORTED
+                            objective.updatedAt = timer.getTime()
+                        end
+                    end
+                end
+            end
+        end
     end
 end
 
@@ -837,9 +901,18 @@ function OperationalCommander:planOrdersForIdleUnits()
             local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
             local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
             local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
+            local isUnarmed = statusReport.ammoCount == 0 and not hadAmmoInitially
             
-            local reason = isOutOfAmmo and "ammo depleted" or 
-                          ("heavy casualties: " .. string.format("%.0f%%", attritionRate * 100))
+            local reason
+            if isOutOfAmmo then
+                reason = "ammo depleted"
+            elseif attritionRate > 0.4 then
+                reason = "heavy casualties: " .. string.format("%.0f%%", attritionRate * 100)
+            elseif isUnarmed then
+                reason = "unarmed unit in contact"
+            else
+                reason = "combat ineffective"
+            end
             
             env.info("*** " .. self.color .. " Ops: Repositioning " .. commander.groupName .. 
                      " to rear (" .. reason .. ")")
@@ -2767,8 +2840,10 @@ function OODACommander.new(config)
 
     self.oodaState = oodaStates.OBSERVE
     self.oodaOffset = math.random() * oodaInterval
+    self.destroyed = false  -- Flag to stop scheduling
 
-    mist.scheduleFunction(
+    -- Store schedule ID so we can cancel it later
+    self.scheduleId = mist.scheduleFunction(
         OODACommander.oodaTick,
         {self},
         timer.getTime() + self.oodaOffset,
@@ -2791,6 +2866,11 @@ function OODACommander:oodaTick()
         self:act()
         self.oodaState = oodaStates.OBSERVE
     end
+    
+    -- After any phase, check if destroyed and cancel schedule
+    if self.destroyed then
+        self:cancelSchedule()
+    end
 end
 
 function OODACommander:observe()
@@ -2807,6 +2887,14 @@ end
 
 function OODACommander:act()
     error("OODACommander subclass must implement act()")
+end
+
+-- Cancel the scheduled OODA loop
+function OODACommander:cancelSchedule()
+    if self.scheduleId then
+        mist.removeFunction(self.scheduleId)
+        self.scheduleId = nil
+    end
 end
 
 return OODACommander
@@ -2864,6 +2952,7 @@ function GroupCommander.new(groupName, config)
     self.threatAnalysis = nil
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
+    self.destroyed = false  -- Tracks if group no longer exists
     
     -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     self.fuelRemaining = 1.0  -- Start at 100%
@@ -2893,7 +2982,10 @@ end
 function GroupCommander:observe()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then
-        env.info("WARNING: " .. self.groupName .. " group does not exist - cannot observe")
+        -- Mark as destroyed (oodaTick will handle cancellation)
+        self.destroyed = true
+        self.lastObserveTime = timer.getTime()
+        env.info(self.groupName .. " destroyed - marking for cleanup")
         return
     end
     
@@ -3395,7 +3487,7 @@ function GroupCommander:decideAdvanceOnThreats()
     local advanceDestination = self:calculateDestinationRelativeToThreats(threat.center, false)
     
     -- Verify advance doesn't exceed leash
-    if advanceDestination then
+    if advanceDestination and context then
         local destDist = SpatialAgent.distance2D(advanceDestination, context.position)
         
         if destDist > context.leashDistance then
@@ -3413,7 +3505,17 @@ end
 function GroupCommander:decideMoveToOrdered()
     local context = self.orderContext
     
-    self.destination = self:getDestinationToObjective(context.position, context.radius)
+    if not context then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
+        return
+    end
+    
+    if context.position and context.radius then
+        self.destination = self:getDestinationToObjective(context.position, context.radius)
+    else
+        self.destination = nil
+    end
     
     if self.destination then
         self:setDisposition(dispositionTypes.ADVANCE)
@@ -3423,7 +3525,7 @@ function GroupCommander:decideMoveToOrdered()
         env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
         
         -- Complete order if defending at objective
-        if context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE then
+        if context and (context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE) then
             self.orders:complete()
         end
     end
@@ -3432,6 +3534,12 @@ end
 -- Decide action when no threats exist
 function GroupCommander:decideWithNoThreats()
     local context = self.orderContext
+    if not context then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
+        return
+    end
+    
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     
     if self.destination then
@@ -3452,6 +3560,12 @@ end
 -- Decide action when threats are stale/unconfirmed
 function GroupCommander:decideWithStaleThreats()
     local context = self.orderContext
+    
+    if not context then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
+        return
+    end
     
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     

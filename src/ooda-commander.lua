@@ -11,8 +11,10 @@ function OODACommander.new(config)
 
     self.oodaState = oodaStates.OBSERVE
     self.oodaOffset = math.random() * oodaInterval
+    self.destroyed = false  -- Flag to stop scheduling
 
-    mist.scheduleFunction(
+    -- Store schedule ID so we can cancel it later
+    self.scheduleId = mist.scheduleFunction(
         OODACommander.oodaTick,
         {self},
         timer.getTime() + self.oodaOffset,
@@ -35,6 +37,11 @@ function OODACommander:oodaTick()
         self:act()
         self.oodaState = oodaStates.OBSERVE
     end
+    
+    -- After any phase, check if destroyed and cancel schedule
+    if self.destroyed then
+        self:cancelSchedule()
+    end
 end
 
 function OODACommander:observe()
@@ -51,6 +58,14 @@ end
 
 function OODACommander:act()
     error("OODACommander subclass must implement act()")
+end
+
+-- Cancel the scheduled OODA loop
+function OODACommander:cancelSchedule()
+    if self.scheduleId then
+        mist.removeFunction(self.scheduleId)
+        self.scheduleId = nil
+    end
 end
 
 return OODACommander

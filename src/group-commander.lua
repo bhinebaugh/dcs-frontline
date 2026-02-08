@@ -49,6 +49,7 @@ function GroupCommander.new(groupName, config)
     self.threatAnalysis = nil
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
+    self.destroyed = false  -- Tracks if group no longer exists
     
     -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     self.fuelRemaining = 1.0  -- Start at 100%
@@ -78,7 +79,10 @@ end
 function GroupCommander:observe()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then
-        env.info("WARNING: " .. self.groupName .. " group does not exist - cannot observe")
+        -- Mark as destroyed (oodaTick will handle cancellation)
+        self.destroyed = true
+        self.lastObserveTime = timer.getTime()
+        env.info(self.groupName .. " destroyed - marking for cleanup")
         return
     end
     
@@ -580,7 +584,7 @@ function GroupCommander:decideAdvanceOnThreats()
     local advanceDestination = self:calculateDestinationRelativeToThreats(threat.center, false)
     
     -- Verify advance doesn't exceed leash
-    if advanceDestination then
+    if advanceDestination and context then
         local destDist = SpatialAgent.distance2D(advanceDestination, context.position)
         
         if destDist > context.leashDistance then
@@ -598,7 +602,17 @@ end
 function GroupCommander:decideMoveToOrdered()
     local context = self.orderContext
     
-    self.destination = self:getDestinationToObjective(context.position, context.radius)
+    if not context then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
+        return
+    end
+    
+    if context.position and context.radius then
+        self.destination = self:getDestinationToObjective(context.position, context.radius)
+    else
+        self.destination = nil
+    end
     
     if self.destination then
         self:setDisposition(dispositionTypes.ADVANCE)
@@ -608,7 +622,7 @@ function GroupCommander:decideMoveToOrdered()
         env.info(self.groupName .. " DECIDE: DEFEND (at objective)")
         
         -- Complete order if defending at objective
-        if context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE then
+        if context and (context.type == taskTypes.RALLY or context.type == taskTypes.REINFORCE) then
             self.orders:complete()
         end
     end
@@ -617,6 +631,12 @@ end
 -- Decide action when no threats exist
 function GroupCommander:decideWithNoThreats()
     local context = self.orderContext
+    if not context then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
+        return
+    end
+    
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     
     if self.destination then
@@ -637,6 +657,12 @@ end
 -- Decide action when threats are stale/unconfirmed
 function GroupCommander:decideWithStaleThreats()
     local context = self.orderContext
+    
+    if not context then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = nil
+        return
+    end
     
     self.destination = self:getDestinationToObjective(context.position, context.radius)
     

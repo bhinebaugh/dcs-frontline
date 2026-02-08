@@ -40,8 +40,8 @@ function OODACommander:oodaTick()
 end
 ```
 
-### 2. SpatialCalculator Service
-**Effort**: Medium (3-5 days)  
+### 2. SpatialAgent Service
+**Effort**: Medium (3-5 days) ✅ COMPLETED
 **Value**: High  
 **Why**: 10+ spatial calculation methods scattered across files, lots of duplication
 
@@ -53,12 +53,37 @@ end
 **After refactoring:**
 ```lua
 -- Both commanders use same service
-local center = SpatialCalculator.calculateCenter(positions)
-local distance = SpatialCalculator.distance2D(pos1, pos2)
-local staging = SpatialCalculator.calculateStagingPositions(center, 2000, 4, 45)
+local center = SpatialAgent.calculateThreatCenter(threats)
+local distance = SpatialAgent.distance2D(pos1, pos2)
+local staging = SpatialAgent.calculateStagingPositions(center, 2000, 4, 45)
 ```
 
-### 3. GamePlan Strategy Pattern
+### 3. OrderCoordinator
+**Effort**: Medium (4-5 days) ✅ COMPLETED
+**Value**: Medium-High
+**Why**: Clarifies ownership and provides stateless context utilities
+
+**Architectural Insight:**
+The key was finding the right separation:
+- **OrderCoordinator owns objective graph (data)** - Single source of truth
+- **OperationalCommander owns lifecycle (behavior)** - Planning, issuing, cleanup
+
+This avoids God Object antipattern while keeping behavior with the actor who performs it.
+
+**After refactoring:**
+```lua
+-- GroupCommander derives order context in ORIENT
+local orderContext = OrderCoordinator.deriveOrderContext(
+    self.orders, status.position, status.alr
+)
+
+-- OperationalCommander derives objective context in ORIENT
+local objContext = self.orderCoordinator:deriveObjectiveContext(
+    objective, statusCounts, threats, threatCount
+)
+```
+
+### 4. GamePlan Strategy Pattern
 **Effort**: High (5-7 days initial, ongoing for new plans)  
 **Value**: Very High  
 **Why**: Opens up entire new dimension of tactical variety
@@ -88,34 +113,35 @@ Now you can add Blitzkrieg, Infiltration, Siege, etc. as new classes without tou
 
 ## Recommended Implementation Order
 
-### Phase 1: Quick Wins (Week 1)
+### Phase 1: Quick Wins (Week 1) ✅ COMPLETED
 **Start here** - These are low-risk, high-value extractions:
 
-1. **OODACommander base class** - Eliminates duplication immediately
-2. **SpatialCalculator** - Start with just `distance2D()` and `calculateCenter()`
-3. **Validate** - Ensure everything still works
+1. ✅ **OODACommander base class** - Eliminates duplication immediately
+2. ✅ **SpatialAgent** - Centralized geometry calculations
+3. ✅ **Validate** - Everything works correctly
 
-### Phase 2: Core Services (Weeks 2-3)
+### Phase 2: Core Services (Weeks 2-3) ✅ COMPLETED
 **Build the foundation** - These enable the rest:
 
-4. **Complete SpatialCalculator** - Migrate all geometry methods
-5. **OrderCoordinator** - Centralize order lifecycle
-6. **Validate** - Run through complete mission scenarios
+4. ✅ **Complete SpatialAgent** - All geometry methods migrated
+5. ✅ **ForceStatusAnalyzer** - All status/ammo/attrition calculations
+6. ✅ **OrderCoordinator** - Objective graph ownership with stateless utilities
+7. ✅ **Validate** - Run through complete mission scenarios
 
-### Phase 3: Strategic Layer (Weeks 4-5)
+### Phase 3: Strategic Layer (Weeks 4-5) 🎯 NEXT
 **The exciting part** - New capabilities:
 
-7. **Extract ReconRallyAssault** - Current logic becomes a GamePlan class
-8. **GamePlan interface** - Define the strategy pattern
-9. **Add one alternative** - Prove the pattern works (suggest Blitzkrieg)
-10. **Validate** - Test both strategies
+8. **Extract ReconRallyAssault** - Current logic becomes a GamePlan class
+9. **GamePlan interface** - Define the strategy pattern
+10. **Add one alternative** - Prove the pattern works (suggest Blitzkrieg)
+11. **Validate** - Test both strategies
 
 ### Phase 4: Polish (Week 6+)
 **Nice-to-haves** - Do if time permits:
 
-11. **ForceStatusAnalyzer** - Clean up status checking
-12. **IntelligenceService** - Centralize intel sharing
+12. **IntelligenceService** - Centralize intel sharing (if needed)
 13. **Additional GamePlans** - DelayingAction, Infiltration, etc.
+14. **Performance tuning** - Optimize hot paths
 
 ## Lua Inheritance Pattern
 
