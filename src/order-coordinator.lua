@@ -78,8 +78,20 @@ end
 
 -- Derive objective context for OperationalCommander's ORIENT phase
 -- Provides useful summaries for decision-making
-function OrderCoordinator:deriveObjectiveContext(objective, statusCounts, threatsNear, threatCount)
-    -- Determine last order type
+-- Derive complete PlanningContext for GamePlan decision-making (ORIENT phase)
+-- This is the single source of truth for context derivation from objective state
+function OrderCoordinator:derivePlanningContext(objective, commander)
+    -- Get threat information from commander
+    local threatsNear = commander:getThreatsNearPosition(objective.position, commander.reconRadius)
+    local threatCount = 0
+    for _ in pairs(threatsNear) do
+        threatCount = threatCount + 1
+    end
+    
+    -- Get order status counts
+    local statusCounts = objective:getOrderStatusCounts()
+    
+    -- Determine last order type and completion stats
     local lastOrderType = nil
     local lastCompletedCount = 0
     local lastAbortedCount = 0
@@ -108,25 +120,50 @@ function OrderCoordinator:deriveObjectiveContext(objective, statusCounts, threat
         end
     end
     
-    -- Return derived context snapshot
+    -- Get all commanders for this coalition
+    local GroupCommander = require("group-commander")
+    local allCommanders = GroupCommander.getInstances(commander.color)
+    local availableCommanders = commander:getAvailableGroupCommanders()
+    
+    -- Build complete PlanningContext structure
     return {
-        objective = objective,  -- Reference for convenience
+        goal = objective,
+        goalType = "objective",
         
-        -- Phase tracking
-        lastOrderType = lastOrderType,
-        lastCompletedCount = lastCompletedCount,
-        lastAbortedCount = lastAbortedCount,
-        requiresPlanning = (statusCounts.completed + statusCounts.aborted == statusCounts.total),
+        -- Situation analysis (from ORIENT)
+        situation = {
+            objective = objective,  -- Reference for convenience
+            
+            -- Phase tracking
+            lastOrderType = lastOrderType,
+            lastCompletedCount = lastCompletedCount,
+            lastAbortedCount = lastAbortedCount,
+            requiresPlanning = (statusCounts.completed + statusCounts.aborted == statusCounts.total),
+            
+            -- Threat summary
+            threats = threatsNear,
+            threatsNear = threatsNear,  -- Alias for compatibility
+            threatCount = threatCount,
+            
+            -- Order status summary
+            statusCounts = statusCounts,
+            
+            -- Assignment tracking
+            activeAssignments = activeAssignments,
+            
+            -- Commander reference for utilities
+            commander = commander,
+        },
         
-        -- Threat summary
-        threatsNear = threatsNear,
-        threatCount = threatCount,
+        -- Resources available for planning
+        -- GamePlan has full visibility and control over all commanders
+        resources = {
+            availableCommanders = availableCommanders,  -- Units with no active orders (convenient subset)
+            allCommanders = allCommanders,              -- Every unit (for recruiting if needed)
+        },
         
-        -- Order status summary
-        statusCounts = statusCounts,
-        
-        -- Assignment tracking
-        activeAssignments = activeAssignments
+        -- Commander reference for utilities
+        commander = commander,
     }
 end
 
