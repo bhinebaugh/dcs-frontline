@@ -51,7 +51,7 @@ function ReconRallyAssaultPlan:plan(context)
     elseif phase == "ASSAULT" then
         return self:planAssaultPhase(objective, resources, situation, commander)
     elseif phase == "DEFEND" then
-        return self:planDefendPhase(objective, situation, commander)
+        return self:planDefendPhase(objective, resources, situation, commander)
     elseif phase == "WAIT" then
         return {}  -- No orders, waiting for current phase to complete
     end
@@ -110,12 +110,21 @@ function ReconRallyAssaultPlan:determinePhase(objective, situation)
             end
             
         elseif lastOrderType == taskTypes.ASSAULT then
-            if threatCount == 0 then
-                -- Threats cleared - resume RECON
-                return "RECON"
+            local totalAssaults = lastCompletedCount + lastAbortedCount
+            
+            if lastCompletedCount > 0 and lastCompletedCount == totalAssaults then
+                -- All assaults complete - transition to DEFEND even if threats remain
+                return "DEFEND"
+            elseif lastAbortedCount == totalAssaults then
+                -- All assaults aborted - try again or fall back
+                if threatCount > 0 then
+                    return "RALLY"
+                else
+                    return "RECON"
+                end
             else
-                -- Continue assault
-                return "ASSAULT"
+                -- Some assaults still in progress
+                return "WAIT"
             end
             
         elseif lastOrderType == taskTypes.DEFEND then
@@ -272,6 +281,24 @@ function ReconRallyAssaultPlan:planRallyPhase(objective, resources, situation, c
         commanderPositions,
         120  -- 120° arc
     )
+
+    local longestDistance = 0
+    for i, pos in ipairs(stagingPositions) do
+        local dist = SpatialAgent.distance2D(commanderPositions[i], pos)
+        if dist and dist > longestDistance then
+            longestDistance = dist
+        end
+    end
+
+    local slowestSpeed = math.huge
+    for _, cmdInfo in ipairs(selectedCommanders) do
+        local speed = cmdInfo.commander:getSlowestUnitSpeed()
+        if speed and speed < slowestSpeed then
+            slowestSpeed = speed
+        end
+    end
+
+    local pushTime = timer.getTime() + longestDistance / slowestSpeed
     
     local orderPlans = {}
     for i, commanderInfo in ipairs(selectedCommanders) do
@@ -283,6 +310,7 @@ function ReconRallyAssaultPlan:planRallyPhase(objective, resources, situation, c
                 assignedTo = cmd.groupName,
                 objective = objective,
                 position = rallyPos,
+                pushTime = pushTime,  -- Hold at rally point until this time
                 radius = 1000,
                 type = taskTypes.RALLY,
                 alr = alr.MEDIUM,
@@ -337,9 +365,45 @@ function ReconRallyAssaultPlan:planAssaultPhase(objective, resources, situation,
     return orderPlans
 end
 
-function ReconRallyAssaultPlan:planDefendPhase(objective, situation, commander)
+function ReconRallyAssaultPlan:planDefendPhase(objective, resources, situation, commander)
     objective:markAchieved()
-    return {}
+    
+    local availableCommanders = resources.availableCommanders
+    local threats = situation.threats
+    
+    -- Calculate defensive center (objective or threat center if threats nearby)
+    local defendPosition = objective.position
+    if threats and next(threats) then
+        local threatCenter = SpatialAgent.calculateThreatCenter(threats)
+        if threatCenter then
+            -- Bias toward objective but acknowledge threats
+            defendPosition = {
+                x = (objective.position.x + threatCenter.x) / 2,
+                z = (objective.position.z + threatCenter.z) / 2
+            }
+        end
+    end
+    
+    -- Issue DEFEND orders to available groups
+    local orderPlans = {}
+    for _, cmd in ipairs(availableCommanders) do
+        local order = Order.new({
+            assignedTo = cmd.groupName,
+            objective = objective,
+            position = defendPosition,
+            radius = objective.radius or 2000,
+            type = taskTypes.DEFEND,
+            alr = alr.MEDIUM,
+        })
+        
+        table.insert(orderPlans, {
+            commander = cmd,
+            order = order,
+            threats = threats
+        })
+    end
+    
+    return orderPlans
 end
 
 -- Filter out commanders who recently completed rally at similar threat position

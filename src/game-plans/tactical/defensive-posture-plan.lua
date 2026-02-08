@@ -41,94 +41,10 @@ function DefensivePosturePlan:plan(context)
     local commander = context.commander
     
     -- Check for critical status conditions that override normal decisions
-    local criticalDecision = self:checkCriticalStatus(situation, commander)
-    if criticalDecision then
-        return criticalDecision
-    end
+    local alerts = commander:getCriticalStatus(situation)
     
     -- Make autonomous defensive decisions
-    return self:makeDefensiveDecision(situation, commander)
-end
-
--- Check for critical status conditions (casualties, ammo)
-function DefensivePosturePlan:checkCriticalStatus(situation, commander)
-    local status = situation.statusReport
-    local threat = situation.threatAssessment
-    
-    if not status or status.aliveCount == 0 then
-        return nil  -- No decision needed
-    end
-    
-    local totalUnits = #commander.initialUnitNames
-    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
-    
-    -- CRITICAL: Heavy casualties (>40%) - force retreat
-    if attritionRate > 0.4 then
-        env.info(commander.groupName .. " DEFENSIVE: RETREAT (critical casualties: " .. 
-                 string.format("%.0f%%", attritionRate * 100) .. ")")
-        
-        local retreatDest = self:calculateRetreatDestination(situation, commander)
-        return {
-            disposition = dispositionTypes.RETREAT,
-            destination = retreatDest
-        }
-    end
-    
-    -- CRITICAL: No ammunition - hold or retreat
-    if commander.initialAmmoCount > 0 and status.ammoCount == 0 then
-        if threat.count > 0 and not threat.stale then
-            env.info(commander.groupName .. " DEFENSIVE: RETREAT (no ammo, threats present)")
-            local retreatDest = self:calculateRetreatDestination(situation, commander)
-            return {
-                disposition = dispositionTypes.RETREAT,
-                destination = retreatDest
-            }
-        else
-            commander:stopMovement()
-            return {disposition = dispositionTypes.HOLD, destination = nil}
-        end
-    end
-    
-    -- WARNING: Moderate casualties (30-40%) with unfavorable situation
-    if attritionRate > 0.3 and threat.favorability < 0.8 then
-        env.info(commander.groupName .. " DEFENSIVE: RETREAT (casualties: " .. 
-                 string.format("%.0f%%", attritionRate * 100) .. ", Fav:" .. 
-                 string.format("%.2f", threat.favorability) .. ")")
-        
-        local retreatDest = self:calculateRetreatDestination(situation, commander)
-        return {
-            disposition = dispositionTypes.RETREAT,
-            destination = retreatDest
-        }
-    end
-    
-    -- WARNING: Light casualties (20-30%) with clearly unfavorable
-    if attritionRate > 0.2 and threat.favorability < 0.65 then
-        env.info(commander.groupName .. " DEFENSIVE: RETREAT (early casualties: " .. 
-                 string.format("%.0f%%", attritionRate * 100) .. ", Fav:" .. 
-                 string.format("%.2f", threat.favorability) .. ")")
-        
-        local retreatDest = self:calculateRetreatDestination(situation, commander)
-        return {
-            disposition = dispositionTypes.RETREAT,
-            destination = retreatDest
-        }
-    end
-    
-    -- WARNING: Low ammunition - hold unless overwhelming advantage
-    if commander.initialAmmoCount > 0 then
-        if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount, 20) and 
-           threat.favorability < 2.0 then
-            env.info(commander.groupName .. " DEFENSIVE: HOLD (low ammo, insufficient advantage)")
-            commander:stopMovement()
-            return {
-                disposition = dispositionTypes.HOLD,
-                destination = nil
-            }
-        end
-    end
-    
-    return nil  -- No critical conditions
+    return self:makeDefensiveDecision(situation, commander, alerts)
 end
 
 -- Calculate retreat destination away from threats
@@ -147,13 +63,19 @@ function DefensivePosturePlan:calculateRetreatDestination(situation, commander)
 end
 
 -- Make defensive decision based on threat assessment
-function DefensivePosturePlan:makeDefensiveDecision(situation, commander)
+function DefensivePosturePlan:makeDefensiveDecision(situation, commander, alerts)
     local threat = situation.threatAssessment
     local status = situation.statusReport
+
+    -- Check for active threats (observed or suspected, not just memory)
+    local activeThreats = 0
+    if threat.statuses then
+        activeThreats = (threat.statuses.observed or 0) + (threat.statuses.suspected or 0)
+    end
     
     -- Unarmed units: retreat if threatened, hold otherwise
-    if status.ammoCount == 0 then
-        if threat.count > 0 and threat.center then
+    if status.ammoCount == 0 or alerts then
+        if activeThreats > 0 and threat.center then
             if threat.favorability < 0.8 then
                 env.info(commander.groupName .. " DEFENSIVE: RETREAT (unarmed, threatened)")
                 local retreatDest = self:calculateRetreatDestination(situation, commander)
@@ -163,11 +85,11 @@ function DefensivePosturePlan:makeDefensiveDecision(situation, commander)
                 }
             else
                 commander:stopMovement()
-                return {disposition = dispositionTypes.HOLD, destination = nil}
+                return {disposition = dispositionTypes.HOLD, destination = nil }
             end
         else
             commander:stopMovement()
-            return {disposition = dispositionTypes.HOLD, destination = nil}
+            return {disposition = dispositionTypes.HOLD, destination = nil }
         end
     end
     
@@ -218,7 +140,7 @@ function DefensivePosturePlan:makeDefensiveDecision(situation, commander)
     end
     
     -- Weak position: retreat
-    if threat.favorability < retreatThreshold then
+    if activeThreats > 0 and threat.favorability < retreatThreshold then
         env.info(commander.groupName .. " DEFENSIVE: RETREAT (Fav:" .. 
                  string.format("%.2f", threat.favorability) .. ")")
         
@@ -230,7 +152,7 @@ function DefensivePosturePlan:makeDefensiveDecision(situation, commander)
     end
     
     -- Strong position: advance
-    if threat.favorability >= advanceThreshold then
+    if activeThreats > 0 and threat.favorability >= advanceThreshold then
         env.info(commander.groupName .. " DEFENSIVE: ADVANCE (Fav:" .. 
                  string.format("%.2f", threat.favorability) .. ")")
         

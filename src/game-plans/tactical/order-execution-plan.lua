@@ -44,122 +44,10 @@ function OrderExecutionPlan:plan(context)
     local commander = context.commander
     
     -- Check for critical status conditions that override normal decisions
-    local criticalDecision = self:checkCriticalStatus(situation, commander)
-    if criticalDecision then
-        return criticalDecision
-    end
+    local alerts = commander:getCriticalStatus(situation)
     
     -- Execute order logic
-    return self:executeOrder(situation, commander)
-end
-
--- Check for critical status conditions (casualties, ammo)
-function OrderExecutionPlan:checkCriticalStatus(situation, commander)
-    local status = situation.statusReport
-    local threat = situation.threatAssessment
-    
-    if not status or status.aliveCount == 0 then
-        return nil  -- No decision needed
-    end
-    
-    local totalUnits = #commander.initialUnitNames
-    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
-    
-    -- CRITICAL: Heavy casualties (>40%) - force retreat
-    if attritionRate > 0.4 then
-        env.info(commander.groupName .. " ORDER EXEC: RETREAT (critical casualties: " .. 
-                 string.format("%.0f%%", attritionRate * 100) .. ")")
-        
-        -- Abort order
-        if commander.orders and commander.orders:isActive() then
-            commander.orders:abort("critical_casualties")
-        end
-        
-        local retreatDest = self:calculateRetreatDestination(situation, commander)
-        return {
-            disposition = dispositionTypes.RETREAT,
-            destination = retreatDest
-        }
-    end
-    
-    -- CRITICAL: No ammunition - abort offensive orders, retreat if threatened
-    if commander.initialAmmoCount > 0 and status.ammoCount == 0 then
-        -- Abort offensive orders
-        if commander.orders and commander.orders:isActive() then
-            local orderContext = situation.orderContext
-            if orderContext and (orderContext.type == taskTypes.ASSAULT or orderContext.type == taskTypes.ATTACK) then
-                commander.orders:abort("no_ammo")
-            end
-        end
-        
-        -- Retreat if threats present
-        if threat.count > 0 and not threat.stale then
-            env.info(commander.groupName .. " ORDER EXEC: RETREAT (no ammo, threats present)")
-            local retreatDest = self:calculateRetreatDestination(situation, commander)
-            return {
-                disposition = dispositionTypes.RETREAT,
-                destination = retreatDest
-            }
-        else
-            return {disposition = dispositionTypes.HOLD, destination = nil}
-        end
-    end
-    
-    -- WARNING: Moderate casualties (30-40%) with unfavorable situation
-    if attritionRate > 0.3 and threat.favorability < 0.8 then
-        env.info(commander.groupName .. " ORDER EXEC: RETREAT (casualties: " .. 
-                 string.format("%.0f%%", attritionRate * 100) .. ", Fav:" .. 
-                 string.format("%.2f", threat.favorability) .. ")")
-        
-        -- Abort offensive orders
-        if commander.orders and commander.orders:isActive() then
-            local orderContext = situation.orderContext
-            if orderContext and (orderContext.type == taskTypes.ASSAULT or orderContext.type == taskTypes.ATTACK) then
-                commander.orders:abort("casualties")
-            end
-        end
-        
-        local retreatDest = self:calculateRetreatDestination(situation, commander)
-        return {
-            disposition = dispositionTypes.RETREAT,
-            destination = retreatDest
-        }
-    end
-    
-    -- WARNING: Light casualties (20-30%) with clearly unfavorable
-    if attritionRate > 0.2 and threat.favorability < 0.65 then
-        env.info(commander.groupName .. " ORDER EXEC: RETREAT (early casualties: " .. 
-                 string.format("%.0f%%", attritionRate * 100) .. ", Fav:" .. 
-                 string.format("%.2f", threat.favorability) .. ")")
-        
-        if commander.orders and commander.orders:isActive() then
-            local orderContext = situation.orderContext
-            if orderContext and (orderContext.type == taskTypes.ASSAULT or orderContext.type == taskTypes.ATTACK) then
-                commander.orders:abort("casualties")
-            end
-        end
-        
-        local retreatDest = self:calculateRetreatDestination(situation, commander)
-        return {
-            disposition = dispositionTypes.RETREAT,
-            destination = retreatDest
-        }
-    end
-    
-    -- WARNING: Low ammunition - hold unless overwhelming advantage
-    if commander.initialAmmoCount > 0 then
-        if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount, 20) and 
-           threat.favorability < 2.0 then
-            env.info(commander.groupName .. " ORDER EXEC: HOLD (low ammo, insufficient advantage)")
-            commander:stopMovement()
-            return {
-                disposition = dispositionTypes.HOLD,
-                destination = nil
-            }
-        end
-    end
-    
-    return nil  -- No critical conditions
+    return self:executeOrder(situation, commander, alerts)
 end
 
 -- Calculate retreat destination away from threats
@@ -178,12 +66,12 @@ function OrderExecutionPlan:calculateRetreatDestination(situation, commander)
 end
 
 -- Execute order with assault-oriented behavior
-function OrderExecutionPlan:executeOrder(situation, commander)
+function OrderExecutionPlan:executeOrder(situation, commander, alerts)
     local threat = situation.threatAssessment
     local orderContext = situation.orderContext
     
     -- Handle order lifecycle events
-    if commander.orders.status == orderStatus.ASSIGNED then
+    if commander.orders.status == orderStatus.ASSIGNED and orderContext then
         commander.orders:start()
         local orderTypeName = self:getOrderTypeName(orderContext.type)
         env.info(commander.groupName .. " ORDER EXEC: Starting " .. orderTypeName .. 
@@ -192,8 +80,9 @@ function OrderExecutionPlan:executeOrder(situation, commander)
     end
     
     if commander.orders:isExpired() then
-        commander.orders:complete()
         env.info(commander.groupName .. " ORDER EXEC: Complete (deadline)")
+        commander.orders:complete()
+        commander:stopMovement()
         return {disposition = dispositionTypes.HOLD, destination = nil}
     end
     
@@ -202,7 +91,7 @@ function OrderExecutionPlan:executeOrder(situation, commander)
     end
     
     -- Check if should abort for overwhelming threat
-    if commander:shouldAbortForThreat() then
+    if alerts or commander:shouldAbortForThreat() then
         commander.orders:abort("threat_retreat")
         local retreatDest = self:calculateRetreatDestination(situation, commander)
         return {
@@ -220,16 +109,38 @@ function OrderExecutionPlan:executeOrder(situation, commander)
     if orderContext.type == taskTypes.RECON then
         env.info(commander.groupName .. " ORDER EXEC: RECON complete - threats detected")
         commander.orders:complete()
+        commander:stopMovement()
         return {disposition = dispositionTypes.HOLD, destination = nil}
     end
-    
-    -- Reached destination - complete order and defend
+
+    -- Reached destination - handle based on order type
     local atDestination = (commander:getDestinationToObjective(orderContext.position, orderContext.radius) == nil)
     if atDestination then
+        -- RALLY: Hold at rally point until rally time, then complete
+        if orderContext.type == taskTypes.RALLY then
+            local currentTime = timer.getTime()
+            local pushTime = commander.orders.pushTime or currentTime  -- Default to immediate if not set
+            
+            if currentTime < pushTime then
+                -- Rally time not reached - hold position
+                local remainingTime = math.floor(pushTime - currentTime)
+                env.info(commander.groupName .. " ORDER EXEC: At rally point, holding for " .. remainingTime .. "s")
+                commander:stopMovement()
+                return {disposition = dispositionTypes.DEFEND, destination = orderContext.position}
+            else
+                -- Rally time reached - complete order
+                env.info(commander.groupName .. " ORDER EXEC: Rally complete")
+                commander.orders:complete()
+                commander:stopMovement()
+                return {disposition = dispositionTypes.DEFEND, destination = orderContext.position}
+            end
+        end
+        
+        -- Other order types: complete immediately
         env.info(commander.groupName .. " ORDER EXEC: Reached objective, defending")
         commander.orders:complete()
         commander:stopMovement()
-        return {disposition = dispositionTypes.DEFEND, destination = nil}
+        return {disposition = dispositionTypes.DEFEND, destination = orderContext.position}
     end
     
     -- REPOSITION: Move to safety, ignore threats
@@ -257,22 +168,23 @@ function OrderExecutionPlan:executeOrder(situation, commander)
         end
     end
     
-    -- Strong favorability: advance on threats (within leash)
+    -- Strong favorability: advance on threats closer than objective
     local advanceThreshold = 1.5
-    if threat.favorability >= advanceThreshold and orderContext.distanceToOrdered < orderContext.leashDistance then
-        env.info(commander.groupName .. " ORDER EXEC: ADVANCE (on threats, Fav:" .. 
-                 string.format("%.2f", threat.favorability) .. ")")
-        
+    if threat.favorability >= advanceThreshold then
         local advanceDest = commander:calculateDestinationRelativeToThreats(threat.center, false)
         
-        -- Verify advance doesn't exceed leash
+        -- Verify threat is closer to group than objective
         if advanceDest then
-            local destDist = SpatialAgent.distance2D(advanceDest, orderContext.position)
-            if destDist > orderContext.leashDistance then
-                -- Too far, return to objective
+            local objectiveDist = SpatialAgent.distance2D(orderContext.position, commander:getPosition())
+            local threatDist = SpatialAgent.distance2D(threat.center, orderContext.position)
+            if threatDist > objectiveDist then
+                -- Threat too far from objective, return to objective instead
                 return self:moveToObjective(commander, orderContext)
             end
         end
+        
+        env.info(commander.groupName .. " ORDER EXEC: ADVANCE (on threats, Fav:" .. 
+                 string.format("%.2f", threat.favorability) .. ")")
         
         return {
             disposition = dispositionTypes.ADVANCE,
@@ -297,7 +209,7 @@ function OrderExecutionPlan:moveToObjective(commander, orderContext)
         -- At objective, defend
         return {
             disposition = dispositionTypes.DEFEND,
-            destination = nil
+            destination = orderContext.position
         }
     end
 end

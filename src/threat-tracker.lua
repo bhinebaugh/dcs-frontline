@@ -171,6 +171,12 @@ function ThreatTracker:ageThreats()
         
         local timeInStatus = currentTime - threat.statusChangedAt
         
+        -- Progress SUSPECTED → UNCONFIRMED after 2 minutes (no fresh sighting)
+        if threat.status == threatStatus.SUSPECTED and timeInStatus > 120 then
+            threat.status = threatStatus.UNCONFIRMED
+            threat.statusChangedAt = currentTime
+        end
+        
         -- Progress UNCONFIRMED → LOST after 5 minutes
         if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
             threat.status = threatStatus.LOST

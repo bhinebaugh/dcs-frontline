@@ -1,9 +1,9 @@
 local constants = require("constants")
-local DefensivePosturePlan = require("defensive-posture-plan")
+local DefensivePosturePlan = require("game-plans.tactical.defensive-posture-plan")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local OODACommander = require("ooda-commander")
 local OrderCoordinator = require("order-coordinator")
-local OrderExecutionPlan = require("order-execution-plan")
+local OrderExecutionPlan = require("game-plans.tactical.order-execution-plan")
 local SpatialAgent = require("spatial-agent")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
@@ -58,6 +58,10 @@ function GroupCommander.new(groupName, config)
     self.lastPosition = nil
     self.lastObserveTime = timer.getTime()
     
+    -- Active GamePlan (persists across OODA cycles until plan type changes)
+    self.gamePlan = nil
+    self.gamePlanType = nil  -- Track current plan type to detect switches
+    
     -- Register this instance
     table.insert(GroupCommander.instances, self)
     
@@ -91,26 +95,10 @@ function GroupCommander:observe()
     -- Update simulated fuel consumption
     local currentTime = timer.getTime()
     local currentPos = self:getOwnPosition()
-    if currentPos and self.lastPosition then
-        -- Calculate distance traveled
-        local distanceTraveled = SpatialAgent.distance2D(currentPos, self.lastPosition)
-        
-        -- Calculate time elapsed
-        local timeElapsed = currentTime - self.lastObserveTime
-        
-        -- Fuel burn rates (balanced for ground vehicles)
-        -- Movement: 250 statute miles (402km) on full tank
-        local movementBurnRate = 0.0000025  -- 100% fuel over 402,336m
-        -- Idle: 5x the drive time at 30mph (41.7 hours idle on full tank)
-        local idleBurnRate = 0.0000067  -- 100% fuel over 41.7 hours (150,012s)
-        
-        -- Apply fuel consumption
-        local movementBurn = distanceTraveled * movementBurnRate
-        local idleBurn = timeElapsed * idleBurnRate
-        self.fuelRemaining = math.max(0, self.fuelRemaining - movementBurn - idleBurn)
-    end
+
     -- Only update position/time if we have a valid currentPos
     if currentPos then
+        self:updateFuelConsumption(currentTime, currentPos)
         self.lastPosition = currentPos
         self.lastObserveTime = currentTime
     end
@@ -202,39 +190,44 @@ function GroupCommander:orient()
 end
 
 function GroupCommander:decide()
+    if self.orders and self.orders.status == orderStatus.ASSIGNED then
+        self.gamePlan = OrderExecutionPlan.new()
+    end
+
+    if self.orders and self.orders:isFinished() then
+        self.orders = nil
+        self.gamePlan = DefensivePosturePlan.new()
+    end
+
+    if not self.gamePlan then
+        self.gamePlan = DefensivePosturePlan.new()
+    end
+
     -- Check if we have valid assessment data
     if not self.ownForceStrength or not self.threatAssessment then
         self:setDisposition(dispositionTypes.HOLD)
-        self.destination = nil
+        self.destination = self:getOwnPosition()
         return
     end
-    
+
     -- Get tactical planning context from OrderCoordinator
     local context = OrderCoordinator.buildTacticalContext(self)
     if not context then
         env.info("ERROR: Could not build tactical context for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
-        self.destination = nil
+        self.destination = self:getOwnPosition()
         return
     end
-    
-    -- Assign GamePlan based on whether we have active orders
-    local gamePlan
-    if context.situation.hasActiveOrders then
-        gamePlan = OrderExecutionPlan.new()
-    else
-        gamePlan = DefensivePosturePlan.new()
-    end
-    
+        
     -- Use GamePlan to make tactical decisions
-    local decision = gamePlan:plan(context)
+    local decision = self.gamePlan:plan(context)
     if decision then
         self:setDisposition(decision.disposition)
         self.destination = decision.destination
     else
         env.info("ERROR: GamePlan returned nil decision for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
-        self.destination = nil
+        self.destination = self:getOwnPosition()
     end
 end
 
@@ -245,7 +238,7 @@ function GroupCommander:act()
     elseif self.disposition == dispositionTypes.RETREAT then
         self:setROE(roe.RETURN_FIRE)
     elseif self.disposition == dispositionTypes.HOLD then
-        self:setROE(roe.RETURN_FIRE)
+        self:setROE(roe.WEAPON_FREE)
     elseif self.disposition == dispositionTypes.DEFEND then
         self:setROE(roe.WEAPON_FREE)
     else
@@ -439,51 +432,31 @@ function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retr
         env.info(self.groupName .. " Cannot calculate destination: missing position data")
         return nil
     end
-    
-    -- Calculate vector from threat to us
-    local dx = ownPos.x - threatCenter.x
-    local dz = ownPos.z - threatCenter.z
-    
-    -- TODO: Revisit this calculation for reasonable diretion choice, especially when close to threats
-    -- Normalize
-    local dirX, dirZ, distance = SpatialAgent.normalizeVector(dx, dz)
-    if distance < 1 then
-        -- Too close, pick arbitrary direction
-        dirX = 1
-        dirZ = 0
-        distance = 1
-    end
+
+    local threatDistance = SpatialAgent.distance2D(ownPos, threatCenter)
+    local threatDirection = SpatialAgent.calculateDirection(ownPos, threatCenter)
     
     -- Set movement distance based on action
     if retreat then
         -- Move away from threats
         local retreatDistance = 2000  -- 2km retreat
-        return {
-            x = ownPos.x + (dirX * retreatDistance),
-            y = ownPos.y,
-            z = ownPos.z + (dirZ * retreatDistance)
-        }
+        local retreatDirection = SpatialAgent.rotateVector(threatDirection, 180)
+        return SpatialAgent.calculateDestination(ownPos, retreatDirection, retreatDistance)
     else
         -- Move toward threats (advance)
         local optimalRange = 250   -- Close to 250m for optimal engagement
         local weaponRange = 1000   -- Max weapon range is 1km
         
-        local currentDistance = SpatialAgent.distance2D(ownPos, threatCenter)
-        
         -- If beyond weapon range, move to weapon range
         -- If within weapon range, close to optimal range for better accuracy
-        local targetRange = currentDistance > weaponRange and weaponRange or optimalRange
+        local targetRange = threatDistance > weaponRange and weaponRange or optimalRange
         
         -- If already at or closer than optimal range, stay put
-        if currentDistance <= optimalRange then
+        if threatDistance <= optimalRange then
             return nil
         end
         
-        return {
-            x = threatCenter.x + (dirX * targetRange),
-            y = threatCenter.y or ownPos.y,
-            z = threatCenter.z + (dirZ * targetRange)
-        }
+        return SpatialAgent.calculateDestination(ownPos, threatDirection, threatDistance - targetRange)
     end
 end
 
@@ -497,21 +470,15 @@ function GroupCommander:calculateReturnToObjective()
     local context = self.orderContext
     if context and context.position then
         -- Retreat toward ordered objective
-        local dirX, dirZ, distance = SpatialAgent.calculateDirection(ownPos, context.position)
+        local distance = SpatialAgent.distance2D(ownPos, context.position)
+        local direction = SpatialAgent.calculateDirection(ownPos, context.position)
         
         if distance and distance > 1 then
             -- Move 1km back toward objective
             local retreatDistance = math.min(1000, distance)
-            return SpatialAgent.calculateDestination(ownPos, dirX, dirZ, retreatDistance)
+            return SpatialAgent.calculateDestination(ownPos, direction, retreatDistance)
         end
     end
-    
-    -- No specific objective, just move backward from current heading
-    return {
-        x = ownPos.x - 1000,
-        y = ownPos.y,
-        z = ownPos.z
-    }
 end
 
 function GroupCommander:calculateThreatCenter(observedOnly)
@@ -653,6 +620,71 @@ function GroupCommander:getOwnUnitNames()
     return unitNames
 end
 
+function GroupCommander:getCriticalStatus(situation)
+    local status = situation.statusReport
+    local threat = situation.threatAssessment
+    
+    if not status or status.aliveCount == 0 then
+        return nil  -- No decision needed
+    end
+    
+    local totalUnits = #self.initialUnitNames
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    local low_ammo = ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount, 20)
+    
+    -- CRITICAL: Heavy casualties (>40%) - force retreat
+    if attritionRate > 0.4 then
+        return {
+            level = "CRITICAL",
+            reason = "HEAVY_CASUALTIES",
+        }
+    end
+    
+    -- CRITICAL: No ammunition - hold or retreat
+    if self.initialAmmoCount > 0 and status.ammoCount == 0 then
+        if threat.count > 0 and not threat.stale then
+            return {
+                level = "CRITICAL",
+                reason = "NO_AMMO_WITH_THREATS",
+            }
+           
+        else
+            return {
+                level = "WARNING",
+                reason = "NO_AMMO_NO_THREATS",
+            }
+        end
+    end
+    
+    -- WARNING: Moderate casualties (30-40%) with unfavorable situation
+    if attritionRate > 0.3 and threat.favorability < 0.8 then
+        return {
+            level = "WARNING",
+            reason = "MODERATE_CASUALTIES",
+        }
+    end
+    
+    -- WARNING: Light casualties (20-30%) with clearly unfavorable
+    if attritionRate > 0.2 and threat.favorability < 0.65 then
+        return {
+            level = "WARNING",
+            reason = "EARLY_CASUALTIES",
+        }
+    end
+    
+    -- WARNING: Low ammunition - hold unless overwhelming advantage
+    if self.initialAmmoCount > 0 then
+        if low_ammo and threat.favorability < 2.0 then
+            return {
+                level = "WARNING",
+                reason = "LOW_AMMO",
+            }
+        end
+    end
+    
+    return nil  -- No critical conditions
+end
+
 function GroupCommander:getStatus()
     local collectiveStatus = self:getCollectiveStatus()
 
@@ -666,6 +698,25 @@ function GroupCommander:getStatus()
         threats = self.threatTracker:getThreats(),
     }
     return status
+end
+
+function GroupCommander:getSlowestUnitSpeed()
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        return 0
+    end
+    
+    local units = group:getUnits()
+    local slowestSpeed = nil
+    for _, unit in ipairs(units) do
+        if unit and unit:isExist() then
+            local speed = unit:getDesc().speedMax
+            if not slowestSpeed or speed < slowestSpeed then
+                slowestSpeed = speed
+            end
+        end
+    end
+    return slowestSpeed or 0
 end
 
 -- HELPER METHODS
@@ -763,6 +814,27 @@ function GroupCommander:updateAllyIntel(allyIntel)
     -- Receive nearby ally strength info from operational commander
     -- allyIntel: {count, composition, offensiveCapability} from ThreatAnalyzer
     self.allyIntel = allyIntel
+end
+
+function GroupCommander:updateFuelConsumption(currentTime, currentPos)
+    if currentPos and self.lastPosition then
+        -- Calculate distance traveled
+        local distanceTraveled = SpatialAgent.distance2D(currentPos, self.lastPosition)
+        
+        -- Calculate time elapsed
+        local timeElapsed = currentTime - self.lastObserveTime
+        
+        -- Fuel burn rates (balanced for ground vehicles)
+        -- Movement: 250 statute miles (402km) on full tank
+        local movementBurnRate = 0.0000025  -- 100% fuel over 402,336m
+        -- Idle: 5x the drive time at 30mph (41.7 hours idle on full tank)
+        local idleBurnRate = 0.0000067  -- 100% fuel over 41.7 hours (150,012s)
+        
+        -- Apply fuel consumption
+        local movementBurn = distanceTraveled * movementBurnRate
+        local idleBurn = timeElapsed * idleBurnRate
+        self.fuelRemaining = math.max(0, self.fuelRemaining - movementBurn - idleBurn)
+    end
 end
 
 function GroupCommander:setALR(riskLevel)
