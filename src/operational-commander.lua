@@ -8,7 +8,6 @@ local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
 local alr = constants.acceptableLevelsOfRisk
-local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
 local dispositionTypes = constants.dispositionTypes
@@ -56,6 +55,9 @@ function OperationalCommander:observe()
 end
 
 function OperationalCommander:orient()
+    -- Clean up destroyed commanders first, before any assessment
+    self:cleanupDestroyedCommanders()
+    
     -- Sync order statuses from commanders back to order graph
     local groupCommanders = GroupCommander.getInstances(self.color)
     self.orderCoordinator:syncOrderStatuses(groupCommanders)
@@ -84,6 +86,68 @@ function OperationalCommander:orient()
     end
     if totalOrders > 0 then
         env.info("*** " .. self.color .. " Ops ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
+    end
+end
+
+-- Clean up destroyed commanders and orphaned objectives
+function OperationalCommander:cleanupDestroyedCommanders()
+    -- Remove destroyed commanders from global instances for memory cleanup
+    local allInstances = GroupCommander.getInstances()
+    local survivingInstances = {}
+    local removed = 0
+    
+    for _, instance in ipairs(allInstances) do
+        if not instance.destroyed then
+            table.insert(survivingInstances, instance)
+        else
+            removed = removed + 1
+            local groupName = instance.groupName or "unknown"
+            local coalitionName = instance.color or "unknown"
+            env.info(string.format("*** %s Ops: Removing destroyed group %s from memory", 
+                coalitionName, groupName))
+        end
+    end
+    
+    if removed > 0 then
+        GroupCommander.instances = survivingInstances
+    end
+    
+    -- Clean up orders assigned to dead groups
+    if self.orderCoordinator and self.orderCoordinator.objectives then
+        for _, objective in ipairs(self.orderCoordinator.objectives) do
+            if objective.orders then
+                for _, order in ipairs(objective.orders) do
+                    -- Check if this order is assigned to a now-destroyed group
+                    if order.status ~= constants.orderStatus.ABORTED and 
+                       order.status ~= constants.orderStatus.COMPLETED then
+                        -- Check against actual GroupCommander instances for this coalition
+                        local groupStillExists = false
+                        local wasDestroyed = false
+                        local allInstances = GroupCommander.getInstances(self.color)
+                        for _, instance in ipairs(allInstances) do
+                            if instance.groupName == order.assignedTo then
+                                groupStillExists = true
+                                if instance.destroyed then
+                                    wasDestroyed = true
+                                end
+                                break
+                            end
+                        end
+                        
+                        -- Only abort if group actually doesn't exist or is destroyed
+                        if not groupStillExists or wasDestroyed then
+                            local coalitionName = self.coalitionName or self.color or "unknown"
+                            local assignedTo = order.assignedTo or "unknown"
+                            local reason = wasDestroyed and "group destroyed" or "group missing"
+                            env.info(string.format("*** %s Ops: Aborting order for %s (%s)",
+                                coalitionName, assignedTo, reason))
+                            order.status = constants.orderStatus.ABORTED
+                            objective.updatedAt = timer.getTime()
+                        end
+                    end
+                end
+            end
+        end
     end
 end
 
@@ -700,9 +764,18 @@ function OperationalCommander:planOrdersForIdleUnits()
             local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(statusReport.aliveCount, totalUnits)
             local hadAmmoInitially = commander.initialAmmoCount and commander.initialAmmoCount > 0
             local isOutOfAmmo = hadAmmoInitially and statusReport.ammoCount == 0
+            local isUnarmed = statusReport.ammoCount == 0 and not hadAmmoInitially
             
-            local reason = isOutOfAmmo and "ammo depleted" or 
-                          ("heavy casualties: " .. string.format("%.0f%%", attritionRate * 100))
+            local reason
+            if isOutOfAmmo then
+                reason = "ammo depleted"
+            elseif attritionRate > 0.4 then
+                reason = "heavy casualties: " .. string.format("%.0f%%", attritionRate * 100)
+            elseif isUnarmed then
+                reason = "unarmed unit in contact"
+            else
+                reason = "combat ineffective"
+            end
             
             env.info("*** " .. self.color .. " Ops: Repositioning " .. commander.groupName .. 
                      " to rear (" .. reason .. ")")

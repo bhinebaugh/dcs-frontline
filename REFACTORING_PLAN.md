@@ -370,11 +370,12 @@ service:shareIntelWith(commander, position, radius)
 - [ ] Add tests for critical thresholds
 
 ### Phase 4: Order Management (Week 5-6)
-- [ ] Create OrderCoordinator class
-- [ ] Migrate order lifecycle methods
-- [ ] Migrate order synchronization logic
-- [ ] Migrate obsolescence detection
-- [ ] Update both commanders to use coordinator
+- [x] Create OrderCoordinator class
+- [x] Define clear separation: OrderCoordinator owns objective graph (data)
+- [x] OperationalCommander owns order lifecycle (behavior)
+- [x] Stateless utility methods for context derivation
+- [x] Order assignment tracking
+- [x] Fixed order cleanup bugs (empty self.commanders array)
 - [ ] Add comprehensive order management tests
 
 ### Phase 5: Game Plan System (Week 7-8)
@@ -477,6 +478,39 @@ service:shareIntelWith(commander, position, radius)
 - Reusable for any future commander types
 - Centralizes threshold logic (easy to tune balance)
 - Decouples "how to calculate" from "when to calculate"
+
+### Phase 4 - Completed ✅
+**Files Created:**
+- `src/order-coordinator.lua` (200 lines) - Objective graph and order context utilities
+
+**Key Methods:**
+- `deriveOrderContext()` - Stateless calculation of order context for GroupCommander ORIENT
+- `deriveObjectiveContext()` - Stateless calculation of objective context for OperationalCommander ORIENT
+- `isOrderChanged()` - Stateless utility to detect if order needs re-issuing
+- `syncOrderStatuses()` - Two-way sync between commanders and objective graph
+- `addObjective()`, `getObjectives()` - Graph ownership
+- `assignOrder()`, `clearAssignment()` - Track assignments
+
+**Architectural Decision:**
+- **OrderCoordinator owns objective graph (data)** - Single source of truth for objectives and orders
+- **OperationalCommander owns lifecycle (behavior)** - Planning, issuing, cleanup, obsolescence detection
+- This separation avoids God Object antipattern while maintaining clear responsibilities
+- Stateless utilities allow both commanders to derive context without coupling
+
+**Bug Fixes During Phase:**
+- Fixed `self.commanders` empty array bug causing premature order aborts
+- Orders were checking against empty roster instead of `GroupCommander.getInstances()`
+- This was causing units to skip RALLY phase and bunch up on objectives
+
+**What Was NOT Extracted (Intentionally):**
+- Order planning logic remains in OperationalCommander (belongs with strategy)
+- Order issuance remains in OperationalCommander (belongs with ACT phase)
+- Order cleanup/obsolescence detection remains in OperationalCommander (timing-sensitive)
+- This keeps behavior with the actor, data with the coordinator
+
+**Git Commits:**
+- "Factor out OrderCoordinator as objective graph owner"
+- "Fix order cleanup checking against actual GroupCommander instances"
 
 ---
 
