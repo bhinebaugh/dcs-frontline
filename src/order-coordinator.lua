@@ -76,6 +76,25 @@ function OrderCoordinator.deriveOrderContext(order, commanderPos, commanderALR)
     }
 end
 
+-- Build tactical context for GroupCommander's tactical GamePlan
+-- This is the single source of truth for tactical context derivation
+function OrderCoordinator.buildTacticalContext(commander)
+    if not commander then
+        return nil
+    end
+    
+    -- Build context from commander's ORIENT phase assessments
+    return {
+        situation = {
+            threatAssessment = commander.threatAssessment,
+            statusReport = commander:getStatusReport(),
+            orderContext = commander.orderContext,
+            hasActiveOrders = (commander.orders and commander.orders:isActive())
+        },
+        commander = commander
+    }
+end
+
 -- Derive objective context for OperationalCommander's ORIENT phase
 -- Provides useful summaries for decision-making
 -- Derive complete PlanningContext for GamePlan decision-making (ORIENT phase)
