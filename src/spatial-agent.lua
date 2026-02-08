@@ -264,6 +264,77 @@ function SpatialAgent.calculateCircularPositions(center, radius, count)
     return SpatialAgent.calculateStagingPositions(center, radius, count, 360)
 end
 
+--- Calculate staging positions on allied side of threat
+-- Creates an arc of positions oriented toward the threat from the allied approach direction
+-- @param threatCenter Center of threat cluster
+-- @param distance Staging distance from threat center
+-- @param commanderPositions Array of commander positions (current locations)
+-- @param spreadAngleDegrees Arc spread in degrees (default 120)
+-- @return table Array of staging positions rotated to face threat from allied side
+function SpatialAgent.calculateAlliedSideStagingPositions(threatCenter, distance, commanderPositions, spreadAngleDegrees)
+    local numPositions = #commanderPositions
+    
+    if numPositions == 0 then
+        return {}
+    end
+    
+    -- Calculate centroid of allied positions
+    local alliedCenterX = 0
+    local alliedCenterZ = 0
+    local validCount = 0
+    
+    for _, pos in ipairs(commanderPositions) do
+        if pos then
+            alliedCenterX = alliedCenterX + pos.x
+            alliedCenterZ = alliedCenterZ + pos.z
+            validCount = validCount + 1
+        end
+    end
+    
+    if validCount == 0 then
+        return {}
+    end
+    
+    alliedCenterX = alliedCenterX / validCount
+    alliedCenterZ = alliedCenterZ / validCount
+    
+    -- Calculate approach angle from allied center to threat center
+    local dx = threatCenter.x - alliedCenterX
+    local dz = threatCenter.z - alliedCenterZ
+    local approachAngle = math.atan2(dz, dx)
+    
+    -- Flip 180° to get angle for allied side (opposite approach direction)
+    local centerAngle = approachAngle + math.pi
+    
+    -- Generate arc positions centered at 0°
+    local arcPositions = SpatialAgent.calculateStagingPositions(
+        threatCenter, 
+        distance, 
+        numPositions, 
+        spreadAngleDegrees or 120
+    )
+    
+    -- Rotate positions so arc faces threat from allied side
+    local rotatedPositions = {}
+    for _, pos in ipairs(arcPositions) do
+        -- Calculate relative position from threat center
+        local relX = pos.x - threatCenter.x
+        local relZ = pos.z - threatCenter.z
+        
+        -- Rotate by centerAngle
+        local rotatedX = relX * math.cos(centerAngle) - relZ * math.sin(centerAngle)
+        local rotatedZ = relX * math.sin(centerAngle) + relZ * math.cos(centerAngle)
+        
+        table.insert(rotatedPositions, {
+            x = threatCenter.x + rotatedX,
+            y = threatCenter.y or 0,
+            z = threatCenter.z + rotatedZ
+        })
+    end
+    
+    return rotatedPositions
+end
+
 -- ============================================================================
 -- SORTING AND GROUPING
 -- ============================================================================
