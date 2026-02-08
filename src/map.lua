@@ -105,6 +105,40 @@ function Map:drawFrontline(edges, color)
     end
 end
 
+function Map:drawFrontlineFromPoints(points, color, erasePrevious)
+    local OFFSET = 1500
+    -- first erase any existing lines
+    if erasePrevious and self.markers.front[color] then
+        for _, id in pairs(self.markers.front[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.markers.front[color] = {}
+    end
+
+    --then draw a line for each edge of the current color's front
+    local sides = self:getVisibility(color, "frontlines")
+    local prevPts = {}
+    for _, side in pairs(sides) do
+        local firstPass = true
+        for _, data in pairs(points) do
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            local lineColor = rgb[color]
+            local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
+            local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
+            if not firstPass then
+                trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+            end
+            prevPts[1] = point1
+            prevPts[2] = point2
+            firstPass = false
+        end
+    end
+end
+
 function Map:drawDirective(originPoint, targetPoint, color)
     if not settings.draw.directives then return end
     local sides = self:getVisibility(color, "directives")
