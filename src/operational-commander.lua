@@ -3,6 +3,7 @@ local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupCommander = require("group-commander")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
+local OrderCoordinator = require("order-coordinator")
 local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
@@ -26,10 +27,11 @@ function OperationalCommander.new(config)
     -- OperationalCommander-specific initialization
     self.color = config.color or "white"
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
-    self.objectives = {}
+    self.orderCoordinator = OrderCoordinator.new(self.color)
     self.lastIssuedOrders = {}
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
+    self.objectiveContexts = {}  -- Derived snapshot for DECIDE phase
     self.phase = "RECON"
 
     self.reconRadius = config.reconRadius or 8000
@@ -54,9 +56,15 @@ function OperationalCommander:observe()
 end
 
 function OperationalCommander:orient()
-    self:syncOrderStatuses()
+    -- Sync order statuses from commanders back to order graph
+    local groupCommanders = self:getOwnGroupCommanders()
+    self.orderCoordinator:syncOrderStatuses(groupCommanders)
+    
+    -- Derive objective contexts for DECIDE phase
+    self:assessObjectiveContexts()
+    
     self.objectivesNeedingOrders = {}
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         self:assessObjectiveProgress(objective)
     end
     
@@ -65,7 +73,7 @@ function OperationalCommander:orient()
     local activeOrders = 0
     local completedOrders = 0
     local abortedOrders = 0
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local counts = objective:getOrderStatusCounts()
             totalOrders = totalOrders + counts.total
@@ -79,11 +87,34 @@ function OperationalCommander:orient()
     end
 end
 
+-- Assess objective contexts in ORIENT phase (creates snapshot for DECIDE)
+function OperationalCommander:assessObjectiveContexts()
+    self.objectiveContexts = {}
+    
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
+        if objective.status == "Active" then
+            local statusCounts = objective:getOrderStatusCounts()
+            local threatsNear = self:getThreatsNearPosition(objective.position, self.reconRadius)
+            local threatCount = self:countThreats(threatsNear)
+            
+            -- Use OrderCoordinator to derive context snapshot
+            local context = self.orderCoordinator:deriveObjectiveContext(
+                objective,
+                statusCounts,
+                threatsNear,
+                threatCount
+            )
+            
+            table.insert(self.objectiveContexts, context)
+        end
+    end
+end
+
 function OperationalCommander:reviewAndCancelObsoleteOrders()
     -- Review active orders and cancel them if they're no longer relevant
     -- This allows the ops commander to adapt to changing threats
     
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local currentThreats = self:getThreatsNearPosition(objective.position, self.reconRadius)
             local threatCount = self:countThreats(currentThreats)
@@ -186,7 +217,7 @@ function OperationalCommander:decide()
     self:reviewAndCancelObsoleteOrders()
     
     -- Process each active objective
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             self:planObjectiveOrders(objective)
         end
@@ -668,7 +699,7 @@ function OperationalCommander:planOrdersForIdleUnits()
     end
     
     -- Find objectives that need more forces
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local statusCounts = objective:getOrderStatusCounts()
             
@@ -916,33 +947,8 @@ function OperationalCommander:getCommandersByDistance(commanders, position)
 end
 
 function OperationalCommander:isOrderChanged(lastOrder, newOrder, commanderStatus)
-    if not lastOrder then
-        return true
-    end
-    
-    -- If the commander's current order is COMPLETED or ABORTED, always issue new orders
-    if commanderStatus and commanderStatus.orderStatus then
-        if commanderStatus.orderStatus == orderStatus.COMPLETED or
-           commanderStatus.orderStatus == orderStatus.ABORTED then
-            return true
-        end
-    end
-    
-    if lastOrder.type ~= newOrder.type then
-        return true
-    end
-    if not lastOrder.position then
-        return true
-    end
-    
-    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
-       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
-        return true
-    end
-    if lastOrder.radius ~= newOrder.radius then
-        return true
-    end
-    return false
+    -- Use OrderCoordinator utility for change detection
+    return OrderCoordinator.isOrderChanged(lastOrder, newOrder, commanderStatus)
 end
 
 function OperationalCommander:aggregateThreatsFromGroups()
@@ -1233,7 +1239,7 @@ function OperationalCommander:findNearestFriendlyPosition(commander)
     local nearestSafeObjective = nil
     local minDistance = math.huge
     
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Captured" or objective.status == "Active" then
             local dist = SpatialAgent.distance2D(status.position, objective.position)
             
@@ -1371,24 +1377,6 @@ function OperationalCommander:getCommanderByName(groupName)
         end
     end
     return nil
-end
-
-function OperationalCommander:syncOrderStatuses()
-    local groupCommanders = self:getOwnGroupCommanders()
-
-    for _, commander in pairs(groupCommanders) do
-        local status = commander:getStatus()
-        for _, objective in ipairs(self.objectives) do
-            for _, order in ipairs(objective.orders) do
-                if order.assignedTo == commander.groupName then
-                    if status.orderStatus and status.orderStatus ~= order.status then
-                        order.status = status.orderStatus
-                        objective.updatedAt = timer.getTime()
-                    end
-                end
-            end
-        end
-    end
 end
 
 function OperationalCommander:addPlannedOrder(commander, order, threats, threatCenter)

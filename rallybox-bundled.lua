@@ -92,7 +92,7 @@ opsRed.rallyPoints = {
 }
 
 -- Create and assign objectives directly
-opsBlue.objectives = {
+opsBlue.orderCoordinator.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
         position = redAttackPosition,
@@ -100,7 +100,7 @@ opsBlue.objectives = {
     })
 }
 
-opsRed.objectives = {
+opsRed.orderCoordinator.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
         position = redAttackPosition,
@@ -140,6 +140,7 @@ local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupCommander = require("group-commander")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
+local OrderCoordinator = require("order-coordinator")
 local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
@@ -163,10 +164,11 @@ function OperationalCommander.new(config)
     -- OperationalCommander-specific initialization
     self.color = config.color or "white"
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
-    self.objectives = {}
+    self.orderCoordinator = OrderCoordinator.new(self.color)
     self.lastIssuedOrders = {}
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
+    self.objectiveContexts = {}  -- Derived snapshot for DECIDE phase
     self.phase = "RECON"
 
     self.reconRadius = config.reconRadius or 8000
@@ -191,9 +193,15 @@ function OperationalCommander:observe()
 end
 
 function OperationalCommander:orient()
-    self:syncOrderStatuses()
+    -- Sync order statuses from commanders back to order graph
+    local groupCommanders = self:getOwnGroupCommanders()
+    self.orderCoordinator:syncOrderStatuses(groupCommanders)
+    
+    -- Derive objective contexts for DECIDE phase
+    self:assessObjectiveContexts()
+    
     self.objectivesNeedingOrders = {}
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         self:assessObjectiveProgress(objective)
     end
     
@@ -202,7 +210,7 @@ function OperationalCommander:orient()
     local activeOrders = 0
     local completedOrders = 0
     local abortedOrders = 0
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local counts = objective:getOrderStatusCounts()
             totalOrders = totalOrders + counts.total
@@ -216,11 +224,34 @@ function OperationalCommander:orient()
     end
 end
 
+-- Assess objective contexts in ORIENT phase (creates snapshot for DECIDE)
+function OperationalCommander:assessObjectiveContexts()
+    self.objectiveContexts = {}
+    
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
+        if objective.status == "Active" then
+            local statusCounts = objective:getOrderStatusCounts()
+            local threatsNear = self:getThreatsNearPosition(objective.position, self.reconRadius)
+            local threatCount = self:countThreats(threatsNear)
+            
+            -- Use OrderCoordinator to derive context snapshot
+            local context = self.orderCoordinator:deriveObjectiveContext(
+                objective,
+                statusCounts,
+                threatsNear,
+                threatCount
+            )
+            
+            table.insert(self.objectiveContexts, context)
+        end
+    end
+end
+
 function OperationalCommander:reviewAndCancelObsoleteOrders()
     -- Review active orders and cancel them if they're no longer relevant
     -- This allows the ops commander to adapt to changing threats
     
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local currentThreats = self:getThreatsNearPosition(objective.position, self.reconRadius)
             local threatCount = self:countThreats(currentThreats)
@@ -323,7 +354,7 @@ function OperationalCommander:decide()
     self:reviewAndCancelObsoleteOrders()
     
     -- Process each active objective
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             self:planObjectiveOrders(objective)
         end
@@ -805,7 +836,7 @@ function OperationalCommander:planOrdersForIdleUnits()
     end
     
     -- Find objectives that need more forces
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local statusCounts = objective:getOrderStatusCounts()
             
@@ -1053,33 +1084,8 @@ function OperationalCommander:getCommandersByDistance(commanders, position)
 end
 
 function OperationalCommander:isOrderChanged(lastOrder, newOrder, commanderStatus)
-    if not lastOrder then
-        return true
-    end
-    
-    -- If the commander's current order is COMPLETED or ABORTED, always issue new orders
-    if commanderStatus and commanderStatus.orderStatus then
-        if commanderStatus.orderStatus == orderStatus.COMPLETED or
-           commanderStatus.orderStatus == orderStatus.ABORTED then
-            return true
-        end
-    end
-    
-    if lastOrder.type ~= newOrder.type then
-        return true
-    end
-    if not lastOrder.position then
-        return true
-    end
-    
-    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
-       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
-        return true
-    end
-    if lastOrder.radius ~= newOrder.radius then
-        return true
-    end
-    return false
+    -- Use OrderCoordinator utility for change detection
+    return OrderCoordinator.isOrderChanged(lastOrder, newOrder, commanderStatus)
 end
 
 function OperationalCommander:aggregateThreatsFromGroups()
@@ -1370,7 +1376,7 @@ function OperationalCommander:findNearestFriendlyPosition(commander)
     local nearestSafeObjective = nil
     local minDistance = math.huge
     
-    for _, objective in ipairs(self.objectives) do
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Captured" or objective.status == "Active" then
             local dist = SpatialAgent.distance2D(status.position, objective.position)
             
@@ -1508,24 +1514,6 @@ function OperationalCommander:getCommanderByName(groupName)
         end
     end
     return nil
-end
-
-function OperationalCommander:syncOrderStatuses()
-    local groupCommanders = self:getOwnGroupCommanders()
-
-    for _, commander in pairs(groupCommanders) do
-        local status = commander:getStatus()
-        for _, objective in ipairs(self.objectives) do
-            for _, order in ipairs(objective.orders) do
-                if order.assignedTo == commander.groupName then
-                    if status.orderStatus and status.orderStatus ~= order.status then
-                        order.status = status.orderStatus
-                        objective.updatedAt = timer.getTime()
-                    end
-                end
-            end
-        end
-    end
 end
 
 function OperationalCommander:addPlannedOrder(commander, order, threats, threatCenter)
@@ -2521,6 +2509,207 @@ end
 return SpatialAgent
 
 end)
+__bundle_register("order-coordinator", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local SpatialAgent = require("spatial-agent")
+
+local alr = constants.acceptableLevelsOfRisk
+local orderStatus = constants.orderStatus
+
+local OrderCoordinator = {}
+
+-- Create a new OrderCoordinator instance
+-- This coordinator owns the order graph (objectives and their orders)
+function OrderCoordinator.new(coalition)
+    local self = {
+        coalition = coalition,
+        objectives = {},  -- Owns the canonical objective graph
+        ordersByCommander = {}  -- Index: commanderName -> order reference
+    }
+    setmetatable(self, {__index = OrderCoordinator})
+    return self
+end
+
+-- Add an objective to the coordinator
+function OrderCoordinator:addObjective(objective)
+    table.insert(self.objectives, objective)
+end
+
+-- Get all objectives
+function OrderCoordinator:getObjectives()
+    return self.objectives
+end
+
+-- Get order assigned to a specific commander
+function OrderCoordinator:getCommanderOrder(commanderName)
+    return self.ordersByCommander[commanderName]
+end
+
+-- Derive order context for GroupCommander's ORIENT phase
+-- This is a stateless calculation utility - commanders control WHEN it's called
+function OrderCoordinator.deriveOrderContext(order, commanderPos, commanderALR)
+    if not order or not order:isActive() then
+        return nil
+    end
+    
+    if not commanderPos then
+        return nil
+    end
+    
+    local orderedPosition = order.position
+    local orderedRadius = order.radius or 500
+    
+    -- Calculate distance to ordered position
+    local distanceToOrdered = SpatialAgent.distance2D(commanderPos, orderedPosition)
+    
+    -- Check if we're within the objective radius
+    local withinObjective = distanceToOrdered <= orderedRadius
+    
+    -- Determine thresholds based on ALR
+    local orderedALR = order.alr or alr.LOW
+    local retreatThreshold = 0.4
+    
+    if orderedALR == alr.LOW then
+        retreatThreshold = 0.8
+    elseif orderedALR == alr.HIGH then
+        retreatThreshold = 0.2
+    end
+    
+    -- Return derived context snapshot
+    return {
+        position = orderedPosition,
+        radius = orderedRadius,
+        type = order.type,
+        alr = orderedALR,
+        distanceToOrdered = distanceToOrdered,
+        withinObjective = withinObjective,
+        retreatThreshold = retreatThreshold,
+        leashDistance = 3000  -- Don't pursue threats beyond 3km from ordered position
+    }
+end
+
+-- Derive objective context for OperationalCommander's ORIENT phase
+-- Provides useful summaries for decision-making
+function OrderCoordinator:deriveObjectiveContext(objective, statusCounts, threatsNear, threatCount)
+    -- Determine last order type
+    local lastOrderType = nil
+    local lastCompletedCount = 0
+    local lastAbortedCount = 0
+    
+    if #objective.orders > 0 then
+        lastOrderType = objective.orders[#objective.orders].type
+        -- Count how many of this order type completed vs aborted
+        for i = #objective.orders, 1, -1 do
+            if objective.orders[i].type == lastOrderType then
+                if objective.orders[i].status == orderStatus.COMPLETED then
+                    lastCompletedCount = lastCompletedCount + 1
+                elseif objective.orders[i].status == orderStatus.ABORTED then
+                    lastAbortedCount = lastAbortedCount + 1
+                end
+            else
+                break  -- Different order type, stop counting
+            end
+        end
+    end
+    
+    -- Calculate active assignments (who's working on this objective?)
+    local activeAssignments = {}
+    for _, order in ipairs(objective.orders) do
+        if order.status == orderStatus.IN_PROGRESS or order.status == orderStatus.ASSIGNED then
+            table.insert(activeAssignments, order.assignedTo)
+        end
+    end
+    
+    -- Return derived context snapshot
+    return {
+        objective = objective,  -- Reference for convenience
+        
+        -- Phase tracking
+        lastOrderType = lastOrderType,
+        lastCompletedCount = lastCompletedCount,
+        lastAbortedCount = lastAbortedCount,
+        requiresPlanning = (statusCounts.completed + statusCounts.aborted == statusCounts.total),
+        
+        -- Threat summary
+        threatsNear = threatsNear,
+        threatCount = threatCount,
+        
+        -- Order status summary
+        statusCounts = statusCounts,
+        
+        -- Assignment tracking
+        activeAssignments = activeAssignments
+    }
+end
+
+-- Check if an order has changed enough to warrant re-issuing
+-- Stateless calculation utility
+function OrderCoordinator.isOrderChanged(lastOrder, newOrder, commanderStatus)
+    if not lastOrder then
+        return true
+    end
+    
+    -- If the commander's current order is COMPLETED or ABORTED, always issue new orders
+    if commanderStatus and commanderStatus.orderStatus then
+        if commanderStatus.orderStatus == orderStatus.COMPLETED or
+           commanderStatus.orderStatus == orderStatus.ABORTED then
+            return true
+        end
+    end
+    
+    if lastOrder.type ~= newOrder.type then
+        return true
+    end
+    if not lastOrder.position then
+        return true
+    end
+    
+    -- Position changed by more than 100m
+    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
+       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
+        return true
+    end
+    
+    if lastOrder.radius ~= newOrder.radius then
+        return true
+    end
+    
+    return false
+end
+
+-- Sync order statuses from commanders back to the order graph
+-- This is a state mutation - should be called at OODA boundaries (ORIENT phase)
+function OrderCoordinator:syncOrderStatuses(commanders)
+    for _, commander in pairs(commanders) do
+        local status = commander:getStatus()
+        
+        -- Update all orders assigned to this commander
+        for _, objective in ipairs(self.objectives) do
+            for _, order in ipairs(objective.orders) do
+                if order.assignedTo == commander.groupName then
+                    if status.orderStatus and status.orderStatus ~= order.status then
+                        order.status = status.orderStatus
+                        objective.updatedAt = timer.getTime()
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Track order assignment to a commander
+function OrderCoordinator:assignOrder(commanderName, order)
+    self.ordersByCommander[commanderName] = order
+end
+
+-- Clear assignment when order completes/aborts
+function OrderCoordinator:clearAssignment(commanderName)
+    self.ordersByCommander[commanderName] = nil
+end
+
+return OrderCoordinator
+
+end)
 __bundle_register("order", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local orderStatus = constants.orderStatus
@@ -2681,6 +2870,7 @@ __bundle_register("group-commander", function(require, _LOADED, __bundle_registe
 local constants = require("constants")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local OODACommander = require("ooda-commander")
+local OrderCoordinator = require("order-coordinator")
 local SpatialAgent = require("spatial-agent")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
@@ -2924,47 +3114,9 @@ end
 
 -- Assess context related to current orders
 function GroupCommander:assessOrderContext()
-    if not self.orders or not self.orders:isActive() then
-        self.orderContext = nil
-        return
-    end
-    
+    -- Use OrderCoordinator to derive context snapshot
     local ownPos = self:getOwnPosition()
-    if not ownPos then
-        self.orderContext = nil
-        return
-    end
-    
-    local orderedPosition = self.orders.position
-    local orderedRadius = self.orders.radius or 500
-    
-    -- Calculate distance to ordered position
-    local distanceToOrdered = SpatialAgent.distance2D(ownPos, orderedPosition)
-    
-    -- Check if we're within the objective radius
-    local withinObjective = distanceToOrdered <= orderedRadius
-    
-    -- Determine thresholds based on ALR
-    local orderedALR = self.orders.alr or alr.LOW
-    local retreatThreshold = 0.4
-    
-    if orderedALR == alr.LOW then
-        retreatThreshold = 0.8
-    elseif orderedALR == alr.HIGH then
-        retreatThreshold = 0.2
-    end
-    
-    -- Store order context
-    self.orderContext = {
-        position = orderedPosition,
-        radius = orderedRadius,
-        type = self.orders.type,
-        alr = orderedALR,
-        distanceToOrdered = distanceToOrdered,
-        withinObjective = withinObjective,
-        retreatThreshold = retreatThreshold,
-        leashDistance = 3000  -- Don't pursue threats beyond 3km from ordered position
-    }
+    self.orderContext = OrderCoordinator.deriveOrderContext(self.orders, ownPos, self.alr)
 end
 
 -- Assess own force strength and capabilities

@@ -44,15 +44,15 @@ opsRed.rallyPoints = {
 }
 
 -- Create and assign objectives directly
-opsBlue.objectives = {
+opsBlue.orderCoordinator.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
-        position = blueDefendPosition,
+        position = redAttackPosition,
         radius = 500,
     })
 }
 
-opsRed.objectives = {
+opsRed.orderCoordinator.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
         position = redRepositionPosition,

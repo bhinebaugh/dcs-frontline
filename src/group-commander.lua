@@ -1,6 +1,7 @@
 local constants = require("constants")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local OODACommander = require("ooda-commander")
+local OrderCoordinator = require("order-coordinator")
 local SpatialAgent = require("spatial-agent")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
@@ -244,47 +245,9 @@ end
 
 -- Assess context related to current orders
 function GroupCommander:assessOrderContext()
-    if not self.orders or not self.orders:isActive() then
-        self.orderContext = nil
-        return
-    end
-    
+    -- Use OrderCoordinator to derive context snapshot
     local ownPos = self:getOwnPosition()
-    if not ownPos then
-        self.orderContext = nil
-        return
-    end
-    
-    local orderedPosition = self.orders.position
-    local orderedRadius = self.orders.radius or 500
-    
-    -- Calculate distance to ordered position
-    local distanceToOrdered = SpatialAgent.distance2D(ownPos, orderedPosition)
-    
-    -- Check if we're within the objective radius
-    local withinObjective = distanceToOrdered <= orderedRadius
-    
-    -- Determine thresholds based on ALR
-    local orderedALR = self.orders.alr or alr.LOW
-    local retreatThreshold = 0.4
-    
-    if orderedALR == alr.LOW then
-        retreatThreshold = 0.8
-    elseif orderedALR == alr.HIGH then
-        retreatThreshold = 0.2
-    end
-    
-    -- Store order context
-    self.orderContext = {
-        position = orderedPosition,
-        radius = orderedRadius,
-        type = self.orders.type,
-        alr = orderedALR,
-        distanceToOrdered = distanceToOrdered,
-        withinObjective = withinObjective,
-        retreatThreshold = retreatThreshold,
-        leashDistance = 3000  -- Don't pursue threats beyond 3km from ordered position
-    }
+    self.orderContext = OrderCoordinator.deriveOrderContext(self.orders, ownPos, self.alr)
 end
 
 -- Assess own force strength and capabilities
