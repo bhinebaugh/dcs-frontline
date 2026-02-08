@@ -72,7 +72,6 @@ function OrderCoordinator.deriveOrderContext(order, commanderPos, commanderALR)
         distanceToOrdered = distanceToOrdered,
         withinObjective = withinObjective,
         retreatThreshold = retreatThreshold,
-        leashDistance = 3000  -- Don't pursue threats beyond 3km from ordered position
     }
 end
 

@@ -139,41 +139,40 @@ end
 -- @param dx X component
 -- @param dz Z component
 -- @return number, number Normalized dx, dz, or 0,0 if zero-length
--- @return number Original magnitude
-function SpatialAgent.normalizeVector(dx, dz)
-    local magnitude = math.sqrt(dx * dx + dz * dz)
+function SpatialAgent.normalizeVector(vector)
+    local magnitude = math.sqrt(vector.x * vector.x + vector.z * vector.z)
     
     if magnitude < 0.001 then  -- Near-zero length
-        return 0, 0, 0
+        return {x = 0, z = 0}
     end
     
-    return dx / magnitude, dz / magnitude, magnitude
+    return {x = vector.x / magnitude, z = vector.z / magnitude}
 end
 
 --- Rotate a 2D vector by angle
 -- @param dx X component
 -- @param dz Z component  
 -- @param angleRadians Rotation angle in radians (positive = counterclockwise)
--- @return number, number Rotated dx, dz
-function SpatialAgent.rotateVector(dx, dz, angleRadians)
+-- @return vector Rotated vector {x, z}
+function SpatialAgent.rotateVector(vector, angleDegrees)
+    local angleRadians = math.rad(angleDegrees)
     local cosAngle = math.cos(angleRadians)
     local sinAngle = math.sin(angleRadians)
     
-    local rotatedX = dx * cosAngle - dz * sinAngle
-    local rotatedZ = dx * sinAngle + dz * cosAngle
+    local rotatedX = vector.x * cosAngle - vector.z * sinAngle
+    local rotatedZ = vector.x * sinAngle + vector.z * cosAngle
     
-    return rotatedX, rotatedZ
+    return {x = rotatedX, z = rotatedZ}
 end
 
 --- Calculate direction vector from one position to another
 -- @param fromPos Starting position
 -- @param toPos Target position
--- @return number, number Direction dx, dz (normalized), or nil if invalid
--- @return number Distance between positions
+-- @return direction Normalized direction vector {x, z}, or ZERO if positions identical
 function SpatialAgent.calculateDirection(fromPos, toPos)
     local dist = SpatialAgent.distance2D(fromPos, toPos)
     if not dist or dist < 0.001 then
-        return nil, nil, 0
+        return {x = 0, z = 0}
     end
     
     local p1 = fromPos.p or fromPos
@@ -182,8 +181,7 @@ function SpatialAgent.calculateDirection(fromPos, toPos)
     local dx = p2.x - p1.x
     local dz = p2.z - p1.z
     
-    local dirX, dirZ = SpatialAgent.normalizeVector(dx, dz)
-    return dirX, dirZ, dist
+    return SpatialAgent.normalizeVector({x = dx, z = dz})
 end
 
 -- ============================================================================
@@ -192,11 +190,10 @@ end
 
 --- Calculate destination point from origin in a direction
 -- @param origin Starting position {x, y, z}
--- @param directionX Normalized direction X component
--- @param directionZ Normalized direction Z component
+-- @param direction Normalized direction {x, z}
 -- @param distance Distance to travel in meters
 -- @return table Destination position {x, y, z}
-function SpatialAgent.calculateDestination(origin, directionX, directionZ, distance)
+function SpatialAgent.calculateDestination(origin, direction, distance)
     if not origin then
         return nil
     end
@@ -204,9 +201,9 @@ function SpatialAgent.calculateDestination(origin, directionX, directionZ, dista
     local p = origin.p or origin
     
     return {
-        x = p.x + (directionX * distance),
+        x = p.x + (direction.x * distance),
         y = p.y or 0,
-        z = p.z + (directionZ * distance)
+        z = p.z + (direction.z * distance)
     }
 end
 

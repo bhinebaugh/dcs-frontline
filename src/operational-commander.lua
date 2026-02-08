@@ -5,6 +5,7 @@ local GroupCommander = require("group-commander")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
 local OrderCoordinator = require("order-coordinator")
+local ReconRallyAssaultPlan = require("game-plans.operational.recon-rally-assault-plan")
 local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
@@ -290,7 +291,6 @@ function OperationalCommander:decide()
         if objective.status == "Active" then
             -- Assign default GamePlan if none exists
             if not objective.gamePlan then
-                local ReconRallyAssaultPlan = require("recon-rally-assault-plan")
                 objective.gamePlan = ReconRallyAssaultPlan.new()
                 env.info("*** " .. self.color .. " Ops: Assigned default ReconRallyAssaultPlan to objective")
             end

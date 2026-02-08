@@ -4,7 +4,6 @@ local taskTypes = constants.taskTypes
 local GroupCommander = require("group-commander")
 local Objective = require("objective")
 local OperationalCommander = require("operational-commander")
-local ReconRallyAssaultPlan = require("recon-rally-assault-plan")
 
 -- NOTE: GamePlan usage example:
 -- To assign a specific strategy to an objective, create the GamePlan and assign it:

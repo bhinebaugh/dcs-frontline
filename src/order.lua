@@ -20,6 +20,7 @@ function Order.new(config)
     self.alr = config.alr or constants.acceptableLevelsOfRisk.MEDIUM
     self.radius = config.radius or 500
     self.deadline = config.deadline       -- nil or timer.getTime() + duration
+    self.pushTime = config.pushTime       -- nil or timer.getTime() + calculated rally duration
     
     -- Status tracking (set by GroupCommander)
     self.status = orderStatus.ASSIGNED
