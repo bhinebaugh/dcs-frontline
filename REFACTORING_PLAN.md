@@ -347,26 +347,26 @@ service:shareIntelWith(commander, position, radius)
 ## 8. Implementation Roadmap
 
 ### Phase 1: Foundation (Week 1-2)
-- [ ] Create OODACommander base class
-- [ ] Migrate GroupCommander to extend OODACommander
-- [ ] Migrate OperationalCommander to extend OODACommander
-- [ ] Validate OODA loop still works correctly
+- [x] Create OODACommander base class
+- [x] Migrate GroupCommander to extend OODACommander
+- [x] Migrate OperationalCommander to extend OODACommander
+- [x] Validate OODA loop still works correctly
 - [ ] Add tests for OODACommander lifecycle
 
 ### Phase 2: Spatial Extraction (Week 3)
-- [ ] Create SpatialCalculator class
-- [ ] Migrate distance calculations
-- [ ] Migrate center/average calculations
-- [ ] Migrate staging position calculations
-- [ ] Update commanders to use SpatialCalculator
+- [x] Create SpatialCalculator class (implemented as **SpatialAgent**)
+- [x] Migrate distance calculations
+- [x] Migrate center/average calculations
+- [x] Migrate staging position calculations
+- [x] Update commanders to use SpatialCalculator
 - [ ] Add unit tests for edge cases
 
 ### Phase 3: Status Analysis (Week 4)
-- [ ] Create ForceStatusAnalyzer class
-- [ ] Migrate status reporting from GroupCommander
-- [ ] Migrate critical condition checks
-- [ ] Update threat status tracking
-- [ ] Integrate into orient() phase
+- [x] Create ForceStatusAnalyzer class
+- [x] Migrate status reporting from GroupCommander
+- [x] Migrate critical condition checks
+- [x] Update commanders to use ForceStatusAnalyzer
+- [x] All attrition and ammo calculations now use analyzer
 - [ ] Add tests for critical thresholds
 
 ### Phase 4: Order Management (Week 5-6)
@@ -399,6 +399,84 @@ service:shareIntelWith(commander, position, radius)
 - [ ] Performance profiling
 - [ ] Documentation updates
 - [ ] Integration testing
+
+---
+
+## 8.1 Implementation Notes
+
+### Phase 1 - Completed ✅
+**Files Created:**
+- `src/ooda-commander.lua` (57 lines) - Base class with OODA loop orchestration
+
+**Changes:**
+- Both GroupCommander and OperationalCommander now extend OODACommander
+- `oodaTick()` method handles all state transitions
+- Fixed typo: `oodaInternval` → `oodaInterval`
+- Proper Lua inheritance: `setmetatable(Child, {__index = Parent})`
+
+**Git Commits:**
+- "Factor out OODACommander base class"
+
+### Phase 2 - Completed ✅
+**Files Created:**
+- `src/spatial-agent.lua` (306 lines) - DCS-aware spatial utilities (playful pun on "Special Agent")
+
+**Key Methods:**
+- `distance2D()` - Handles DCS `.p` property, nil checks, replaces all MIST vector math
+- `calculateCenterOfObjects()` - Generic center calculation for any objects with `.position`
+- `calculateThreatCenter()` - Convenience wrapper for threat-specific use
+- `calculateDirection()` - Direction + distance combined
+- `calculateStagingPositions()` - Tactical deployment positions
+- `isWithinRadius()` - Optimized with distanceSquared for performance
+- `rotateVector()` - 2D rotation for flanking/offset positions
+
+**Migrations:**
+- Replaced 12 manual spatial calculations in GroupCommander
+- Replaced 16 spatial calculations in OperationalCommander
+- Updated ThreatTracker to use SpatialAgent
+- Eliminated all `mist.vec.mag(mist.vec.sub())` calls
+- Eliminated all manual `math.sqrt(dx*dx + dz*dz)` distance calculations
+
+**Design Decision:**
+- Stateless utilities pattern (not stateful instances)
+- Functions accept DCS objects directly (Groups, Units, positions)
+- Naming: `calculateCenterOfObjects()` (generic) vs `calculateThreatCenter()` (convenience)
+
+**Git Commits:**
+- "Factor the SpatialAgent out of the commander positional calculation concerns"
+
+### Phase 3 - Completed ✅
+**Files Created:**
+- `src/force-status-analyzer.lua` (372 lines) - Stateless force analysis utilities
+
+**Key Methods:**
+- `getStatusReport()` - Detailed unit metrics (alive count, ammo, health, fuel)
+- `calculateCollectiveStatus()` - Percentage of units alive
+- `calculateAttritionRate()` - Attrition rate (0.0 = no losses, 1.0 = total loss)
+- `calculateAmmoPercentage()` - Ammo remaining as percentage
+- `isAmmoLow()` / `isAmmoCritical()` - Threshold checks with defaults (20% / 5%)
+- `hasSignificantAttrition()` - Check if losses exceed threshold
+- `calculateAverageHealth()` - Average health per unit
+- `compareToBaseline()` - Single function returning comprehensive analysis
+
+**Migrations:**
+- Replaced GroupCommander's `getStatusReport()` implementation (was 70+ lines, now 3 lines)
+- Replaced GroupCommander's `getCollectiveStatus()` implementation
+- Replaced all manual attrition calculations: `1 - (aliveCount / totalCount)` → `ForceStatusAnalyzer.calculateAttritionRate()`
+- Replaced all ammo threshold calculations: `initialAmmoCount * 0.05` → `ForceStatusAnalyzer.isAmmoCritical()`
+- Updated OperationalCommander with 4 attrition rate replacements
+
+**Design Decision:**
+- Stateless utilities following SpatialAgent pattern
+- Functions accept group names, Group instances, or status reports
+- Commanders store baseline values (initialAmmoCount, initialUnitNames)
+- Analyzer provides calculations, commanders maintain state
+
+**Benefits:**
+- Consistent status analysis across both commanders
+- Reusable for any future commander types
+- Centralizes threshold logic (easy to tune balance)
+- Decouples "how to calculate" from "when to calculate"
 
 ---
 
