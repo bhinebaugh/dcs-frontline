@@ -47,7 +47,7 @@ opsRed.rallyPoints = {
 opsBlue.orderCoordinator.objectives = {
     Objective.new({
         type = taskTypes.ASSAULT,
-        position = redAttackPosition,
+        position = blueDefendPosition,
         radius = 500,
     })
 }

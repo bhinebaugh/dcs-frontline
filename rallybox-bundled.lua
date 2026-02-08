@@ -183,7 +183,7 @@ function OperationalCommander:observe()
     self:aggregateThreatsFromGroups()
     
     -- Log consolidated OBSERVE summary
-    local groupCommanders = self:getOwnGroupCommanders()
+    local groupCommanders = GroupCommander.getInstances(self.color)
     local activeGroups = 0
     for _ in pairs(groupCommanders) do
         activeGroups = activeGroups + 1
@@ -194,7 +194,7 @@ end
 
 function OperationalCommander:orient()
     -- Sync order statuses from commanders back to order graph
-    local groupCommanders = self:getOwnGroupCommanders()
+    local groupCommanders = GroupCommander.getInstances(self.color)
     self.orderCoordinator:syncOrderStatuses(groupCommanders)
     
     -- Derive objective contexts for DECIDE phase
@@ -232,7 +232,10 @@ function OperationalCommander:assessObjectiveContexts()
         if objective.status == "Active" then
             local statusCounts = objective:getOrderStatusCounts()
             local threatsNear = self:getThreatsNearPosition(objective.position, self.reconRadius)
-            local threatCount = self:countThreats(threatsNear)
+            local threatCount = 0
+            for _ in pairs(threatsNear) do
+                threatCount = threatCount + 1
+            end
             
             -- Use OrderCoordinator to derive context snapshot
             local context = self.orderCoordinator:deriveObjectiveContext(
@@ -254,7 +257,10 @@ function OperationalCommander:reviewAndCancelObsoleteOrders()
     for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
             local currentThreats = self:getThreatsNearPosition(objective.position, self.reconRadius)
-            local threatCount = self:countThreats(currentThreats)
+            local threatCount = 0
+            for _ in pairs(currentThreats) do
+                threatCount = threatCount + 1
+            end
             
             -- Review each active order for this objective
             for _, order in ipairs(objective.orders) do
@@ -265,48 +271,53 @@ function OperationalCommander:reviewAndCancelObsoleteOrders()
                     -- RALLY orders: Cancel if threats no longer exist or position is now behind new threats
                     if order.type == taskTypes.RALLY then
                         -- Don't cancel just because threats went to MEMORY - require total absence
-                        local totalThreats = self:countThreats(currentThreats)
+                        local totalThreats = 0
+                        for _ in pairs(currentThreats) do
+                            totalThreats = totalThreats + 1
+                        end
                         if totalThreats == 0 then
                             shouldCancel = true
                             cancelReason = "rally threats no longer exist"
                         else
                             -- Check if threats appeared between the unit and rally point
                             -- (Don't cancel just because threats are at the objective we're rallying toward)
-                            local commander = self:getCommanderByName(order.assignedTo)
-                            if commander then
-                                local commanderStatus = commander:getStatus()
-                                if commanderStatus.position then
-                                    -- Distance to rally point
-                                    local distToRally = SpatialAgent.distance2D(commanderStatus.position, order.position)
-                                    
-                                    -- Distance from rally point to objective
-                                    local rallyToObjective = SpatialAgent.distance2D(order.position, order.objective.position)
-                                    
-                                    -- Only cancel if threats appeared much closer than the rally point
-                                    -- AND are not near the objective (which is expected)
-                                    local threatBlockingRally = false
-                                    for unitName, threat in pairs(currentThreats) do
-                                        if threat.position then
-                                            local distToThreat = SpatialAgent.distance2D(commanderStatus.position, threat.position)
-                                            local threatToObjective = SpatialAgent.distance2D(threat.position, order.objective.position)
-                                            
-                                            -- Threat is blocking if it's:
-                                            -- 1. Much closer than rally point (within 25% of rally distance)
-                                            -- 2. NOT near the objective (more than 2km from objective)
-                                            -- 3. Unit is still far from rally (more than 2km)
-                                            if distToThreat < distToRally * 0.25 and 
-                                               threatToObjective > 2000 and 
-                                               distToRally > 2000 then
-                                                threatBlockingRally = true
-                                                break
+                            for _, cmd in pairs(GroupCommander.getInstances(self.color)) do
+                                if cmd.groupName == order.assignedTo then
+                                    local commanderStatus = cmd:getStatus()
+                                    if commanderStatus.position then
+                                        -- Distance to rally point
+                                        local distToRally = SpatialAgent.distance2D(commanderStatus.position, order.position)
+                                        
+                                        -- Distance from rally point to objective
+                                        local rallyToObjective = SpatialAgent.distance2D(order.position, order.objective.position)
+                                        
+                                        -- Only cancel if threats appeared much closer than the rally point
+                                        -- AND are not near the objective (which is expected)
+                                        local threatBlockingRally = false
+                                        for unitName, threat in pairs(currentThreats) do
+                                            if threat.position then
+                                                local distToThreat = SpatialAgent.distance2D(commanderStatus.position, threat.position)
+                                                local threatToObjective = SpatialAgent.distance2D(threat.position, order.objective.position)
+                                                
+                                                -- Threat is blocking if it's:
+                                                -- 1. Much closer than rally point (within 25% of rally distance)
+                                                -- 2. NOT near the objective (more than 2km from objective)
+                                                -- 3. Unit is still far from rally (more than 2km)
+                                                if distToThreat < distToRally * 0.25 and 
+                                                   threatToObjective > 2000 and 
+                                                   distToRally > 2000 then
+                                                    threatBlockingRally = true
+                                                    break
+                                                end
                                             end
                                         end
+                                        
+                                        if threatBlockingRally then
+                                            shouldCancel = true
+                                            cancelReason = "threats blocking path to rally point"
+                                        end
                                     end
-                                    
-                                    if threatBlockingRally then
-                                        shouldCancel = true
-                                        cancelReason = "threats blocking path to rally point"
-                                    end
+                                    break -- Found the commander, stop searching
                                 end
                             end
                         end
@@ -326,14 +337,21 @@ function OperationalCommander:reviewAndCancelObsoleteOrders()
                     
                     -- Cancel the order by aborting it
                     if shouldCancel then
-                        env.info("*** " .. self.color .. " Ops: Canceling " .. self:taskTypeName(order.type) .. 
+                        local orderTypeName = order.type == taskTypes.RALLY and "RALLY" or 
+                                            order.type == taskTypes.ASSAULT and "ASSAULT" or 
+                                            order.type == taskTypes.RECON and "RECON" or 
+                                            tostring(order.type)
+                        env.info("*** " .. self.color .. " Ops: Canceling " .. orderTypeName .. 
                                  " order for " .. order.assignedTo .. " (" .. cancelReason .. ")")
                         
-                        local commander = self:getCommanderByName(order.assignedTo)
-                        if commander then
-                            local commanderOrders = commander.orders
-                            if commanderOrders and commanderOrders == order then
-                                commanderOrders:abort("ops_cancel")
+                        -- Find commander by name and abort order
+                        for _, cmd in pairs(GroupCommander.getInstances(self.color)) do
+                            if cmd.groupName == order.assignedTo then
+                                local commanderOrders = cmd.orders
+                                if commanderOrders and commanderOrders == order then
+                                    commanderOrders:abort("ops_cancel")
+                                end
+                                break
                             end
                         end
                         
@@ -389,7 +407,7 @@ function OperationalCommander:act()
         local lastOrder = self.lastIssuedOrders[commander.groupName]
         local commanderStatus = commander:getStatus()
 
-        if self:isOrderChanged(lastOrder, order, commanderStatus) then
+        if OrderCoordinator.isOrderChanged(lastOrder, order, commanderStatus) then
             if plan.threats then
                 commander:updateThreatIntel(plan.threats)
             end
@@ -416,7 +434,13 @@ function OperationalCommander:act()
             issuedCount = issuedCount + 1
             
             -- Log each order issued
-            env.info("*** " .. self.color .. " Ops ACT: " .. self:taskTypeName(order.type) .. " → " .. commander.groupName)
+            local orderTypeName = order.type == taskTypes.RALLY and "RALLY" or 
+                                order.type == taskTypes.ASSAULT and "ASSAULT" or 
+                                order.type == taskTypes.RECON and "RECON" or 
+                                order.type == taskTypes.DEFEND and "DEFEND" or 
+                                order.type == taskTypes.REPOSITION and "REPOSITION" or 
+                                tostring(order.type)
+            env.info("*** " .. self.color .. " Ops ACT: " .. orderTypeName .. " → " .. commander.groupName)
         end
     end
     
@@ -428,7 +452,10 @@ end
 function OperationalCommander:planObjectiveOrders(objective)
     local statusCounts = objective:getOrderStatusCounts()
     local threatsNearObjective = self:getThreatsNearPosition(objective.position, self.reconRadius)
-    local threatCount = self:countThreats(threatsNearObjective)
+    local threatCount = 0
+    for _ in pairs(threatsNearObjective) do
+        threatCount = threatCount + 1
+    end
     
     -- If no orders exist, start with RECON
     if statusCounts.total == 0 then
@@ -463,7 +490,17 @@ function OperationalCommander:planObjectiveOrders(objective)
         if lastOrderType == taskTypes.RECON then
             if threatCount == 0 then
                 -- RECON found no threats - check if we're at the objective
-                local reconDistance = self:getDistanceToObjective(objective)
+                local reconDistance = math.huge
+                for _, cmd in pairs(GroupCommander.getInstances(self.color)) do
+                    local cmdStatus = cmd:getStatus()
+                    if cmdStatus.position then
+                        local dist = SpatialAgent.distance2D(cmdStatus.position, objective.position)
+                        if dist and dist < reconDistance then
+                            reconDistance = dist
+                        end
+                    end
+                end
+                
                 if reconDistance < objective.radius * 2 then
                     -- At objective, no threats - establish DEFEND
                     self:planDefendOrders(objective)
@@ -708,12 +745,8 @@ function OperationalCommander:planOrdersForIdleUnits()
     
     -- Also check ALL units (even those with orders) for combat-ineffective retreaters
     -- that need REPOSITION orders to stop endless retreat
-    if not self.groupCommanders then
-        self.groupCommanders = self:getOwnGroupCommanders()
-    end
-    
     local allUnits = {}
-    for _, commander in ipairs(self.groupCommanders) do
+    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
         table.insert(allUnits, commander)
     end
     
@@ -843,7 +876,10 @@ function OperationalCommander:planOrdersForIdleUnits()
             -- If objective has some aborted orders, send idle units to help
             if statusCounts.aborted > 0 and #effectiveUnits > 0 then
                 local threats = self:getThreatsNearPosition(objective.position, self.reconRadius)
-                local threatCount = self:countThreats(threats)
+                local threatCount = 0
+                for _ in pairs(threats) do
+                    threatCount = threatCount + 1
+                end
                 
                 if threatCount > 0 then
                     -- Send as assault (only combat-effective units)
@@ -874,7 +910,7 @@ function OperationalCommander:planResponseToDetectedThreats()
     -- Check if any groups have detected threats and could use support
     local groupsWithThreats = {}
     
-    for _, commander in pairs(self:getOwnGroupCommanders()) do
+    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
         local status = commander:getStatus()
         local threatCount = 0
         
@@ -994,7 +1030,7 @@ end
 
 function OperationalCommander:getAvailableGroupCommanders()
     local available = {}
-    for _, commander in pairs(self:getOwnGroupCommanders()) do
+    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
         local status = commander:getStatus()
         local currentStatus = status.orderStatus
         -- Include groups without orders, or with completed/aborted orders
@@ -1005,14 +1041,6 @@ function OperationalCommander:getAvailableGroupCommanders()
         end
     end
     return available
-end
-
-function OperationalCommander:countThreats(threats)
-    local count = 0
-    for _ in pairs(threats) do
-        count = count + 1
-    end
-    return count
 end
 
 function OperationalCommander:countActiveThreats(threats)
@@ -1028,15 +1056,6 @@ function OperationalCommander:countActiveThreats(threats)
         end
     end
     return count
-end
-
-function OperationalCommander:taskTypeName(taskType)
-    for name, value in pairs(taskTypes) do
-        if value == taskType then
-            return name
-        end
-    end
-    return tostring(taskType)
 end
 
 function OperationalCommander:assessObjectiveProgress(objective)
@@ -1066,60 +1085,16 @@ function OperationalCommander:assessObjectiveProgress(objective)
     end
 end
 
-function OperationalCommander:getCommandersByDistance(commanders, position)
-    local list = {}
-    for _, commander in pairs(commanders) do
-        local status = commander:getStatus()
-        if status.position then
-            local dist = SpatialAgent.distance2D(status.position, position)
-            table.insert(list, {commander = commander, distance = dist})
-        end
-    end
-
-    table.sort(list, function(a, b)
-        return a.distance < b.distance
-    end)
-
-    return list
-end
-
-function OperationalCommander:isOrderChanged(lastOrder, newOrder, commanderStatus)
-    -- Use OrderCoordinator utility for change detection
-    return OrderCoordinator.isOrderChanged(lastOrder, newOrder, commanderStatus)
-end
-
 function OperationalCommander:aggregateThreatsFromGroups()
-    local groupCommanders = self:getOwnGroupCommanders()
-    for _, commander in pairs(groupCommanders) do
+    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
         local status = commander:getStatus()
         self.threatTracker:mergeThreatIntel(status.threats)
     end
 end
 
-function OperationalCommander:findNearestRallyPoint(position)
-    if not self.rallyPoints or #self.rallyPoints == 0 then
-        return nil
-    end
-    local nearestRallyPoint = nil
-    local nearestDistance = math.huge
-    for _, rallyPoint in ipairs(self.rallyPoints) do
-        local dist = SpatialAgent.distance2D(rallyPoint.position, position)
-        if dist and dist < nearestDistance then
-            nearestDistance = dist
-            nearestRallyPoint = rallyPoint
-        end
-    end
-    return nearestRallyPoint
-end
-
-function OperationalCommander:getOwnGroupCommanders()
-    return GroupCommander.getInstances(self.color)
-end
-
 function OperationalCommander:getOwnGroupsNearPosition(position, radius)
-    local groupCommanders = self:getOwnGroupCommanders()
     local nearbyOwnForces = {}
-    for _, commander in pairs(groupCommanders) do
+    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
         local status = commander:getStatus()
         if SpatialAgent.isWithinRadius(status.position, position, radius) then
             table.insert(nearbyOwnForces, commander)
@@ -1130,10 +1105,9 @@ end
 
 function OperationalCommander:updateAllyIntelForAllGroups()
     -- Update ally intel for all active groups so they know about nearby friendlies
-    local groupCommanders = self:getOwnGroupCommanders()
     local supportRadius = 5000  -- 5km support range
     
-    for _, commander in pairs(groupCommanders) do
+    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
         local status = commander:getStatus()
         if status.position then
             local allyIntel = self:assessNearbyAllyStrength(status.position, supportRadius, commander.groupName)
@@ -1414,24 +1388,6 @@ function OperationalCommander:findNearestFriendlyPosition(commander)
     }
 end
 
-function OperationalCommander:getDistanceToObjective(objective)
-    -- Get the closest distance from any of our units to the objective
-    local groupCommanders = self:getOwnGroupCommanders()
-    local minDistance = math.huge
-    
-    for _, commander in pairs(groupCommanders) do
-        local status = commander:getStatus()
-        if status.position then
-            local dist = SpatialAgent.distance2D(status.position, objective.position)
-            if dist and dist < minDistance then
-                minDistance = dist
-            end
-        end
-    end
-    
-    return minDistance
-end
-
 function OperationalCommander:planDefendOrders(objective)
     -- Plan DEFEND orders for units to hold the objective
     local availableCommanders = self:getAvailableGroupCommanders()
@@ -1504,16 +1460,6 @@ function OperationalCommander:planDefendOrders(objective)
     
     -- Mark objective as achieved once we have defenders in place
     objective:markAchieved()
-end
-
-function OperationalCommander:getCommanderByName(groupName)
-    local commanders = self:getOwnGroupCommanders()
-    for _, commander in pairs(commanders) do
-        if commander.groupName == groupName then
-            return commander
-        end
-    end
-    return nil
 end
 
 function OperationalCommander:addPlannedOrder(commander, order, threats, threatCenter)
@@ -2878,7 +2824,6 @@ local ThreatTracker = require("threat-tracker")
 local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
-local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
@@ -3362,18 +3307,6 @@ function GroupCommander:calculateReturnToObjective()
     }
 end
 
-function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
-    if not unit1 or not unit2 then
-        return nil
-    end
-    local pos1 = unit1:getPosition()
-    local pos2 = unit2:getPosition()
-    if not pos1 or not pos2 then
-        return nil
-    end
-    return SpatialAgent.distance2D(pos1, pos2)
-end
-
 function GroupCommander:calculateThreatCenter(observedOnly)
     -- Calculate the average position of threats based on last known positions
     -- observedOnly: if true, only include threats directly observed by THIS unit (not shared intel)
@@ -3776,21 +3709,20 @@ function GroupCommander:getStatus()
     return status
 end
 
-function GroupCommander:getUnitTypeName(unit)
-    if not unit or not unit:isExist() then
-        return nil
-    end
-    
-    local typeName = unit:getTypeName()
-    return typeName
-end
-
 -- Make decisions when following orders
 function GroupCommander:handleOrderDecisions()
     -- Start order if just assigned
     if self.orders.status == orderStatus.ASSIGNED then
         self.orders:start()
-        env.info(self.groupName .. " DECIDE: Starting order " .. self:taskTypeName(self.orders.type) .. 
+        local orderTypeName = self.orders.type == taskTypes.RALLY and "RALLY" or
+                            self.orders.type == taskTypes.ASSAULT and "ASSAULT" or
+                            self.orders.type == taskTypes.RECON and "RECON" or
+                            self.orders.type == taskTypes.DEFEND and "DEFEND" or
+                            self.orders.type == taskTypes.REPOSITION and "REPOSITION" or
+                            self.orders.type == taskTypes.REINFORCE and "REINFORCE" or
+                            self.orders.type == taskTypes.ATTACK and "ATTACK" or
+                            tostring(self.orders.type)
+        env.info(self.groupName .. " DECIDE: Starting order " .. orderTypeName .. 
                  " @ " .. string.format("%.0f,%.0f", self.orders.position.x, self.orders.position.z) .. 
                  " r:" .. self.orders.radius .. " ALR:" .. self.orders.alr)
     end
@@ -4240,15 +4172,6 @@ function GroupCommander:stopMovement()
         controller:setTask({id = 'Hold', params = {}})
     end
     self.lastMoveOrder = nil
-end
-
-function GroupCommander:taskTypeName(taskType)
-    for name, value in pairs(taskTypes) do
-        if value == taskType then
-            return name
-        end
-    end
-    return tostring(taskType)
 end
 
 return GroupCommander

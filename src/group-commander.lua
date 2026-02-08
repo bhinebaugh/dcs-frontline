@@ -9,7 +9,6 @@ local ThreatTracker = require("threat-tracker")
 local alr = constants.acceptableLevelsOfRisk
 local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
-local oodaStates = constants.oodaStates
 local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
 local taskTypes = constants.taskTypes
@@ -493,18 +492,6 @@ function GroupCommander:calculateReturnToObjective()
     }
 end
 
-function GroupCommander:calculateDistanceBetweenUnits(unit1, unit2)
-    if not unit1 or not unit2 then
-        return nil
-    end
-    local pos1 = unit1:getPosition()
-    local pos2 = unit2:getPosition()
-    if not pos1 or not pos2 then
-        return nil
-    end
-    return SpatialAgent.distance2D(pos1, pos2)
-end
-
 function GroupCommander:calculateThreatCenter(observedOnly)
     -- Calculate the average position of threats based on last known positions
     -- observedOnly: if true, only include threats directly observed by THIS unit (not shared intel)
@@ -907,21 +894,20 @@ function GroupCommander:getStatus()
     return status
 end
 
-function GroupCommander:getUnitTypeName(unit)
-    if not unit or not unit:isExist() then
-        return nil
-    end
-    
-    local typeName = unit:getTypeName()
-    return typeName
-end
-
 -- Make decisions when following orders
 function GroupCommander:handleOrderDecisions()
     -- Start order if just assigned
     if self.orders.status == orderStatus.ASSIGNED then
         self.orders:start()
-        env.info(self.groupName .. " DECIDE: Starting order " .. self:taskTypeName(self.orders.type) .. 
+        local orderTypeName = self.orders.type == taskTypes.RALLY and "RALLY" or
+                            self.orders.type == taskTypes.ASSAULT and "ASSAULT" or
+                            self.orders.type == taskTypes.RECON and "RECON" or
+                            self.orders.type == taskTypes.DEFEND and "DEFEND" or
+                            self.orders.type == taskTypes.REPOSITION and "REPOSITION" or
+                            self.orders.type == taskTypes.REINFORCE and "REINFORCE" or
+                            self.orders.type == taskTypes.ATTACK and "ATTACK" or
+                            tostring(self.orders.type)
+        env.info(self.groupName .. " DECIDE: Starting order " .. orderTypeName .. 
                  " @ " .. string.format("%.0f,%.0f", self.orders.position.x, self.orders.position.z) .. 
                  " r:" .. self.orders.radius .. " ALR:" .. self.orders.alr)
     end
@@ -1371,15 +1357,6 @@ function GroupCommander:stopMovement()
         controller:setTask({id = 'Hold', params = {}})
     end
     self.lastMoveOrder = nil
-end
-
-function GroupCommander:taskTypeName(taskType)
-    for name, value in pairs(taskTypes) do
-        if value == taskType then
-            return name
-        end
-    end
-    return tostring(taskType)
 end
 
 return GroupCommander
