@@ -93,6 +93,52 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
     }
 end
 
+function ForceStatusAnalyzer.getCriticalStatusReport(groupNameOrGroup, initialUnitNames, fuelRemaining)
+    local status = ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames, fuelRemaining)
+    
+    if not status or status.aliveCount == 0 then
+        return nil  -- No decision needed
+    end
+    
+    local totalUnits = #initialUnitNames
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    local hasAmmoCounts = status.ammoCount ~= nil and status.initialAmmoCount ~= nil
+    
+    -- CRITICAL: Heavy casualties (>40%) - force retreat
+    if attritionRate > 0.4 then
+        return {
+            level = "CRITICAL",
+            reason = "HEAVY_CASUALTIES",
+        }
+    end
+    
+    -- CRITICAL: No ammunition - hold or retreat
+    if hasAmmoCounts and status.initialAmmoCount > 0 and status.ammoCount == 0 then
+        return {
+            level = "CRITICAL",
+            reason = "NO_AMMO_WITH_THREATS",
+        }
+    end
+    
+    -- WARNING: Moderate casualties (30-40%)
+    if attritionRate > 0.3 then
+        return {
+            level = "WARNING",
+            reason = "MODERATE_CASUALTIES",
+        }
+    end
+
+    -- WARNING: Low ammunition
+    if hasAmmoCounts and status.initialAmmoCount > 0 and ForceStatusAnalyzer.isAmmoLow(status.ammoCount, status.initialAmmoCount, 20) then
+        return {
+            level = "WARNING",
+            reason = "LOW_AMMO",
+        }
+    end
+    
+    return nil  -- No critical conditions
+end
+
 --- Get collective status (percentage of units alive)
 -- @param aliveCount number - Number of currently alive units
 -- @param initialCount number - Initial number of units
