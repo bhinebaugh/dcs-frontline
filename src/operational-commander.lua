@@ -68,8 +68,7 @@ function OperationalCommander:orient()
     self.planningContexts = {}
     for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
-            local planningContext = self.orderCoordinator:derivePlanningContext(objective, self)
-            self.planningContexts[objective] = planningContext
+            self.planningContexts[objective] = self.orderCoordinator:derivePlanningContext(objective, self)
         end
     end
     
@@ -541,8 +540,10 @@ function OperationalCommander:scoreCommandersForRecon(commanders, targetPosition
     
     for _, commander in ipairs(commanders) do
         local status = commander:getStatus()
+        
         if status.position then
             local group = Group.getByName(commander.groupName)
+            
             if group and group:isExist() then
                 local units = group:getUnits()
                 local activeUnits = {}
@@ -630,27 +631,30 @@ function OperationalCommander:scoreCommandersForAssault(commanders, threats, tar
                         -- Unit is combat-effective, score it for assault
                         local distance = SpatialAgent.distance2D(status.position, targetPosition)
                         
-                        -- Compare forces to get favorability
-                        local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
-                        
-                        -- Higher score is better for ASSAULT
-                        -- Score based on: favorability (higher is better) - distance penalty
-                        local favorabilityScore = comparison.favorability
-                        if favorabilityScore == math.huge then
-                            favorabilityScore = 100
-                        elseif favorabilityScore == -math.huge then
-                            favorabilityScore = -100
+                        -- Only score if we have valid distance
+                        if distance then
+                            -- Compare forces to get favorability
+                            local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
+                            
+                            -- Higher score is better for ASSAULT
+                            -- Score based on: favorability (higher is better) - distance penalty
+                            local favorabilityScore = comparison.favorability
+                            if favorabilityScore == math.huge then
+                                favorabilityScore = 100
+                            elseif favorabilityScore == -math.huge then
+                                favorabilityScore = -100
+                            end
+                            
+                            local score = (favorabilityScore * 100) - (distance / 100)
+                            
+                            table.insert(scored, {
+                                commander = commander,
+                                score = score,
+                                distance = distance,
+                                analysis = comparison.friendly,
+                                favorability = comparison.favorability
+                            })
                         end
-                        
-                        local score = (favorabilityScore * 100) - (distance / 100)
-                        
-                        table.insert(scored, {
-                            commander = commander,
-                            score = score,
-                            distance = distance,
-                            analysis = comparison.friendly,
-                            favorability = comparison.favorability
-                        })
                     end
                 end
             end

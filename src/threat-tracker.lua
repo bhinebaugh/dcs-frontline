@@ -59,6 +59,25 @@ function ThreatTracker:updateThreats(observedUnits)
     end
 end
 
+function ThreatTracker:updateExpectedThreats(observedThreats, observerPosition, detectionRadius)
+    local observedNames = {}
+    
+    for _, unitData in ipairs(observedThreats) do
+        observedNames[unitData.name] = true
+    end
+    
+    -- Check for expected threats within detection radius that were not observed
+    for unitName, threat in pairs(self.threats) do
+        local notObserved = not observedNames[unitName]
+        local inExpectedRadius = SpatialAgent.isWithinRadius(threat.position, observerPosition, detectionRadius)
+        local isExpected = threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST
+        if notObserved and inExpectedRadius and isExpected then
+            env.info(self.observerName .. " ThreatTracker: Expected threat not observed - " .. unitName .. " (SUSPECTED)")
+            threat.status = threatStatus.UNCONFIRMED
+        end
+    end
+end
+
 -- Get the threats table
 -- Returns: table indexed by unit name
 function ThreatTracker:getThreats()
@@ -171,12 +190,6 @@ function ThreatTracker:ageThreats()
         
         local timeInStatus = currentTime - threat.statusChangedAt
         
-        -- Progress SUSPECTED → UNCONFIRMED after 2 minutes (no fresh sighting)
-        if threat.status == threatStatus.SUSPECTED and timeInStatus > 120 then
-            threat.status = threatStatus.UNCONFIRMED
-            threat.statusChangedAt = currentTime
-        end
-        
         -- Progress UNCONFIRMED → LOST after 5 minutes
         if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
             threat.status = threatStatus.LOST
@@ -195,22 +208,38 @@ function ThreatTracker:ageThreats()
     end
 end
 
--- Check if we have any recently observed or suspected threats
--- Returns: true if there are threats with fresh intel (within maxAge seconds)
-function ThreatTracker:hasRecentThreats(maxAge)
+function ThreatTracker:getRecentThreats(maxAge)
     local currentTime = timer.getTime()
+    local recentThreats = {}
     maxAge = maxAge or 120  -- Default 2 minutes
     
-    for _, threat in pairs(self.threats) do
-        if threat.lastSighting then
-            local age = currentTime - threat.lastSighting
-            if age <= maxAge and (threat.status == "Observed" or threat.status == "Suspected") then
-                return true
+    for unitName, threat in pairs(self.threats) do
+        -- Only include threats that are actively relevant
+        local includeInAnalysis = false
+        
+        if threat.status == "Observed" then
+            includeInAnalysis = true
+        elseif threat.status == "Suspected" and threat.lastSighting then
+            -- Include suspected threats if seen within last 60 seconds
+            local timeSinceLastSeen = currentTime - threat.lastSighting
+            if timeSinceLastSeen < maxAge then
+                includeInAnalysis = true
             end
+        end
+        
+        if includeInAnalysis then
+            recentThreats[unitName] = threat  -- Return threat object indexed by name
         end
     end
     
-    return false
+    return recentThreats
+end
+
+-- Check if we have any recently observed or suspected threats
+-- Returns: true if there are threats with fresh intel (within maxAge seconds)
+function ThreatTracker:hasRecentThreats(maxAge)
+    local recentThreats = self:getRecentThreats(maxAge)
+    return #recentThreats > 0
 end
 
 -- Get the most recent sighting time across all threats
@@ -225,45 +254,6 @@ function ThreatTracker:getMostRecentSightingTime()
     end
     
     return mostRecent
-end
-
--- Check if threat intel is stale (no fresh observations recently)
--- Returns: true if no observed threats and last sighting was > maxAge ago
-function ThreatTracker:isIntelStale(maxAge)
-    local currentTime = timer.getTime()
-    maxAge = maxAge or 60  -- Default 60 seconds
-    
-    -- Check if we have any currently observed threats
-    local hasObserved = false
-    local hasSuspected = false
-    
-    for _, threat in pairs(self.threats) do
-        if threat.status == "Observed" then
-            hasObserved = true
-            break
-        elseif threat.status == "Suspected" then
-            hasSuspected = true
-        end
-    end
-    
-    -- If we have observed threats, intel is fresh
-    if hasObserved then
-        return false
-    end
-    
-    -- If we only have suspected threats, check how old they are
-    if not hasSuspected then
-        return true  -- No observed or suspected threats at all
-    end
-    
-    -- Check time since last sighting
-    local mostRecentSighting = self:getMostRecentSightingTime()
-    if mostRecentSighting == 0 then
-        return true
-    end
-    
-    local timeSinceLastSighting = currentTime - mostRecentSighting
-    return timeSinceLastSighting >= maxAge
 end
 
 -- Cull threats that haven't been observed recently (for future use)

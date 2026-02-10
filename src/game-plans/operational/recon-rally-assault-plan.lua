@@ -293,9 +293,14 @@ function ReconRallyAssaultPlan:planRallyPhase(objective, resources, situation, c
     local slowestSpeed = math.huge
     for _, cmdInfo in ipairs(selectedCommanders) do
         local speed = cmdInfo.commander:getSlowestUnitSpeed()
-        if speed and speed < slowestSpeed then
+        if speed and speed > 0 and speed < slowestSpeed then
             slowestSpeed = speed
         end
+    end
+    
+    -- Fallback to reasonable default if no valid speed found
+    if slowestSpeed == math.huge then
+        slowestSpeed = 20  -- 20 m/s (~72 km/h) default ground speed
     end
 
     local pushTime = timer.getTime() + longestDistance / slowestSpeed

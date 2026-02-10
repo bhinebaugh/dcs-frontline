@@ -212,8 +212,7 @@ function OperationalCommander:orient()
     self.planningContexts = {}
     for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
-            local planningContext = self.orderCoordinator:derivePlanningContext(objective, self)
-            self.planningContexts[objective] = planningContext
+            self.planningContexts[objective] = self.orderCoordinator:derivePlanningContext(objective, self)
         end
     end
     
@@ -685,8 +684,10 @@ function OperationalCommander:scoreCommandersForRecon(commanders, targetPosition
     
     for _, commander in ipairs(commanders) do
         local status = commander:getStatus()
+        
         if status.position then
             local group = Group.getByName(commander.groupName)
+            
             if group and group:isExist() then
                 local units = group:getUnits()
                 local activeUnits = {}
@@ -774,27 +775,30 @@ function OperationalCommander:scoreCommandersForAssault(commanders, threats, tar
                         -- Unit is combat-effective, score it for assault
                         local distance = SpatialAgent.distance2D(status.position, targetPosition)
                         
-                        -- Compare forces to get favorability
-                        local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
-                        
-                        -- Higher score is better for ASSAULT
-                        -- Score based on: favorability (higher is better) - distance penalty
-                        local favorabilityScore = comparison.favorability
-                        if favorabilityScore == math.huge then
-                            favorabilityScore = 100
-                        elseif favorabilityScore == -math.huge then
-                            favorabilityScore = -100
+                        -- Only score if we have valid distance
+                        if distance then
+                            -- Compare forces to get favorability
+                            local comparison = ThreatAnalyzer.compareForces(activeUnits, threatUnits)
+                            
+                            -- Higher score is better for ASSAULT
+                            -- Score based on: favorability (higher is better) - distance penalty
+                            local favorabilityScore = comparison.favorability
+                            if favorabilityScore == math.huge then
+                                favorabilityScore = 100
+                            elseif favorabilityScore == -math.huge then
+                                favorabilityScore = -100
+                            end
+                            
+                            local score = (favorabilityScore * 100) - (distance / 100)
+                            
+                            table.insert(scored, {
+                                commander = commander,
+                                score = score,
+                                distance = distance,
+                                analysis = comparison.friendly,
+                                favorability = comparison.favorability
+                            })
                         end
-                        
-                        local score = (favorabilityScore * 100) - (distance / 100)
-                        
-                        table.insert(scored, {
-                            commander = commander,
-                            score = score,
-                            distance = distance,
-                            analysis = comparison.friendly,
-                            favorability = comparison.favorability
-                        })
                     end
                 end
             end
@@ -1296,6 +1300,25 @@ function ThreatTracker:updateThreats(observedUnits)
     end
 end
 
+function ThreatTracker:updateExpectedThreats(observedThreats, observerPosition, detectionRadius)
+    local observedNames = {}
+    
+    for _, unitData in ipairs(observedThreats) do
+        observedNames[unitData.name] = true
+    end
+    
+    -- Check for expected threats within detection radius that were not observed
+    for unitName, threat in pairs(self.threats) do
+        local notObserved = not observedNames[unitName]
+        local inExpectedRadius = SpatialAgent.isWithinRadius(threat.position, observerPosition, detectionRadius)
+        local isExpected = threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST
+        if notObserved and inExpectedRadius and isExpected then
+            env.info(self.observerName .. " ThreatTracker: Expected threat not observed - " .. unitName .. " (SUSPECTED)")
+            threat.status = threatStatus.UNCONFIRMED
+        end
+    end
+end
+
 -- Get the threats table
 -- Returns: table indexed by unit name
 function ThreatTracker:getThreats()
@@ -1408,12 +1431,6 @@ function ThreatTracker:ageThreats()
         
         local timeInStatus = currentTime - threat.statusChangedAt
         
-        -- Progress SUSPECTED → UNCONFIRMED after 2 minutes (no fresh sighting)
-        if threat.status == threatStatus.SUSPECTED and timeInStatus > 120 then
-            threat.status = threatStatus.UNCONFIRMED
-            threat.statusChangedAt = currentTime
-        end
-        
         -- Progress UNCONFIRMED → LOST after 5 minutes
         if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
             threat.status = threatStatus.LOST
@@ -1432,22 +1449,38 @@ function ThreatTracker:ageThreats()
     end
 end
 
--- Check if we have any recently observed or suspected threats
--- Returns: true if there are threats with fresh intel (within maxAge seconds)
-function ThreatTracker:hasRecentThreats(maxAge)
+function ThreatTracker:getRecentThreats(maxAge)
     local currentTime = timer.getTime()
+    local recentThreats = {}
     maxAge = maxAge or 120  -- Default 2 minutes
     
-    for _, threat in pairs(self.threats) do
-        if threat.lastSighting then
-            local age = currentTime - threat.lastSighting
-            if age <= maxAge and (threat.status == "Observed" or threat.status == "Suspected") then
-                return true
+    for unitName, threat in pairs(self.threats) do
+        -- Only include threats that are actively relevant
+        local includeInAnalysis = false
+        
+        if threat.status == "Observed" then
+            includeInAnalysis = true
+        elseif threat.status == "Suspected" and threat.lastSighting then
+            -- Include suspected threats if seen within last 60 seconds
+            local timeSinceLastSeen = currentTime - threat.lastSighting
+            if timeSinceLastSeen < maxAge then
+                includeInAnalysis = true
             end
+        end
+        
+        if includeInAnalysis then
+            recentThreats[unitName] = threat  -- Return threat object indexed by name
         end
     end
     
-    return false
+    return recentThreats
+end
+
+-- Check if we have any recently observed or suspected threats
+-- Returns: true if there are threats with fresh intel (within maxAge seconds)
+function ThreatTracker:hasRecentThreats(maxAge)
+    local recentThreats = self:getRecentThreats(maxAge)
+    return #recentThreats > 0
 end
 
 -- Get the most recent sighting time across all threats
@@ -1462,45 +1495,6 @@ function ThreatTracker:getMostRecentSightingTime()
     end
     
     return mostRecent
-end
-
--- Check if threat intel is stale (no fresh observations recently)
--- Returns: true if no observed threats and last sighting was > maxAge ago
-function ThreatTracker:isIntelStale(maxAge)
-    local currentTime = timer.getTime()
-    maxAge = maxAge or 60  -- Default 60 seconds
-    
-    -- Check if we have any currently observed threats
-    local hasObserved = false
-    local hasSuspected = false
-    
-    for _, threat in pairs(self.threats) do
-        if threat.status == "Observed" then
-            hasObserved = true
-            break
-        elseif threat.status == "Suspected" then
-            hasSuspected = true
-        end
-    end
-    
-    -- If we have observed threats, intel is fresh
-    if hasObserved then
-        return false
-    end
-    
-    -- If we only have suspected threats, check how old they are
-    if not hasSuspected then
-        return true  -- No observed or suspected threats at all
-    end
-    
-    -- Check time since last sighting
-    local mostRecentSighting = self:getMostRecentSightingTime()
-    if mostRecentSighting == 0 then
-        return true
-    end
-    
-    local timeSinceLastSighting = currentTime - mostRecentSighting
-    return timeSinceLastSighting >= maxAge
 end
 
 -- Cull threats that haven't been observed recently (for future use)
@@ -2188,9 +2182,14 @@ function ReconRallyAssaultPlan:planRallyPhase(objective, resources, situation, c
     local slowestSpeed = math.huge
     for _, cmdInfo in ipairs(selectedCommanders) do
         local speed = cmdInfo.commander:getSlowestUnitSpeed()
-        if speed and speed < slowestSpeed then
+        if speed and speed > 0 and speed < slowestSpeed then
             slowestSpeed = speed
         end
+    end
+    
+    -- Fallback to reasonable default if no valid speed found
+    if slowestSpeed == math.huge then
+        slowestSpeed = 20  -- 20 m/s (~72 km/h) default ground speed
     end
 
     local pushTime = timer.getTime() + longestDistance / slowestSpeed
@@ -2348,7 +2347,6 @@ local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
 local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
-local taskTypes = constants.taskTypes
 local GroupCommander = {}
 
 setmetatable(GroupCommander, {__index = OODACommander})
@@ -2467,43 +2465,7 @@ function GroupCommander:observe()
     
     -- Update threat table with newly observed threats (keeping old ones)
     self.threatTracker:updateThreats(observedThreats)
-    
-    -- Check for expected threats we didn't see
-    local ownPos = self:getOwnPosition()
-    local expectedCount = 0
-    if ownPos then
-        local expectedInArea = self.threatTracker:expectedThreats(ownPos, detectionRadius)
-        expectedCount = #expectedInArea
-        for _, threatName in ipairs(expectedInArea) do
-            -- If we expected to see it but didn't, update status
-            local wasSeen = false
-            for _, observed in ipairs(observedThreats) do
-                if observed.name == threatName then
-                    wasSeen = true
-                    break
-                end
-            end
-            if not wasSeen then
-                local threat = self.threatTracker:getThreat(threatName)
-                if threat then
-                    -- Check distance to last known position
-                    local distToLastKnown = SpatialAgent.distance2D(ownPos, threat.position)
-                    
-                    -- If close to last known position, mark UNCONFIRMED
-                    -- Otherwise just mark SUSPECTED (we haven't checked yet)
-                    if distToLastKnown < 1000 then  -- Within 1km of last known position
-                        if threat.status == "Observed" or threat.status == "Suspected" then
-                            self.threatTracker:markThreatStatus(threatName, "Unconfirmed")
-                        end
-                    else
-                        if threat.status == "Observed" then
-                            self.threatTracker:markThreatStatus(threatName, "Suspected")
-                        end
-                    end
-                end
-            end
-        end
-    end
+    self.threatTracker:updateExpectedThreats(observedThreats, currentPos, detectionRadius)
     
     -- Age threats and progress their status
     self.threatTracker:ageThreats()
@@ -2513,15 +2475,20 @@ function GroupCommander:observe()
     
     -- Single consolidated OBSERVE summary
     local memoryCount = self.threatTracker:count()
+    local expectedCount = #self.threatTracker:expectedThreats(currentPos, detectionRadius)
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
     env.info(self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
 end
 
 function GroupCommander:orient()
     -- Gather situational awareness for decision making
-    self:assessOwnForce()
+    self.ownForceStrength = self:analyzeOwnForce()
+
     self:assessThreats()
-    self:assessOrderContext()
+
+    -- Use OrderCoordinator to derive context snapshot
+    local ownPos = self:getOwnPosition()
+    self.orderContext = OrderCoordinator.deriveOrderContext(self.orders, ownPos, self.alr)
 end
 
 function GroupCommander:decide()
@@ -2592,37 +2559,9 @@ function GroupCommander:act()
     end
 end
 
--- Assess context related to current orders
-function GroupCommander:assessOrderContext()
-    -- Use OrderCoordinator to derive context snapshot
-    local ownPos = self:getOwnPosition()
-    self.orderContext = OrderCoordinator.deriveOrderContext(self.orders, ownPos, self.alr)
-end
-
--- Assess own force strength and capabilities
-function GroupCommander:assessOwnForce()
-    self.ownForceStrength = self:analyzeOwnForce()
-    
-    if not self.ownForceStrength then
-        env.info("ERROR: Could not analyze own force for " .. self.groupName)
-    end
-end
-
 function GroupCommander:analyzeOwnForce()
     -- Get all units in our group
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return nil
-    end
-    
-    local groupUnits = group:getUnits()
-    local units = {}
-    
-    for _, unit in ipairs(groupUnits) do
-        if unit and unit:isExist() then
-            table.insert(units, unit)
-        end
-    end
+    local units = self:getOwnUnits()
     
     -- Use ThreatAnalyzer for comprehensive force analysis
     return ThreatAnalyzer.analyzeUnits(units)
@@ -2631,29 +2570,13 @@ end
 function GroupCommander:analyzeThreatCapabilities()
     -- Get threat units from threat tracker
     -- Only include threats that are Observed or recently Suspected (not stale)
-    local threats = self.threatTracker:getThreats()
+    local threats = self.threatTracker:getRecentThreats()
     local threatUnits = {}
-    local currentTime = timer.getTime()
     
-    for unitName, threatData in pairs(threats) do
-        -- Only include threats that are actively relevant
-        local includeInAnalysis = false
-        
-        if threatData.status == "Observed" then
-            includeInAnalysis = true
-        elseif threatData.status == "Suspected" and threatData.lastSighting then
-            -- Include suspected threats if seen within last 60 seconds
-            local timeSinceLastSeen = currentTime - threatData.lastSighting
-            if timeSinceLastSeen < 60 then
-                includeInAnalysis = true
-            end
-        end
-        
-        if includeInAnalysis then
-            local unit = Unit.getByName(unitName)
-            if unit and unit:isExist() then
-                table.insert(threatUnits, unit)
-            end
+    for unitName, _ in pairs(threats) do
+        local unit = Unit.getByName(unitName)
+        if unit and unit:isExist() then
+            table.insert(threatUnits, unit)
         end
     end
     
@@ -2682,72 +2605,36 @@ function GroupCommander:assessThreats()
     
     -- Calculate favorability if threats exist
     local favorability = 0
-    
-    if threatAnalysis.count > 0 then
-        
-        -- If we have ally intel, include nearby allies in combined force calculation
-        local combinedForce = self.ownForceStrength
-        if self.allyIntel and self.allyIntel.count > 0 then
-            -- Combine our force with nearby allies
-            combinedForce = {
-                count = self.ownForceStrength.count + self.allyIntel.count,
-                composition = {
-                    infantry = self.ownForceStrength.composition.infantry + self.allyIntel.composition.infantry,
-                    ["light-armor"] = self.ownForceStrength.composition["light-armor"] + self.allyIntel.composition["light-armor"],
-                    ["heavy-armor"] = self.ownForceStrength.composition["heavy-armor"] + self.allyIntel.composition["heavy-armor"],
-                    support = self.ownForceStrength.composition.support + self.allyIntel.composition.support
-                },
-                offensiveCapability = {
-                    vsInfantry = self.ownForceStrength.offensiveCapability.vsInfantry + self.allyIntel.offensiveCapability.vsInfantry,
-                    vsArmor = self.ownForceStrength.offensiveCapability.vsArmor + self.allyIntel.offensiveCapability.vsArmor,
-                    vsAir = self.ownForceStrength.offensiveCapability.vsAir + self.allyIntel.offensiveCapability.vsAir
-                }
+
+    -- If we have ally intel, include nearby allies in combined force calculation
+    local combinedForce = self.ownForceStrength
+    if self.allyIntel and self.allyIntel.count > 0 then
+        -- Combine our force with nearby allies
+        combinedForce = {
+            count = self.ownForceStrength.count + self.allyIntel.count,
+            composition = {
+                infantry = self.ownForceStrength.composition.infantry + self.allyIntel.composition.infantry,
+                ["light-armor"] = self.ownForceStrength.composition["light-armor"] + self.allyIntel.composition["light-armor"],
+                ["heavy-armor"] = self.ownForceStrength.composition["heavy-armor"] + self.allyIntel.composition["heavy-armor"],
+                support = self.ownForceStrength.composition.support + self.allyIntel.composition.support
+            },
+            offensiveCapability = {
+                vsInfantry = self.ownForceStrength.offensiveCapability.vsInfantry + self.allyIntel.offensiveCapability.vsInfantry,
+                vsArmor = self.ownForceStrength.offensiveCapability.vsArmor + self.allyIntel.offensiveCapability.vsArmor,
+                vsAir = self.ownForceStrength.offensiveCapability.vsAir + self.allyIntel.offensiveCapability.vsAir
             }
-        end
-        
-        -- Calculate favorability using combined force (our power / enemy power)
-        local ourPower = ThreatAnalyzer.calculateCombatPower(combinedForce, threatAnalysis)
-        local enemyPower = ThreatAnalyzer.calculateCombatPower(threatAnalysis, combinedForce)
-        
-        if enemyPower > 0 then
-            favorability = ourPower / enemyPower
-        elseif ourPower > 0 then
-            favorability = math.huge
-        end
-        
-        -- Get status report for logging
-        local statusReport = self:getStatusReport()
-        
-        -- Log assessment in compact format with ally contribution
-        local allyStr = ""
-        if self.allyIntel and self.allyIntel.count > 0 then
-            allyStr = " +Ally:" .. self.allyIntel.count .. 
-                      "(" .. self.allyIntel.composition.infantry .. "/" .. 
-                      self.allyIntel.composition["light-armor"] .. "/" .. 
-                      self.allyIntel.composition["heavy-armor"] .. ")"
-        end
-        env.info(self.groupName .. " ORIENT: Us:" .. self.ownForceStrength.count .. 
-                 "(" .. self.ownForceStrength.composition.infantry .. "/" .. 
-                 self.ownForceStrength.composition["light-armor"] .. "/" .. 
-                 self.ownForceStrength.composition["heavy-armor"] .. ")" .. allyStr .. 
-                 " vs Them:" .. threatAnalysis.count .. 
-                 "(" .. threatAnalysis.composition.infantry .. "/" .. 
-                 threatAnalysis.composition["light-armor"] .. "/" .. 
-                 threatAnalysis.composition["heavy-armor"] .. 
-                 ") Fav:" .. string.format("%.2f", favorability))
-        
-        -- Log detailed status report
-        local avgHealth = statusReport.aliveCount > 0 and (statusReport.healthPool / statusReport.aliveCount) or 0
-        env.info(self.groupName .. " STATUS: Units:" .. statusReport.aliveCount .. "/" .. #self.initialUnitNames .. 
-                 " HP:" .. string.format("%.0f", avgHealth) .. 
-                 " (low:" .. string.format("%.0f", statusReport.healthLowState or 0) .. ")" .. 
-                 " Fuel:" .. string.format("%.0f%%", statusReport.fuelRemaining * 100) .. 
-                 " Ammo:" .. statusReport.ammoCount .. 
-                 " (low:" .. (statusReport.ammmoLowState or 0) .. ")")
+        }
     end
     
-    -- Determine if threats are stale using ThreatTracker utility
-    local threatsAreStale = self.threatTracker:isIntelStale(60)
+    -- Calculate favorability using combined force (our power / enemy power)
+    local ourPower = ThreatAnalyzer.calculateCombatPower(combinedForce, threatAnalysis)
+    local enemyPower = ThreatAnalyzer.calculateCombatPower(threatAnalysis, combinedForce)
+    
+    if enemyPower > 0 then
+        favorability = ourPower / enemyPower
+    elseif ourPower > 0 then
+        favorability = math.huge
+    end
     
     -- Store consolidated threat assessment
     self.threatAssessment = {
@@ -2756,7 +2643,6 @@ function GroupCommander:assessThreats()
         statuses = threatStatuses,
         center = threatCenter,
         favorability = favorability,
-        stale = threatsAreStale,
         hasRecentIntel = self.threatTracker:hasRecentThreats(120)  -- Any intel within 2 minutes
     }
 end
@@ -2822,7 +2708,7 @@ function GroupCommander:calculateThreatCenter(observedOnly)
     local currentTime = timer.getTime()
     local threatsToInclude = {}
     
-    local threats = self.threatTracker:getThreats()
+    local threats = self.threatTracker:getRecentThreats()
     for unitName, threatData in pairs(threats) do
         -- Filter to only this unit's own observations if requested
         local includeThisThreat = true
@@ -2863,7 +2749,7 @@ function GroupCommander:checkThreatStatuses()
     local other = 0
     local mostRecentObservation = 0
     
-    for unitName, threatData in pairs(threats) do
+    for _, threatData in pairs(threats) do
         if threatData.status == "Observed" then
             observed = observed + 1
         elseif threatData.status == "Suspected" then
@@ -2899,6 +2785,10 @@ function GroupCommander:getStatusReport()
     return ForceStatusAnalyzer.getStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
 end
 
+function GroupCommander:getCriticalStatus()
+    return ForceStatusAnalyzer.getCriticalStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
+end
+
 function GroupCommander:getCollectiveStatus()
     local statusReport = self:getStatusReport()
     return ForceStatusAnalyzer.getCollectiveStatusFromReport(statusReport, #self.initialUnitNames)
@@ -2920,104 +2810,38 @@ function GroupCommander:getDestinationToObjective(objectivePosition, objectiveRa
 end
 
 function GroupCommander:getOwnPosition()
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return nil
+    local units = self:getOwnUnits()
+    local positions = {}
+    for _, unit in ipairs(units) do
+        local pos = unit:getPosition().p
+        table.insert(positions, pos)
     end
-    
-    local units = group:getUnits()
-    if #units == 0 then
-        return nil
-    end
-    
-    -- Use first unit position as group position
-    local unit = units[1]
-    if unit and unit:isExist() then
-        return unit:getPosition().p
-    end
-    
-    return nil
+    return SpatialAgent.calculateCenter(positions)
 end
 
-function GroupCommander:getOwnUnitNames()
+function GroupCommander:getOwnUnits()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then
         return {}
     end
     
     local units = group:getUnits()
-    local unitNames = {}
+    local validUnits = {}
     for _, unit in ipairs(units) do
         if unit and unit:isExist() then
-            table.insert(unitNames, unit:getName())
+            table.insert(validUnits, unit)
         end
     end
-    return unitNames
+    return validUnits
 end
 
-function GroupCommander:getCriticalStatus(situation)
-    local status = situation.statusReport
-    local threat = situation.threatAssessment
-    
-    if not status or status.aliveCount == 0 then
-        return nil  -- No decision needed
+function GroupCommander:getOwnUnitNames()
+    local units = self:getOwnUnits()
+    local unitNames = {}
+    for _, unit in ipairs(units) do
+        table.insert(unitNames, unit:getName())
     end
-    
-    local totalUnits = #self.initialUnitNames
-    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
-    local low_ammo = ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount, 20)
-    
-    -- CRITICAL: Heavy casualties (>40%) - force retreat
-    if attritionRate > 0.4 then
-        return {
-            level = "CRITICAL",
-            reason = "HEAVY_CASUALTIES",
-        }
-    end
-    
-    -- CRITICAL: No ammunition - hold or retreat
-    if self.initialAmmoCount > 0 and status.ammoCount == 0 then
-        if threat.count > 0 and not threat.stale then
-            return {
-                level = "CRITICAL",
-                reason = "NO_AMMO_WITH_THREATS",
-            }
-           
-        else
-            return {
-                level = "WARNING",
-                reason = "NO_AMMO_NO_THREATS",
-            }
-        end
-    end
-    
-    -- WARNING: Moderate casualties (30-40%) with unfavorable situation
-    if attritionRate > 0.3 and threat.favorability < 0.8 then
-        return {
-            level = "WARNING",
-            reason = "MODERATE_CASUALTIES",
-        }
-    end
-    
-    -- WARNING: Light casualties (20-30%) with clearly unfavorable
-    if attritionRate > 0.2 and threat.favorability < 0.65 then
-        return {
-            level = "WARNING",
-            reason = "EARLY_CASUALTIES",
-        }
-    end
-    
-    -- WARNING: Low ammunition - hold unless overwhelming advantage
-    if self.initialAmmoCount > 0 then
-        if low_ammo and threat.favorability < 2.0 then
-            return {
-                level = "WARNING",
-                reason = "LOW_AMMO",
-            }
-        end
-    end
-    
-    return nil  -- No critical conditions
+    return unitNames
 end
 
 function GroupCommander:getStatus()
@@ -3030,25 +2854,18 @@ function GroupCommander:getStatus()
         orderStatus = self.orders and self.orders.status or nil,
         position = self:getOwnPosition(),
         status = collectiveStatus,
-        threats = self.threatTracker:getThreats(),
+        threats = self.threatTracker:getRecentThreats(),
     }
     return status
 end
 
 function GroupCommander:getSlowestUnitSpeed()
-    local group = Group.getByName(self.groupName)
-    if not group or not group:isExist() then
-        return 0
-    end
-    
-    local units = group:getUnits()
+    local units = self:getOwnUnits()
     local slowestSpeed = nil
     for _, unit in ipairs(units) do
-        if unit and unit:isExist() then
-            local speed = unit:getDesc().speedMax
-            if not slowestSpeed or speed < slowestSpeed then
-                slowestSpeed = speed
-            end
+        local speed = unit:getDesc().speedMax
+        if not slowestSpeed or speed < slowestSpeed then
+            slowestSpeed = speed
         end
     end
     return slowestSpeed or 0
@@ -3206,7 +3023,7 @@ function GroupCommander:shouldAbortForThreat()
     end
     
     -- No threats, no need to abort
-    if threat.count == 0 or not threat.center or threat.stale then
+    if threat.count == 0 or not threat.center then
         return false
     end
     
@@ -3720,12 +3537,11 @@ function OrderExecutionPlan:executeOrder(situation, commander, alerts)
     local advanceThreshold = 1.5
     if threat.favorability >= advanceThreshold then
         local advanceDest = commander:calculateDestinationRelativeToThreats(threat.center, false)
-        local ownPosition = commander:getOwnPosition()
         
         -- Verify threat is closer to group than objective
         if advanceDest then
-            local objectiveDist = SpatialAgent.distance2D(orderContext.position, ownPosition)
-            local threatDist = SpatialAgent.distance2D(threat.center, ownPosition)
+            local objectiveDist = SpatialAgent.distance2D(orderContext.position, commander:getPosition())
+            local threatDist = SpatialAgent.distance2D(threat.center, orderContext.position)
             if threatDist > objectiveDist then
                 -- Threat too far from objective, return to objective instead
                 return self:moveToObjective(commander, orderContext)
@@ -3965,6 +3781,52 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
         healthPool = healthPool,
         healthLowState = healthLowState,
     }
+end
+
+function ForceStatusAnalyzer.getCriticalStatusReport(groupNameOrGroup, initialUnitNames, fuelRemaining)
+    local status = ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames, fuelRemaining)
+    
+    if not status or status.aliveCount == 0 then
+        return nil  -- No decision needed
+    end
+    
+    local totalUnits = #initialUnitNames
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    local hasAmmoCounts = status.ammoCount ~= nil and status.initialAmmoCount ~= nil
+    
+    -- CRITICAL: Heavy casualties (>40%) - force retreat
+    if attritionRate > 0.4 then
+        return {
+            level = "CRITICAL",
+            reason = "HEAVY_CASUALTIES",
+        }
+    end
+    
+    -- CRITICAL: No ammunition - hold or retreat
+    if hasAmmoCounts and status.initialAmmoCount > 0 and status.ammoCount == 0 then
+        return {
+            level = "CRITICAL",
+            reason = "NO_AMMO_WITH_THREATS",
+        }
+    end
+    
+    -- WARNING: Moderate casualties (30-40%)
+    if attritionRate > 0.3 then
+        return {
+            level = "WARNING",
+            reason = "MODERATE_CASUALTIES",
+        }
+    end
+
+    -- WARNING: Low ammunition
+    if hasAmmoCounts and status.initialAmmoCount > 0 and ForceStatusAnalyzer.isAmmoLow(status.ammoCount, status.initialAmmoCount, 20) then
+        return {
+            level = "WARNING",
+            reason = "LOW_AMMO",
+        }
+    end
+    
+    return nil  -- No critical conditions
 end
 
 --- Get collective status (percentage of units alive)
