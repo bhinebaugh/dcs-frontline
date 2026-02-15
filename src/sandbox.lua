@@ -3,7 +3,9 @@ local taskTypes = constants.taskTypes
 
 local GroupCommander = require("group-commander")
 local Objective = require("objective")
+local Order = require("order")
 local OperationalCommander = require("operational-commander")
+local PatrolPlan = require("doctrines.tactical.patrol-doctrine")
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
@@ -14,8 +16,8 @@ local blueDefendPosition = coord.LLtoLO(
 
 -- Known safe rally point for Blue forces
 local blueRallyPosition = coord.LLtoLO(
-    42 + 25/60 + 30/3600,
-    44 + 00/60 + 26/3600
+    42 + 31/60 + 45/3600,
+    44 + 05/60 + 35/3600
 )
 
 -- Initial objective for Bravo is to reposition to the
@@ -45,36 +47,47 @@ opsRed.rallyPoints = {
 
 -- Create and assign objectives directly
 opsBlue.orderCoordinator.objectives = {
-    Objective.new({
-        type = taskTypes.ASSAULT,
-        position = blueDefendPosition,
-        radius = 500,
-    })
+    -- Objective.new({
+    --     type = taskTypes.ASSAULT,
+    --     position = blueDefendPosition,
+    --     radius = 500,
+    -- })
 }
 
 opsRed.orderCoordinator.objectives = {
-    Objective.new({
-        type = taskTypes.ASSAULT,
-        position = redRepositionPosition,
-        deadline = timer.getTime() + 1800,  -- 30 minute deadline
-    })
+    -- Objective.new({
+    --     type = taskTypes.ASSAULT,
+    --     position = redRepositionPosition,
+    --     deadline = timer.getTime() + 1800,  -- 30 minute deadline
+    -- })
 }
 
-local function createGroupCommandersForFilter(filterTable, color, opsCommander)
-    local groupNames = mist.makeGroupTable(filterTable) or {}
-    for _, groupName in ipairs(groupNames) do
-        local group = Group.getByName(groupName)
-        if group and group:isExist() and group:getCategory() == Group.Category.GROUND then
-            GroupCommander.new(groupName, {
-                color = color,
-                stratcom = opsCommander
-            })
+local function createGroupCommandersForFilter(color, opsCommander)
+    for groupName, groupData in pairs(mist.DBs.groupsByName) do
+        if groupData.coalition == color then
+            local group = Group.getByName(groupName)
+            if group and group:isExist() then
+                GroupCommander.new(groupName, {
+                    color = color
+                })
+            end
         end
     end
 end
 
-createGroupCommandersForFilter({"[blue]"}, "blue", opsBlue)
-createGroupCommandersForFilter({"[red]"}, "red", opsRed)
+createGroupCommandersForFilter("blue", opsBlue)
+createGroupCommandersForFilter("red", opsRed)
+
+local blueCommanders = GroupCommander.getInstances("blue")
+local firstBlueCommander = blueCommanders[1]
+local order = Order.new({
+    type = taskTypes.PATROL,
+    position = blueRallyPosition,
+    radius = 500,
+})
+if firstBlueCommander then
+    firstBlueCommander:issueOrder(order)
+end
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge

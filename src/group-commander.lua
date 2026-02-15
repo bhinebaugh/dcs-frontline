@@ -1,9 +1,11 @@
 local constants = require("constants")
-local DefensivePosturePlan = require("game-plans.tactical.defensive-posture-plan")
+local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local OODACommander = require("ooda-commander")
 local OrderCoordinator = require("order-coordinator")
-local OrderExecutionPlan = require("game-plans.tactical.order-execution-plan")
+local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
+local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
+local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local SpatialAgent = require("spatial-agent")
 local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
@@ -13,6 +15,7 @@ local dispositionTypes = constants.dispositionTypes
 local formationTypes = constants.formationTypes
 local orderStatus = constants.orderStatus
 local roe = constants.rulesOfEngagement
+local taskTypes = constants.taskTypes
 local GroupCommander = {}
 
 setmetatable(GroupCommander, {__index = OODACommander})
@@ -58,8 +61,8 @@ function GroupCommander.new(groupName, config)
     self.lastObserveTime = timer.getTime()
     
     -- Active GamePlan (persists across OODA cycles until plan type changes)
-    self.gamePlan = nil
-    self.gamePlanType = nil  -- Track current plan type to detect switches
+    self.doctrine = nil
+    self.doctrineType = nil  -- Track current plan type to detect switches
     
     -- Register this instance
     table.insert(GroupCommander.instances, self)
@@ -150,7 +153,7 @@ function GroupCommander:orient()
     -- Gather situational awareness for decision making
     self.ownForceStrength = self:analyzeOwnForce()
 
-    self:assessThreats()
+    self.threatAssessment = self:assessThreats()
 
     -- Use OrderCoordinator to derive context snapshot
     local ownPos = self:getOwnPosition()
@@ -159,16 +162,22 @@ end
 
 function GroupCommander:decide()
     if self.orders and self.orders.status == orderStatus.ASSIGNED then
-        self.gamePlan = OrderExecutionPlan.new()
+        if self.orders.type == taskTypes.PATROL then
+            self.doctrine = PatrolDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.RECON then
+            self.doctrine = ReconDoctrine.new(self.groupName)
+        else
+            self.doctrine = AsOrderedDoctrine.new(self.groupName)
+        end
     end
 
     if self.orders and self.orders:isFinished() then
         self.orders = nil
-        self.gamePlan = DefensivePosturePlan.new()
+        self.doctrine = DefensiveDoctrine.new(self.groupName)
     end
 
-    if not self.gamePlan then
-        self.gamePlan = DefensivePosturePlan.new()
+    if not self.doctrine then
+        self.doctrine = DefensiveDoctrine.new(self.groupName)
     end
 
     -- Check if we have valid assessment data
@@ -187,13 +196,13 @@ function GroupCommander:decide()
         return
     end
         
-    -- Use GamePlan to make tactical decisions
-    local decision = self.gamePlan:plan(context)
+    -- Use Doctrine to make tactical decisions
+    local decision = self.doctrine:plan(context)
     if decision then
         self:setDisposition(decision.disposition)
         self.destination = decision.destination
     else
-        env.info("ERROR: GamePlan returned nil decision for " .. self.groupName)
+        env.info("ERROR: Doctrine returned nil decision for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
         self.destination = self:getOwnPosition()
     end
@@ -252,21 +261,14 @@ end
 
 -- Assess threat situation including staleness, center of mass, and comparative strength
 function GroupCommander:assessThreats()
-    if not self.ownForceStrength then
-        self.threatAssessment = nil
-        return
-    end
-    
-    -- Get threat status breakdown
-    local threatStatuses = self:checkThreatStatuses()
-    
     -- Analyze threat capabilities
     local threatAnalysis = self:analyzeThreatCapabilities()
     
     -- Calculate threat center if threats exist
     local threatCenter = nil
+    local recentThreats = self.threatTracker:getRecentThreats()
     if threatAnalysis.count > 0 then
-        threatCenter = self:calculateThreatCenter()
+        threatCenter = SpatialAgent.calculateCenterOfObjects(recentThreats)
     end
     
     -- Calculate favorability if threats exist
@@ -303,145 +305,11 @@ function GroupCommander:assessThreats()
     end
     
     -- Store consolidated threat assessment
-    self.threatAssessment = {
+    return {
         count = threatAnalysis.count,
         analysis = threatAnalysis,
-        statuses = threatStatuses,
         center = threatCenter,
-        favorability = favorability,
-        hasRecentIntel = self.threatTracker:hasRecentThreats(120)  -- Any intel within 2 minutes
-    }
-end
-
-function GroupCommander:calculateDestinationRelativeToThreats(threatCenter, retreat)
-    local ownPos = self:getOwnPosition()
-    if not ownPos or not threatCenter then
-        env.info(self.groupName .. " Cannot calculate destination: missing position data")
-        return nil
-    end
-
-    local threatDistance = SpatialAgent.distance2D(ownPos, threatCenter)
-    local threatDirection = SpatialAgent.calculateDirection(ownPos, threatCenter)
-    
-    -- Set movement distance based on action
-    if retreat then
-        -- Move away from threats
-        local retreatDistance = 2000  -- 2km retreat
-        local retreatDirection = SpatialAgent.rotateVector(threatDirection, 180)
-        return SpatialAgent.calculateDestination(ownPos, retreatDirection, retreatDistance)
-    else
-        -- Move toward threats (advance)
-        local optimalRange = 250   -- Close to 250m for optimal engagement
-        local weaponRange = 1000   -- Max weapon range is 1km
-        
-        -- If beyond weapon range, move to weapon range
-        -- If within weapon range, close to optimal range for better accuracy
-        local targetRange = threatDistance > weaponRange and weaponRange or optimalRange
-        
-        -- If already at or closer than optimal range, stay put
-        if threatDistance <= optimalRange then
-            return nil
-        end
-        
-        return SpatialAgent.calculateDestination(ownPos, threatDirection, threatDistance - targetRange)
-    end
-end
-
-function GroupCommander:calculateReturnToObjective()
-    -- Calculate retreat destination back toward objective/friendly lines
-    local ownPos = self:getOwnPosition()
-    if not ownPos then
-        return nil
-    end
-    
-    local context = self.orderContext
-    if context and context.position then
-        -- Retreat toward ordered objective
-        local distance = SpatialAgent.distance2D(ownPos, context.position)
-        local direction = SpatialAgent.calculateDirection(ownPos, context.position)
-        
-        if distance and distance > 1 then
-            -- Move 1km back toward objective
-            local retreatDistance = math.min(1000, distance)
-            return SpatialAgent.calculateDestination(ownPos, direction, retreatDistance)
-        end
-    end
-end
-
-function GroupCommander:calculateThreatCenter(observedOnly)
-    -- Calculate the average position of threats based on last known positions
-    -- observedOnly: if true, only include threats directly observed by THIS unit (not shared intel)
-    local currentTime = timer.getTime()
-    local threatsToInclude = {}
-    
-    local threats = self.threatTracker:getRecentThreats()
-    for unitName, threatData in pairs(threats) do
-        -- Filter to only this unit's own observations if requested
-        local includeThisThreat = true
-        if observedOnly then
-            -- Check if THIS unit has observed the threat recently (within last 30 seconds)
-            local selfObservedRecently = false
-            if threatData.sightings then
-                for _, sighting in ipairs(threatData.sightings) do
-                    if sighting.observedBy == self.groupName and 
-                       (currentTime - sighting.observedAt) < 30 then
-                        selfObservedRecently = true
-                        break
-                    end
-                end
-            end
-            
-            if not selfObservedRecently then
-                -- Skip threats not directly observed by this unit
-                includeThisThreat = false
-            end
-        end
-        
-        if includeThisThreat then
-            table.insert(threatsToInclude, threatData)
-        end
-    end
-    
-    -- Use SpatialAgent to calculate center
-    return SpatialAgent.calculateThreatCenter(threatsToInclude)
-end
-
-function GroupCommander:checkThreatStatuses()
-    -- Check threat statuses and return info about whether threats are observed vs suspected/unconfirmed
-    local threats = self.threatTracker:getThreats()
-    local observed = 0
-    local suspected = 0
-    local unconfirmed = 0
-    local other = 0
-    local mostRecentObservation = 0
-    
-    for _, threatData in pairs(threats) do
-        if threatData.status == "Observed" then
-            observed = observed + 1
-        elseif threatData.status == "Suspected" then
-            suspected = suspected + 1
-        elseif threatData.status == "Unconfirmed" then
-            unconfirmed = unconfirmed + 1
-        else
-            other = other + 1
-        end
-        
-        -- Track most recent observation time
-        if threatData.lastSighting and threatData.lastSighting > mostRecentObservation then
-            mostRecentObservation = threatData.lastSighting
-        end
-    end
-    
-    return {
-        observed = observed,
-        suspected = suspected,
-        unconfirmed = unconfirmed,
-        other = other,
-        total = observed + suspected + unconfirmed + other,
-        allSuspectedOrUnconfirmed = (observed == 0) and ((suspected + unconfirmed) > 0),
-        hasUnconfirmed = unconfirmed > 0,
-        mostRecentObservation = mostRecentObservation,
-        timeSinceLastObservation = mostRecentObservation > 0 and (timer.getTime() - mostRecentObservation) or 0
+        favorability = favorability
     }
 end
 
@@ -677,31 +545,6 @@ function GroupCommander:setROE(roeLevel)
     else
         env.info("ERROR: Cannot set ROE, group " .. self.groupName .. " does not exist")
     end
-end
-
--- Check if order should be aborted due to threat
-function GroupCommander:shouldAbortForThreat()
-    local threat = self.threatAssessment
-    local context = self.orderContext
-    
-    if not threat or not context then
-        return false
-    end
-    
-    -- No threats, no need to abort
-    if threat.count == 0 or not threat.center then
-        return false
-    end
-    
-    -- Check if threat exceeds acceptable risk
-    local shouldAbort = threat.favorability < context.retreatThreshold
-    
-    if shouldAbort then
-        env.info(self.groupName .. " DECIDE: Aborting order due to threat (favorability=" .. 
-                 string.format("%.2f", threat.favorability) .. ")")
-    end
-    
-    return shouldAbort
 end
 
 -- Helper to stop group movement

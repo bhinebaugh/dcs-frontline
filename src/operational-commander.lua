@@ -1,11 +1,9 @@
 local constants = require("constants")
 local ForceStatusAnalyzer = require("force-status-analyzer")
-local GamePlan = require("game-plan")
 local GroupCommander = require("group-commander")
 local OODACommander = require("ooda-commander")
-local Order = require("order")
 local OrderCoordinator = require("order-coordinator")
-local ReconRallyAssaultPlan = require("game-plans.operational.recon-rally-assault-plan")
+local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
 local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
 
@@ -27,6 +25,7 @@ function OperationalCommander.new(config)
 
     -- OperationalCommander-specific initialization
     self.color = config.color or "white"
+    self.name = config.color .. "Ops"
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
     self.orderCoordinator = OrderCoordinator.new(self.color)
     self.lastIssuedOrders = {}
@@ -100,6 +99,102 @@ function OperationalCommander:orient()
         env.info("*** " .. self.color .. " Ops ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted), " .. planningContextCount .. " contexts")
     end
 end
+
+
+
+function OperationalCommander:decide()
+    self.plannedOrders = {}
+    self.plannedThisCycle = {}  -- Track which commanders have orders planned this cycle
+    
+    -- Review and cancel obsolete orders before planning new ones
+    self:reviewAndCancelObsoleteOrders()
+    
+    -- Process each active objective - GamePlan has full control
+    -- GamePlans can recruit any commanders they need, including idle units
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
+        if objective.status == "Active" then
+            -- Assign default GamePlan if none exists
+            if not objective.gamePlan then
+                objective.gamePlan = ReconRallyAssaultPlan.new(self.name)
+                env.info("*** " .. self.color .. " Ops: Assigned default ReconRallyAssaultPlan to objective")
+            end
+            
+            self:planObjectiveWithGamePlan(objective)
+        end
+    end
+    
+    -- Units not recruited by any GamePlan will use autonomous GroupCommander behavior
+    -- (In the future, GroupCommander will also use GamePlans for tactical decisions)
+    
+    -- Log consolidated DECIDE summary
+    if #self.plannedOrders > 0 then
+        env.info("*** " .. self.color .. " Ops DECIDE: Planning " .. #self.plannedOrders .. " orders")
+    else
+        env.info("*** " .. self.color .. " Ops DECIDE: No new orders planned")
+    end
+end
+
+
+function OperationalCommander:act()
+    -- Update ally intel for all active groups
+    self:updateAllyIntelForAllGroups()
+    
+    if not self.plannedOrders or #self.plannedOrders == 0 then
+        return
+    end
+
+    local issuedCount = 0
+    for _, plan in ipairs(self.plannedOrders) do
+        local commander = plan.commander
+        local order = plan.order
+        local lastOrder = self.lastIssuedOrders[commander.groupName]
+        local commanderStatus = commander:getStatus()
+
+        if OrderCoordinator.isOrderChanged(lastOrder, order, commanderStatus) then
+            if plan.threats then
+                commander:updateThreatIntel(plan.threats)
+            end
+            
+            -- Send nearby ally strength intel (within support range)
+            local allyIntel = self:assessNearbyAllyStrength(order.position, 5000, commander.groupName)
+            if allyIntel then
+                commander:updateAllyIntel(allyIntel)
+            end
+
+            if order.objective then
+                order.objective:addOrder(order)
+            end
+
+            commander:issueOrder(order)
+            self.lastIssuedOrders[commander.groupName] = {
+                alr = order.alr,
+                position = {x = order.position.x, z = order.position.z},
+                radius = order.radius,
+                type = order.type,
+                issuedAt = timer.getTime(),
+                threatCenter = plan.threatCenter,  -- Store threat center for rally orders
+            }
+            issuedCount = issuedCount + 1
+            
+            -- Log each order issued
+            local orderTypeName = order.type == taskTypes.RALLY and "RALLY" or 
+                                order.type == taskTypes.ASSAULT and "ASSAULT" or 
+                                order.type == taskTypes.RECON and "RECON" or 
+                                order.type == taskTypes.DEFEND and "DEFEND" or 
+                                order.type == taskTypes.REPOSITION and "REPOSITION" or 
+                                tostring(order.type)
+            env.info("*** " .. self.color .. " Ops ACT: " .. orderTypeName .. " → " .. commander.groupName)
+        end
+    end
+    
+    -- Log consolidated ACT summary
+    env.info("*** " .. self.color .. " Ops ACT: Issued " .. issuedCount .. " orders total")
+end
+
+
+-- ============================================================================
+-- HELPER METHODS
+-- ============================================================================
 
 -- Clean up destroyed commanders and orphaned objectives
 function OperationalCommander:cleanupDestroyedCommanders()
@@ -277,38 +372,6 @@ function OperationalCommander:reviewAndCancelObsoleteOrders()
     end
 end
 
-function OperationalCommander:decide()
-    self.plannedOrders = {}
-    self.plannedThisCycle = {}  -- Track which commanders have orders planned this cycle
-    
-    -- Review and cancel obsolete orders before planning new ones
-    self:reviewAndCancelObsoleteOrders()
-    
-    -- Process each active objective - GamePlan has full control
-    -- GamePlans can recruit any commanders they need, including idle units
-    for _, objective in ipairs(self.orderCoordinator.objectives) do
-        if objective.status == "Active" then
-            -- Assign default GamePlan if none exists
-            if not objective.gamePlan then
-                objective.gamePlan = ReconRallyAssaultPlan.new()
-                env.info("*** " .. self.color .. " Ops: Assigned default ReconRallyAssaultPlan to objective")
-            end
-            
-            self:planObjectiveWithGamePlan(objective)
-        end
-    end
-    
-    -- Units not recruited by any GamePlan will use autonomous GroupCommander behavior
-    -- (In the future, GroupCommander will also use GamePlans for tactical decisions)
-    
-    -- Log consolidated DECIDE summary
-    if #self.plannedOrders > 0 then
-        env.info("*** " .. self.color .. " Ops DECIDE: Planning " .. #self.plannedOrders .. " orders")
-    else
-        env.info("*** " .. self.color .. " Ops DECIDE: No new orders planned")
-    end
-end
-
 -- Plan objective orders using GamePlan strategy
 function OperationalCommander:planObjectiveWithGamePlan(objective)
     local planningContext = self.planningContexts[objective]
@@ -337,65 +400,6 @@ function OperationalCommander:planObjectiveWithGamePlan(objective)
     end
 end
 
-function OperationalCommander:act()
-    -- Update ally intel for all active groups
-    self:updateAllyIntelForAllGroups()
-    
-    if not self.plannedOrders or #self.plannedOrders == 0 then
-        return
-    end
-
-    local issuedCount = 0
-    for _, plan in ipairs(self.plannedOrders) do
-        local commander = plan.commander
-        local order = plan.order
-        local lastOrder = self.lastIssuedOrders[commander.groupName]
-        local commanderStatus = commander:getStatus()
-
-        if OrderCoordinator.isOrderChanged(lastOrder, order, commanderStatus) then
-            if plan.threats then
-                commander:updateThreatIntel(plan.threats)
-            end
-            
-            -- Send nearby ally strength intel (within support range)
-            local allyIntel = self:assessNearbyAllyStrength(order.position, 5000, commander.groupName)
-            if allyIntel then
-                commander:updateAllyIntel(allyIntel)
-            end
-
-            if order.objective then
-                order.objective:addOrder(order)
-            end
-
-            commander:issueOrder(order)
-            self.lastIssuedOrders[commander.groupName] = {
-                alr = order.alr,
-                position = {x = order.position.x, z = order.position.z},
-                radius = order.radius,
-                type = order.type,
-                issuedAt = timer.getTime(),
-                threatCenter = plan.threatCenter,  -- Store threat center for rally orders
-            }
-            issuedCount = issuedCount + 1
-            
-            -- Log each order issued
-            local orderTypeName = order.type == taskTypes.RALLY and "RALLY" or 
-                                order.type == taskTypes.ASSAULT and "ASSAULT" or 
-                                order.type == taskTypes.RECON and "RECON" or 
-                                order.type == taskTypes.DEFEND and "DEFEND" or 
-                                order.type == taskTypes.REPOSITION and "REPOSITION" or 
-                                tostring(order.type)
-            env.info("*** " .. self.color .. " Ops ACT: " .. orderTypeName .. " → " .. commander.groupName)
-        end
-    end
-    
-    -- Log consolidated ACT summary
-    env.info("*** " .. self.color .. " Ops ACT: Issued " .. issuedCount .. " orders total")
-end
-
--- ============================================================================
--- HELPER METHODS
--- ============================================================================
 
 function OperationalCommander:getAvailableGroupCommanders()
     local available = {}
