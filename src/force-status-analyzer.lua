@@ -221,6 +221,10 @@ function ForceStatusAnalyzer.isAmmoBelowThreshold(currentAmmo, baselineAmmo, thr
     return currentAmmo < thresholdAmount
 end
 
+function ForceStatusAnalyzer.isUnarmed(baselineAmmo)
+    return baselineAmmo == 0
+end
+
 -- ============================================================================
 -- Attrition Analysis
 -- ============================================================================

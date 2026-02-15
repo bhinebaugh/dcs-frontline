@@ -48,6 +48,7 @@ local taskTypes = {
     INDIRECT = 6,
     AA = 7,
     REPOSITION = 8,
+    PATROL = 9,
 }
 
 local threatStatus = {
