@@ -80,24 +80,20 @@ function ControlZones:setup(options)
         self.owner[name] = (redDistance < blueDistance) and "red" or "blue"
     end
 
-    local blueZones = self:getCluster("blue")
-    local redZones = self:getCluster("red")
-
-    --find centroid (averaged point, center of mass) of opponent's cluster
-    --for now this will be used as the axis along which frontlines will be offset
-    for color, zoneCluster in pairs({ blue = blueZones, red = redZones }) do
-        local sumX = 0
-        local sumY = 0
-        for _, id in pairs(zoneCluster) do
-            sumX = sumX + self.zonesByName[id].x
-            sumY = sumY + self.zonesByName[id].y
-        end
-        self.centroid[color] = { x = sumX / #zoneCluster, y = sumY / #zoneCluster }
-    end
-    self.map = Map.new(self.centroid.blue, self.centroid.red)
+    self.map = Map.new()
 
     self.perimeter = self:findPerimeter(self.allZones)
 
+end
+
+function ControlZones:centroidOfZones(zones)
+    local sumX = 0
+    local sumY = 0
+    for _, id in pairs(zones) do
+        sumX = sumX + self.zonesByName[id].x
+        sumY = sumY + self.zonesByName[id].y
+    end
+    return { x = sumX / #zones, y = sumY / #zones }
 end
 
 function ControlZones:getCluster(color)
@@ -777,16 +773,50 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
-function ControlZones:spawnFARP(color, point)
+function ControlZones:selectTrianglesForFARPs(color, front)
+    if #front.zones < 2 then
+        return {}
+    end
+
+    FARP_MIN_INTERVAL = 20000
+    local farpEdges = {}
+    local farpTris = {}
+    local length = 0
+
+    for i=2, #front.zones do
+        local edge = self:getEdge(front.zones[i], front.zones[i-1])
+        length = length + edge.distance.straight
+        if length > FARP_MIN_INTERVAL then
+            table.insert(farpEdges, {front.zones[i], front.zones[i-1]})
+            length = 0
+            -- or examine associated triangles right away and do not reset length if no fully-controlled found
+        end
+    end
+
+    for _, edge in pairs(farpEdges) do
+        for _, tri in pairs(self.triangles) do
+            if self:triangleHasEdge(tri, edge[1], edge[2]) then
+                if self.owner[tri[1]] == color and self.owner[tri[2]] == color and self.owner[tri[3]] == color then
+                    table.insert(farpTris, tri)
+                    break
+                end
+            end
+        end
+    end
+
+    return farpTris
+end
+
+function ControlZones:placeFARP(color, pt)
     local searchRadius = 1000
     local clearRadius = 120
-    local spot = Disposition.getSimpleZones(point, searchRadius, clearRadius, 1)
-    if spot[1] == nil then
-        env.info("Location for FARP could not be found within "..searchRadius.."m of "..point.x..", "..point.z)
+    local spot = Disposition.getSimpleZones(mist.utils.makeVec3(pt), searchRadius, clearRadius, 1)
+    if not spot or not spot[1] then
+        env.info("!! no suitable spot found for spawning FARP")
         return false
     end
 
-    local coal = color == "blue" and country.id.USA or country.id.RUSSIA
+    local coal = color == "blue" and country.id.USA or country.id.RUSSIA --country.id.USSR
     local farp = {
         ["category"] = "Heliports",
         ["shape_name"] = "FARPS", -- "invisiblefarp"  | "FARP"           | "FARP_SINGLE_01"
@@ -1000,6 +1030,7 @@ function ControlZones:kickoff()
     self.map:drawEdges(self:getAllEdges())
 
     for color, _ in pairs(self.commanders) do
+        self.centroid[color] = self:centroidOfZones(self:getCluster(color))
         local fronts = self:getOrderedFrontlines(color)
 
         -- for each front, draw frontline and place FARPs

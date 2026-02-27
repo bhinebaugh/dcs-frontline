@@ -3,7 +3,7 @@ local settings = require("settings")
 local Map = {}
 Map.__index = Map
 
-function Map.new(blueCenter, redCenter)
+function Map.new()
     local self = setmetatable({}, Map)
     self.markerCounter = 5000
     self.markers = {
@@ -14,10 +14,6 @@ function Map.new(blueCenter, redCenter)
         zones = {},
         zoneLabels = {},
         edges = {},
-    }
-    self.center = {
-        blue = blueCenter,
-        red = redCenter
     }
     return self
 end
@@ -70,9 +66,6 @@ function Map:drawZones(zones)
     for name, info in pairs(zones) do
         self:drawZone(name, info.color, info.point)
     end
-
-    trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(self.center["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
-    trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(self.center["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 end
 
 function Map:drawEdges(edges)
