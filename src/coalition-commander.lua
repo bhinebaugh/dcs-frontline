@@ -11,6 +11,7 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
     self.templates = groundTemplates
+    self.groupId = 1
     self.groups = {} -- e.g. name location task
     self.groupsByZone = {}
     for _, name in pairs(self.map.allZones) do
@@ -28,6 +29,11 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     }
     -- attitude/aggressiveness = offensive, defensive, cautious, etc
     return self
+end
+
+function CoalitionCommander:getNewGroupId()
+    self.groupId = self.groupId + 1
+    return self.groupId
 end
 
 function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneName)
@@ -115,7 +121,7 @@ function CoalitionCommander:chooseZoneReinforcements(zones)
     for _, zoneName in pairs(zones) do
         local r = math.random(#self.templates)
         local group = self.templates[r]
-        local groupName = zoneName.."-"..self.map:getNewGroupId()
+        local groupName = zoneName.."-"..self:getNewGroupId()
         reinforcements[zoneName] = {
             groupName = groupName,
             template = group

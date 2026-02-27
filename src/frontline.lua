@@ -12,7 +12,7 @@ local UnitLostHandler = require("handlers").UnitLostHandler --Load event handler
 
 local constants = require("constants") --Load constants
 
-local cz = ControlZones.new(nil, constants.groundTemplates)
+cz = ControlZones.new(nil, constants.groundTemplates)
 
 cz:setup()
 cz:constructDelaunayIndex()

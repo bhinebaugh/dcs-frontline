@@ -510,12 +510,18 @@ function ControlZones:precalculateConnections()
         }
         for m, pair in ipairs(triPairs) do
             local v1, v2 = pair[1], pair[2]
-            local key1, key2 = tri[v1], tri[v2]
-            local edgeKey = key1 < key2 and (key1 .. "-" .. key2) or (key2 .. "-" .. key1)
+            local key1, key2
+            if tri[v1] < tri[v2] then
+                key1, key2 = tri[v1], tri[v2]
+            else
+                key1, key2 = tri[v2], tri[v1]
+            end
+            local edgeKey = key1 .. "-" .. key2
 
             if not edgeSet[edgeKey] then
                 edgeSet[edgeKey] = true
                 local z1, z2 = self:getZone(key1), self:getZone(key2)
+                local heading = mist.utils.getHeadingPoints(z1.point, z2.point)
                 local distance = mist.utils.get2DDist(z1.point, z2.point)
                 local roadPath = land.findPathOnRoads("roads", z1.x, z1.y, z2.x, z2.y)
                 local roadDistance = mist.getPathLength(roadPath)
@@ -530,13 +536,17 @@ function ControlZones:precalculateConnections()
                 self.edges[edgeKey] = {
                     p1 = z1.point,
                     p2 = z2.point,
+                    heading = heading,
                     distance = {
                         straight = distance,
                         road = roadDistance,
                     },
                     crosscountry = cross_country,
                     terrainDifficulty = 0,
+                    triangles = {l} --index of member triangle in self.triangles
                 }
+            elseif not table.contains(self.edges[edgeKey].triangles, l) then
+                table.insert(self.edges[edgeKey].triangles, l)
             end
         end
     end
@@ -560,6 +570,33 @@ local function angularDistance(from, to)
         diff = diff + TWO_PI
     end
     return diff
+end
+
+function ControlZones:getHeading(z1, z2)
+    local heading = self:getEdge(z1, z2).heading
+    if z1 < z2 then
+        return heading
+    else
+        return normalizeAngle(heading + math.pi)
+    end
+end
+
+function ControlZones:calculateLength(front)
+    local length = 0
+    if #front.zones < 2 then
+        return length
+    end
+
+    for i=2, #front.zones do
+        local edge = self:getEdge(front.zones[i], front.zones[i-1])
+        length = length + edge.distance.straight
+    end
+    if front.isLoop then
+        local edge = self:getEdge(front.zones[#front.zones], front.zones[1])
+        length = length + edge.distance.straight
+    end
+
+    return length
 end
 
 -- Calculates edges in contiguous sequence, returning multiple if frontline is disconnected
@@ -591,6 +628,7 @@ function ControlZones:getOrderedFrontlines(color)
         local segment = {
             zones = {},
             points = {},
+            length = nil,
             isLoop = false,
         }
         local current = startKey
@@ -628,8 +666,7 @@ function ControlZones:getOrderedFrontlines(color)
                     break
                 else
                     lastEnemy = neighbor
-                    local enemyPoint = self:getZone(neighbor).point
-                    local enemyHeading = mist.utils.getHeadingPoints(z.point, enemyPoint)
+                    local enemyHeading = self:getHeading(current, neighbor)
                     table.insert(segment.points, {center = z.point, heading = enemyHeading})
                     -- if current is a flank anchor (on the perimeter), stop at first enemy also on perimeter
                     -- (handles lone perimeter zone that has no allied neighbors)
@@ -662,6 +699,7 @@ function ControlZones:getOrderedFrontlines(color)
             end
             segment.isLoop = true
         end
+        segment.length = self:calculateLength(segment)
 
         return segment
     end --end local function constructSegment
