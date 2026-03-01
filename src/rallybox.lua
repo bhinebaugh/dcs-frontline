@@ -5,12 +5,12 @@ local GroupCommander = require("group-commander")
 local Objective = require("objective")
 local OperationalCommander = require("operational-commander")
 
--- NOTE: GamePlan usage example:
--- To assign a specific strategy to an objective, create the GamePlan and assign it:
+-- NOTE: Doctrine usage example:
+-- To assign a specific strategy to an objective, create the Doctrine and assign it:
 --   local objective = Objective.new({...})
---   objective.gamePlan = ReconRallyAssaultPlan.new()
--- The OperationalCommander will use the GamePlan in its DECIDE phase.
--- If no GamePlan is assigned, it falls back to legacy planning logic.
+--   objective.doctrine = ReconRallyAssaultPlan.new(commanderName, config)
+-- The OperationalCommander will use the Doctrine in its DECIDE phase.
+-- If no Doctrine is assigned, it defaults to ReconRallyAssaultPlan.
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:

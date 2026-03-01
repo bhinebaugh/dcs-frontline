@@ -1,0 +1,213 @@
+-- GroupProfiler: Unified force analysis and status profiling
+-- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
+-- Returns GroupProfile tables with capability, composition, unit count, and status.
+--
+-- GroupProfile schema:
+-- {
+--     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
+--     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
+--     unitCount           = N,
+--     -- Status fields (only from profileGroup, nil from profileUnits):
+--     attritionRate       = 0.0-1.0,
+--     ammoRatio           = 0.0-1.0,
+--     fuelRatio           = 0.0-1.0,
+-- }
+
+local constants = require("constants")
+local unitClassification = constants.unitClassification
+
+local GroupProfiler = {}
+
+-- ============================================================================
+-- UNIT CLASSIFICATION
+-- ============================================================================
+
+function GroupProfiler.classifyUnit(unit)
+    if not unit or not unit:isExist() then
+        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    end
+
+    local typeName = unit:getTypeName()
+    if not typeName then
+        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    end
+
+    local classification = unitClassification[typeName]
+    if classification then
+        return classification
+    end
+
+    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
+    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
+end
+
+-- ============================================================================
+-- UNIT COLLECTION HELPERS
+-- ============================================================================
+
+function GroupProfiler.getUnitsFromGroups(groups)
+    local units = {}
+
+    local groupList = {}
+    if type(groups) == "table" and groups.getUnits then
+        groupList = {groups}
+    else
+        groupList = groups
+    end
+
+    for _, group in ipairs(groupList) do
+        if group and group:isExist() then
+            local groupUnits = group:getUnits()
+            for _, unit in ipairs(groupUnits) do
+                if unit and unit:isExist() then
+                    table.insert(units, unit)
+                end
+            end
+        end
+    end
+
+    return units
+end
+
+function GroupProfiler.getUnitsFromGroupNames(groupNames)
+    local groups = {}
+    for _, groupName in ipairs(groupNames) do
+        local group = Group.getByName(groupName)
+        if group and group:isExist() then
+            table.insert(groups, group)
+        end
+    end
+    return GroupProfiler.getUnitsFromGroups(groups)
+end
+
+-- ============================================================================
+-- PROFILE CONSTRUCTION
+-- ============================================================================
+
+-- Build a capability/composition profile from a list of unit references.
+-- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
+function GroupProfiler.profileUnits(units)
+    local profile = {
+        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
+        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        unitCount           = 0,
+    }
+
+    if not units or #units == 0 then
+        return profile
+    end
+
+    for _, unit in ipairs(units) do
+        if unit and unit:isExist() then
+            local classification = GroupProfiler.classifyUnit(unit)
+            local threats = classification.threats
+
+            profile.unitCount = profile.unitCount + 1
+
+            local cat = classification.category
+            if cat == "infantry" then
+                profile.composition.infantry = profile.composition.infantry + 1
+            elseif cat == "light-armor" then
+                profile.composition.lightArmor = profile.composition.lightArmor + 1
+            elseif cat == "heavy-armor" then
+                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
+            elseif cat == "support" then
+                profile.composition.support = profile.composition.support + 1
+            end
+
+            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
+            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
+                                                     + threats["light-armor"]
+                                                     + threats["heavy-armor"]
+            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
+        end
+    end
+
+    return profile
+end
+
+-- Build a full profile for a named DCS group, including status ratios.
+function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
+    local zeroed = {
+        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
+        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        unitCount           = 0,
+        attritionRate       = 1,
+        ammoRatio           = 0,
+        fuelRatio           = 0,
+    }
+
+    local group = Group.getByName(groupName)
+    if not group or not group:isExist() then
+        return zeroed
+    end
+
+    -- Collect alive units
+    local aliveUnits = {}
+    for _, unit in ipairs(group:getUnits()) do
+        if unit and unit:isExist() then
+            table.insert(aliveUnits, unit)
+        end
+    end
+
+    local profile = GroupProfiler.profileUnits(aliveUnits)
+
+    -- Attrition rate
+    local initialCount = (initialUnitNames and #initialUnitNames) or 0
+    if initialCount == 0 then
+        profile.attritionRate = 0
+    else
+        profile.attritionRate = 1 - (profile.unitCount / initialCount)
+    end
+
+    -- Ammo ratio
+    if not initialAmmoCount or initialAmmoCount == 0 then
+        profile.ammoRatio = 1.0  -- unarmed units are always considered "full"
+    else
+        local currentAmmo = 0
+        for _, unit in ipairs(aliveUnits) do
+            local ammoTable = unit:getAmmo()
+            if ammoTable then
+                for _, entry in ipairs(ammoTable) do
+                    if entry.count then
+                        currentAmmo = currentAmmo + entry.count
+                    end
+                end
+            end
+        end
+        profile.ammoRatio = currentAmmo / initialAmmoCount
+    end
+
+    -- Fuel (simulated, passed in directly)
+    profile.fuelRatio = fuelRemaining or 0
+
+    return profile
+end
+
+-- ============================================================================
+-- FORCE COMPARISON
+-- ============================================================================
+
+-- Returns how favorable our position is against the threat.
+-- Higher = better for us. math.huge = no opposition.
+function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
+    local ownCap    = ownProfile.offensiveCapability
+    local theirComp = threatProfile.composition
+
+    local ourPower = ownCap.vsInfantry * theirComp.infantry
+                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
+                   + ownCap.vsAir      * theirComp.support
+
+    local theirCap = threatProfile.offensiveCapability
+    local ownComp  = ownProfile.composition
+
+    local theirPower = theirCap.vsInfantry * ownComp.infantry
+                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
+                     + theirCap.vsAir      * ownComp.support
+
+    if ourPower == 0 and theirPower == 0 then return 0 end
+    if theirPower == 0 and ourPower > 0 then return math.huge end
+    return ourPower / theirPower
+end
+
+return GroupProfiler

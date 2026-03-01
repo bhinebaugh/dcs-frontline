@@ -1,13 +1,14 @@
 -- ReconRallyAssaultPlan: Classic three-phase offensive strategy
--- Phase 1 (RECON): Scout ahead to identify threats
--- Phase 2 (RALLY): Stage forces at standoff distance for coordinated attack
--- Phase 3 (ASSAULT): Execute synchronized assault on objective
--- Phase 4 (DEFEND): Hold objective once secured
+-- Phase 1 (Recon):   Scout ahead to identify threats
+-- Phase 2 (Rally):   Stage forces at standoff distance for coordinated attack
+-- Phase 3 (Assault): Execute synchronized assault on objective
+-- Phase 4 (Defend):  Hold objective once secured
+--
+-- Returns order templates (plain data). OperationalCommander handles
+-- commander selection and order assignment.
 
 local constants = require("constants")
 local Doctrine = require("doctrine")
-local Order = require("order")
-local SpatialAgent = require("spatial-agent")
 
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
@@ -17,283 +18,204 @@ local ReconRallyAssaultPlan = {}
 setmetatable(ReconRallyAssaultPlan, {__index = Doctrine})
 ReconRallyAssaultPlan.__index = ReconRallyAssaultPlan
 
-function ReconRallyAssaultPlan.new(commanderName)
+function ReconRallyAssaultPlan.new(commanderName, config)
     local self = Doctrine.new("ReconRallyAssault", commanderName)
     setmetatable(self, ReconRallyAssaultPlan)
 
-    self:registerPhase("Recon", ReconRallyAssaultPlan.reconPhase)
-    self:registerPhase("Rally", ReconRallyAssaultPlan.rallyPhase)
+    self.config = {
+        maxReconGroups         = (config and config.maxReconGroups)         or 1,
+        reconRadius            = (config and config.reconRadius)            or 8000,
+        assaultRadius          = (config and config.assaultRadius)          or 3000,
+        assaultStagingDistance = (config and config.assaultStagingDistance) or 10000,
+    }
+
+    self:registerPhase("Recon",   ReconRallyAssaultPlan.reconPhase)
+    self:registerPhase("Rally",   ReconRallyAssaultPlan.rallyPhase)
     self:registerPhase("Assault", ReconRallyAssaultPlan.assaultPhase)
-    self:registerPhase("Defend", ReconRallyAssaultPlan.defendPhase)
-    
+    self:registerPhase("Defend",  ReconRallyAssaultPlan.defendPhase)
+
     return self
 end
 
 function ReconRallyAssaultPlan:reconPhase(context)
-    local objective = context.goal
-    local situation = context.situation
-    local resources = context.resources
-    local commander = context.commander
-    local availableCommanders = resources.availableCommanders
+    local objective    = context.goal
+    local situation    = context.situation
     local statusCounts = situation.statusCounts
 
-    local orderPlans = {}
-
-    -- Consider existing orders
-    if statusCounts.inProgress > 0 or statusCounts.assigned > 0 then
-        return orderPlans  -- Wait for current orders to resolve
+    -- Wait for any active orders to resolve
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        return {}
     end
 
-    -- Consider advancing to Rally
-    if statusCounts.total > 0 and statusCounts.completed + statusCounts.aborted == statusCounts.total then
-        self:changePhase("Rally")
-        return orderPlans
+    -- Phase delta: only count orders issued since this phase started
+    local totalThisPhase     = statusCounts.total     - self.phaseBaseline.total
+    local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
+    local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
+
+    -- Advance to Rally when recon orders are resolved
+    if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
+        self:changePhase("Rally", statusCounts)
+        return {}
     end
 
-    -- Score commanders for Recon (lighter units preferred)
-    local scoredCommanders = commander:scoreCommandersForRecon(availableCommanders, objective.position)
-    local count = math.min(commander.maxReconGroups, #scoredCommanders)
-
-    for i = 1, count do
-        local cmd = scoredCommanders[i].commander
-        local order = Order.new({
-            assignedTo = cmd.groupName,
-            objective = objective,
-            position = objective.position,
-            radius = objective.radius,
-            type = taskTypes.RECON,
-            alr = alr.MEDIUM,
-        })
-        
-        table.insert(orderPlans, {
-            commander = cmd,
-            order = order
-        })
+    -- No orders issued yet this phase — dispatch recon
+    if totalThisPhase == 0 then
+        return {
+            {
+                type     = taskTypes.RECON,
+                position = objective.position,
+                radius   = self.config.reconRadius,
+                alr      = alr.LOW,
+                count    = self.config.maxReconGroups,
+                missionProfile = {
+                    offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
+                    attritionRate = 0.0,
+                    ammoRatio     = 0.2,
+                },
+            }
+        }
     end
-    
-    return orderPlans
+
+    return {}
 end
 
 function ReconRallyAssaultPlan:rallyPhase(context)
-    local objective = context.goal
-    local situation = context.situation
-    local resources = context.resources
-    local commander = context.commander
-    local availableCommanders = resources.availableCommanders
-    local statusCounts = situation.statusCounts
-    local threats = situation.threats
+    local objective     = context.goal
+    local situation     = context.situation
+    local statusCounts  = situation.statusCounts
+    local threatProfile = situation.threatProfile
+    local threatCenter  = situation.threatCenter
 
-    local orderPlans = {}
-
-    -- Consider existing orders
-    if statusCounts.inProgress > 0 or statusCounts.assigned > 0 then
-        return orderPlans  -- Wait for current orders to resolve
+    -- Wait for active orders
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        return {}
     end
 
-    -- Consider advancing to Assault
-    if statusCounts.total > 0 and statusCounts.completed + statusCounts.aborted == statusCounts.total then
-        self:changePhase("Assault")
-        return orderPlans
-    end
-    
-    -- Consider availability of suitable commanders
-    if #availableCommanders == 0 then
-        return orderPlans
-    end
-    
-    -- Calculate threat center
-    local threatCenter = SpatialAgent.calculateCenterOfObjects(threats)
-    if not threatCenter then
-        threatCenter = objective.position
-    end
-    
-    -- Score and select best units for assault
-    local scoredCommanders = commander:scoreCommandersForAssault(availableCommanders, threats, threatCenter)
-    local selectedCommanders = commander:selectCommandersWithinTimeWindow(scoredCommanders, threatCenter, 1200)
-    
-    -- Fallback: send closest units if none within time window
-    if #selectedCommanders == 0 and #scoredCommanders > 0 then
-        selectedCommanders = {scoredCommanders[1], scoredCommanders[2], scoredCommanders[3]}
-        -- Remove nils
-        local temp = {}
-        for _, sc in ipairs(selectedCommanders) do
-            if sc then table.insert(temp, sc) end
-        end
-        selectedCommanders = temp
-    end
-    
-    if #selectedCommanders == 0 then
-        return orderPlans
-    end
-    
-    -- Extract commander positions for staging calculation
-    local commanderPositions = {}
-    for _, cmdInfo in ipairs(selectedCommanders) do
-        local status = cmdInfo.commander:getStatus()
-        if status.position then
-            table.insert(commanderPositions, status.position)
-        end
-    end
-    
-    -- Calculate staging positions using SpatialAgent
-    local stagingPositions = SpatialAgent.calculateAlliedSideStagingPositions(
-        threatCenter,
-        commander.assaultStagingDistance,
-        commanderPositions,
-        120  -- 120° arc
-    )
+    local totalThisPhase     = statusCounts.total     - self.phaseBaseline.total
+    local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
+    local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
 
-    local longestDistance = 0
-    for i, pos in ipairs(stagingPositions) do
-        local dist = SpatialAgent.distance2D(commanderPositions[i], pos)
-        if dist and dist > longestDistance then
-            longestDistance = dist
-        end
+    -- Advance to Assault when rally orders resolve
+    if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
+        self:changePhase("Assault", statusCounts)
+        return {}
     end
 
-    local slowestSpeed = math.huge
-    for _, cmdInfo in ipairs(selectedCommanders) do
-        local speed = cmdInfo.commander:getSlowestUnitSpeed()
-        if speed and speed > 0 and speed < slowestSpeed then
-            slowestSpeed = speed
-        end
-    end
-    
-    -- Fallback to reasonable default if no valid speed found
-    if slowestSpeed == math.huge then
-        slowestSpeed = 20  -- 20 m/s (~72 km/h) default ground speed
+    -- No threats to rally against — skip straight to Assault
+    if not threatProfile or threatProfile.unitCount == 0 or not threatCenter then
+        self:changePhase("Assault", statusCounts)
+        return {}
     end
 
-    local pushTime = timer.getTime() + longestDistance / slowestSpeed
-    
-    for i, commanderInfo in ipairs(selectedCommanders) do
-        local cmd = commanderInfo.commander
-        local rallyPos = stagingPositions[i]
-        
-        if rallyPos then
-            local order = Order.new({
-                assignedTo = cmd.groupName,
-                objective = objective,
-                position = rallyPos,
-                pushTime = pushTime,  -- Hold at rally point until this time
-                radius = 1000,
-                type = taskTypes.RALLY,
-                alr = alr.MEDIUM,
-            })
-            
-            table.insert(orderPlans, {
-                commander = cmd,
-                order = order,
-                threats = threats,
-                threatCenter = threatCenter
-            })
-        end
+    if situation.availableCommanderCount == 0 then
+        return {}
     end
 
-    return orderPlans
+    -- Issue rally order template
+    if totalThisPhase == 0 then
+        return {
+            {
+                type            = taskTypes.RALLY,
+                targetPosition  = threatCenter,
+                stagingDistance = self.config.assaultStagingDistance,
+                stagingArc      = 120,
+                radius          = 5000,
+                alr             = alr.MEDIUM,
+                count           = 3,
+                missionProfile  = {
+                    attritionRate = 0.0,
+                    ammoRatio     = 0.8,
+                },
+            }
+        }
+    end
+
+    return {}
 end
 
 function ReconRallyAssaultPlan:assaultPhase(context)
-    local objective = context.goal
-    local situation = context.situation
-    local resources = context.resources
-    local commander = context.commander
-    local availableCommanders = resources.availableCommanders
-    local statusCounts = situation.statusCounts
-    local threats = situation.threats
+    local objective     = context.goal
+    local situation     = context.situation
+    local statusCounts  = situation.statusCounts
+    local threatProfile = situation.threatProfile
+    local threatCenter  = situation.threatCenter
 
-    local orderPlans = {}
-
-    -- Consider existing orders
-    if statusCounts.inProgress > 0 or statusCounts.assigned > 0 then
-        return orderPlans  -- Wait for current orders to resolve
+    -- Wait for active orders
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        return {}
     end
 
-    -- Consider advancing to Defend
-    if statusCounts.completed + statusCounts.aborted == statusCounts.total then
-        self:changePhase("Defend")
-        return orderPlans
+    local totalThisPhase     = statusCounts.total     - self.phaseBaseline.total
+    local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
+    local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
+
+    -- Advance to Defend when assault orders resolve
+    if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
+        self:changePhase("Defend", statusCounts)
+        return {}
     end
-    
-    -- Calculate threat center
-    local threatCenter = SpatialAgent.calculateThreatCenter(threats)
-    if not threatCenter then
-        threatCenter = objective.position
+
+    if totalThisPhase == 0 then
+        local assaultPosition = threatCenter or objective.position
+
+        -- Build missionProfile from threat capability (need to match or exceed it)
+        local missionProfile = {
+            attritionRate = 0.0,
+            ammoRatio     = 0.9,
+        }
+        if threatProfile and threatProfile.unitCount > 0 then
+            missionProfile.offensiveCapability = {
+                vsInfantry = threatProfile.offensiveCapability.vsInfantry,
+                vsArmor    = threatProfile.offensiveCapability.vsArmor,
+                vsAir      = threatProfile.offensiveCapability.vsAir,
+            }
+        end
+
+        return {
+            {
+                type           = taskTypes.ASSAULT,
+                position       = assaultPosition,
+                radius         = self.config.assaultRadius,
+                alr            = alr.HIGH,
+                count          = situation.availableCommanderCount,
+                deadline       = objective.deadline or (timer.getTime() + 1800),
+                missionProfile = missionProfile,
+            }
+        }
     end
-    
-    -- Score commanders for assault
-    local scoredCommanders = commander:scoreCommandersForAssault(availableCommanders, threats, threatCenter)
-    
-    for _, commanderInfo in ipairs(scoredCommanders) do
-        local cmd = commanderInfo.commander
-        local order = Order.new({
-            assignedTo = cmd.groupName,
-            objective = objective,
-            position = threatCenter,
-            radius = commander.assaultRadius,
-            type = taskTypes.ASSAULT,
-            alr = alr.HIGH,
-            deadline = objective.deadline or (timer.getTime() + 1800),
-        })
-        
-        table.insert(orderPlans, {
-            commander = cmd,
-            order = order,
-            threats = threats,
-            threatCenter = threatCenter
-        })
-    end
-    
-    return orderPlans
+
+    return {}
 end
 
 function ReconRallyAssaultPlan:defendPhase(context)
-    local objective = context.goal
-    local situation = context.situation
-    local resources = context.resources
-    local commander = context.commander
-    local availableCommanders = resources.availableCommanders
-    local statusCounts = situation.statusCounts
-    local threats = situation.threats
-
-    local orderPlans = {}
+    local objective    = context.goal
+    local situation    = context.situation
+    local threatCenter = situation.threatCenter
 
     objective:markAchieved()
 
-    -- Calculate defensive center (objective or threat center if threats nearby)
+    -- Bias defend position toward objective, acknowledging threats
     local defendPosition = objective.position
-    if threats and next(threats) then
-        local threatCenter = SpatialAgent.calculateThreatCenter(threats)
-        if threatCenter then
-            -- Bias toward objective but acknowledge threats
-            defendPosition = {
-                x = (objective.position.x + threatCenter.x) / 2,
-                z = (objective.position.z + threatCenter.z) / 2
-            }
-        end
+    if threatCenter then
+        defendPosition = {
+            x = (objective.position.x + threatCenter.x) / 2,
+            z = (objective.position.z + threatCenter.z) / 2,
+        }
     end
-    
-    -- Issue DEFEND orders to available groups
-    local orderPlans = {}
-    for _, cmd in ipairs(availableCommanders) do
-        local order = Order.new({
-            assignedTo = cmd.groupName,
-            objective = objective,
-            position = defendPosition,
-            radius = objective.radius or 2000,
-            type = taskTypes.DEFEND,
-            alr = alr.MEDIUM,
-        })
-        
-        table.insert(orderPlans, {
-            commander = cmd,
-            order = order,
-            threats = threats
-        })
-    end
-    
-    return orderPlans
-end
 
+    return {
+        {
+            type           = taskTypes.DEFEND,
+            position       = defendPosition,
+            radius         = objective.radius or 2000,
+            alr            = alr.MEDIUM,
+            count          = situation.availableCommanderCount,
+            missionProfile = {
+                attritionRate = 0.0,
+                ammoRatio     = 0.5,
+            },
+        }
+    }
+end
 
 return ReconRallyAssaultPlan

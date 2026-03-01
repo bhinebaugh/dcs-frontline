@@ -17,7 +17,8 @@ function Doctrine.new(name, commanderName)
     self.phaseHistory = {}
     self.phases = {}
     self.state = {}
-    
+    self.phaseBaseline = { completed = 0, aborted = 0, total = 0 }
+
     return self
 end
 
@@ -36,7 +37,7 @@ function Doctrine:registerPhase(phaseName, planningFunction)
     self.phases[phaseName] = planningFunction
 end
 
-function Doctrine:changePhase(phaseName)
+function Doctrine:changePhase(phaseName, statusCounts)
     if self.currentPhaseName then
         table.insert(self.phaseHistory, {
             name = self.currentPhaseName,
@@ -45,6 +46,15 @@ function Doctrine:changePhase(phaseName)
     end
     env.info(self.commanderName .. " " .. self.name .. " changing to phase " .. phaseName)
     self.currentPhaseName = phaseName
+    if statusCounts then
+        self.phaseBaseline = {
+            completed = statusCounts.completed or 0,
+            aborted   = statusCounts.aborted   or 0,
+            total     = statusCounts.total     or 0,
+        }
+    else
+        self.phaseBaseline = { completed = 0, aborted = 0, total = 0 }
+    end
 end
 
 return Doctrine

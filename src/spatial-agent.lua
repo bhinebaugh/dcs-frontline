@@ -214,7 +214,7 @@ end
 -- @param count Number of positions to generate
 -- @param spreadAngleDegrees Arc width in degrees (360 = full circle, 120 = front arc)
 -- @return table Array of positions
-function SpatialAgent.calculateStagingPositions(center, radius, count, spreadAngleDegrees)
+function SpatialAgent.calculateArcPositions(center, radius, count, spreadAngleDegrees)
     if not center or count < 1 then
         return {}
     end
@@ -258,7 +258,7 @@ end
 -- @param count Number of positions
 -- @return table Array of positions
 function SpatialAgent.calculateCircularPositions(center, radius, count)
-    return SpatialAgent.calculateStagingPositions(center, radius, count, 360)
+    return SpatialAgent.calculateArcPositions(center, radius, count, 360)
 end
 
 --- Calculate staging positions on allied side of threat
@@ -268,7 +268,7 @@ end
 -- @param commanderPositions Array of commander positions (current locations)
 -- @param spreadAngleDegrees Arc spread in degrees (default 120)
 -- @return table Array of staging positions rotated to face threat from allied side
-function SpatialAgent.calculateAlliedSideStagingPositions(threatCenter, distance, commanderPositions, spreadAngleDegrees)
+function SpatialAgent.calculateEncirclingPositions(threatCenter, distance, commanderPositions, spreadAngleDegrees)
     local numPositions = #commanderPositions
     
     if numPositions == 0 then
@@ -304,7 +304,7 @@ function SpatialAgent.calculateAlliedSideStagingPositions(threatCenter, distance
     local centerAngle = approachAngle + math.pi
     
     -- Generate arc positions centered at 0°
-    local arcPositions = SpatialAgent.calculateStagingPositions(
+    local arcPositions = SpatialAgent.calculateArcPositions(
         threatCenter, 
         distance, 
         numPositions, 
