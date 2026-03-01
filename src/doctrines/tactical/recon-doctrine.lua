@@ -11,7 +11,7 @@ local ReconDoctrine= {}
 setmetatable(ReconDoctrine, {__index = Doctrine})
 ReconDoctrine.__index = ReconDoctrine
 
--- Factory method for creating new GamePlan instances
+-- Factory method for creating new Doctrine instances
 function ReconDoctrine.new(commanderName)
     local self = Doctrine.new("Recon", commanderName)
     setmetatable(self, ReconDoctrine)
@@ -68,11 +68,6 @@ function ReconDoctrine:advancePhase(context)
 
     local observeThreshold = 1.0
     
-    if commander.orders.status == constants.orderStatus.ASSIGNED then
-        commander.orders:start()
-    end
-
-
     if self:considerObserve(context) >= observeThreshold then
         self:changePhase("Observe")
         return {
@@ -84,16 +79,17 @@ function ReconDoctrine:advancePhase(context)
     local distanceToDestination = SpatialAgent.distance2D(ownPosition, objectiveDestination)
     local closeEnough = 500
     if distanceToDestination <= closeEnough then
-        commander.orders:complete()
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = nil,
+            orderAction = "complete",
         }
     end
 
     return {
         disposition = dispositionTypes.ADVANCE,
-        destination = commander.orders.position
+        destination = commander.orders.position,
+        orderAction = "start",
     }
 end
 
@@ -109,17 +105,16 @@ function ReconDoctrine:observePhase(context)
     if self:considerAdvance(context) >= advanceThreshold then
         self:changePhase("Advance")
         return {
-            diposition = dispositionTypes.HOLD,
-            destination = nil
+            disposition = dispositionTypes.HOLD,
+            destination = nil,
         }
     end
 
-    commander.orders:complete()
-
     return {
-        diposition = dispositionTypes.HOLD,
-        destination = nil
-    } 
+        disposition = dispositionTypes.HOLD,
+        destination = nil,
+        orderAction = "complete",
+    }
 end
 
 return ReconDoctrine

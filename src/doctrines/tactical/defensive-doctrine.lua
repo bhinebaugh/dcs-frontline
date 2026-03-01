@@ -57,6 +57,12 @@ function DefensiveDoctrine:considerRetreat(context)
         retreatAssessment = retreatAssessment - (1 / threat.favorability)
     end
 
+    -- suitability: if group no longer meets missionProfile, increase retreat pressure
+    local suitability = context.situation.suitability
+    if suitability and suitability < 0.3 then
+        retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
+    end
+
     return retreatAssessment
 end
 

@@ -6,7 +6,7 @@ local PatrolDoctrine = {}
 setmetatable(PatrolDoctrine, {__index = Doctrine})
 PatrolDoctrine.__index = PatrolDoctrine
 
--- Factory method for creating new GamePlan instances
+-- Factory method for creating new Doctrine instances
 function PatrolDoctrine.new(commanderName)
     local self = Doctrine.new("Patrol", commanderName)
     setmetatable(self, PatrolDoctrine)
@@ -20,10 +20,6 @@ end
 function PatrolDoctrine:outboundPhase(context)
     local commander = context.commander
     local orders = commander.orders
-
-    if orders.status == constants.orderStatus.ASSIGNED then
-        orders:start()
-    end
 
     if not self.state.StartingPoint then
         self.state.StartingPoint = commander:getOwnPosition()
@@ -42,7 +38,7 @@ function PatrolDoctrine:outboundPhase(context)
         self:changePhase("InboundLeg")
         return {disposition = dispositionTypes.HOLD, destination = nil}
     else
-        return {disposition = dispositionTypes.ADVANCE, destination = self.state.Destination}
+        return {disposition = dispositionTypes.ADVANCE, destination = self.state.Destination, orderAction = "start"}
     end
 end
 

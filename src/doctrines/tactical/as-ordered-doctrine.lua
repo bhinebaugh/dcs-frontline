@@ -116,6 +116,12 @@ function AsOrderedDoctrine:considerAbort(context)
         retreatAssessment = retreatAssessment - (1 / threat.favorability)
     end
 
+    -- suitability: if group no longer meets missionProfile, increase abort pressure
+    local suitability = context.situation.suitability
+    if suitability and suitability < 0.3 then
+        retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
+    end
+
     return retreatAssessment
 end
 
@@ -128,10 +134,6 @@ function AsOrderedDoctrine:advancePhase(context)
     local engageThreshold = 0.4
     local abortThreshold = 0.8
     local defendThreshold = 0.2
-
-    if orders.status == constants.orderStatus.ASSIGNED then
-        orders:start()
-    end
 
     if self:considerAbort(context) >= abortThreshold then
         self:changePhase("Abort")
@@ -159,7 +161,8 @@ function AsOrderedDoctrine:advancePhase(context)
 
     return {
         disposition = dispositionTypes.ADVANCE,
-        destination = destination
+        destination = destination,
+        orderAction = "start",
     }
 end
 
@@ -180,14 +183,26 @@ function AsOrderedDoctrine:engagePhase(context)
     end
 
     if self:considerEngage(context) >= engageThreshold then
-        local ownPosition = context.commander:getOwnPosition()
-        local threatDistance = SpatialAgent.distance2D(ownPosition, threat.center)
-        local standoffDistance = 300
-        local direction = SpatialAgent.calculateDirection(ownPosition, threat.center)
-        local engageDest = SpatialAgent.calculateDestination(ownPosition, direction, threatDistance - standoffDistance)
+        local ownPosition      = context.commander:getOwnPosition()
+        local standoffDistance = 1000
+        local tolerance        = 100
+
+        -- Standoff position: standoffDistance from threat, on our side of it.
+        -- Computed this way rather than from ownPosition so the unit can never
+        -- overshoot and pass through the threat.
+        local retreatDir  = SpatialAgent.calculateDirection(threat.center, ownPosition)
+        local standoffPos = SpatialAgent.calculateDestination(threat.center, retreatDir, standoffDistance)
+
+        if SpatialAgent.distance2D(ownPosition, standoffPos) <= tolerance then
+            return {
+                disposition = dispositionTypes.HOLD,
+                destination = ownPosition,
+            }
+        end
+
         return {
             disposition = dispositionTypes.ADVANCE,
-            destination = engageDest
+            destination = standoffPos,
         }
     end
 
@@ -209,13 +224,18 @@ function AsOrderedDoctrine:defendPhase(context)
     local isExpired = context.commander.orders:isExpired()
 
     if isExpired or not hasExpiration then
-        commander.orders:complete()
+        return {
+            disposition = dispositionTypes.DEFEND,
+            destination = destination,
+            radius      = radius,
+            orderAction = "complete",
+        }
     end
 
     return {
         disposition = dispositionTypes.DEFEND,
         destination = destination,
-        radius = radius
+        radius      = radius,
     }
 end
 
@@ -237,11 +257,10 @@ function AsOrderedDoctrine:abortPhase(context)
         self:changePhase("Hold")
     end
 
-    commander.orders:abort("threat_retreat")
-
     return {
         disposition = dispositionTypes.RETREAT,
-        destination = retreatDest
+        destination = retreatDest,
+        orderAction = "abort",
     }
 end
 

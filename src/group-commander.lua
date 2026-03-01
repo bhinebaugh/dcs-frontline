@@ -1,13 +1,13 @@
 local constants = require("constants")
 local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
 local ForceStatusAnalyzer = require("force-status-analyzer")
+local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
-local OrderCoordinator = require("order-coordinator")
+local PlanningContext = require("planning-context")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local SpatialAgent = require("spatial-agent")
-local ThreatAnalyzer = require("threat-analyzer")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
 local alr = constants.acceptableLevelsOfRisk
@@ -47,6 +47,9 @@ function GroupCommander.new(groupName, config)
     
     self.orders = nil
     self.lastMoveOrder = nil
+    self.pendingOrderAction = nil
+    self.groupProfile = nil
+    self.suitability = nil
     self.ownForceStrength = nil
     self.roe = roe.WEAPON_HOLD
     self.threatTracker = ThreatTracker.new(groupName)
@@ -60,9 +63,9 @@ function GroupCommander.new(groupName, config)
     self.lastPosition = nil
     self.lastObserveTime = timer.getTime()
     
-    -- Active GamePlan (persists across OODA cycles until plan type changes)
+    -- Active Doctrine (persists across OODA cycles until order type changes)
     self.doctrine = nil
-    self.doctrineType = nil  -- Track current plan type to detect switches
+    self.doctrineType = nil
     
     -- Register this instance
     table.insert(GroupCommander.instances, self)
@@ -155,9 +158,17 @@ function GroupCommander:orient()
 
     self.threatAssessment = self:assessThreats()
 
-    -- Use OrderCoordinator to derive context snapshot
+    -- Derive order context and group profile
     local ownPos = self:getOwnPosition()
-    self.orderContext = OrderCoordinator.deriveOrderContext(self.orders, ownPos, self.alr)
+    self.orderContext = PlanningContext.deriveOrderContext(self.orders, ownPos, self.alr)
+    self.groupProfile = GroupProfiler.profileGroup(self.groupName, self.initialUnitNames, self.initialAmmoCount, self.fuelRemaining)
+
+    -- Update suitability against current order's mission profile
+    if self.orders and self.orders.missionProfile then
+        self.suitability = self:getSuitability(self.orders.missionProfile)
+    else
+        self.suitability = nil
+    end
 end
 
 function GroupCommander:decide()
@@ -187,8 +198,8 @@ function GroupCommander:decide()
         return
     end
 
-    -- Get tactical planning context from OrderCoordinator
-    local context = OrderCoordinator.buildTacticalContext(self)
+    -- Get tactical planning context
+    local context = PlanningContext.buildTacticalContext(self)
     if not context then
         env.info("ERROR: Could not build tactical context for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
@@ -201,10 +212,12 @@ function GroupCommander:decide()
     if decision then
         self:setDisposition(decision.disposition)
         self.destination = decision.destination
+        self.pendingOrderAction = decision.orderAction
     else
         env.info("ERROR: Doctrine returned nil decision for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
         self.destination = self:getOwnPosition()
+        self.pendingOrderAction = nil
     end
 end
 
@@ -222,6 +235,18 @@ function GroupCommander:act()
         self:setROE(roe.WEAPON_HOLD)
     end
     
+    -- Apply order lifecycle action returned by Doctrine
+    if self.pendingOrderAction and self.orders then
+        if self.pendingOrderAction == "start" then
+            self.orders:start()
+        elseif self.pendingOrderAction == "complete" then
+            self.orders:complete()
+        elseif self.pendingOrderAction == "abort" then
+            self.orders:abort("doctrine_abort")
+        end
+        self.pendingOrderAction = nil
+    end
+
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
     if self.destination and (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
         -- Only issue if destination has changed (more than 100m tolerance)
@@ -235,85 +260,117 @@ function GroupCommander:act()
 end
 
 function GroupCommander:analyzeOwnForce()
-    -- Get all units in our group
-    local units = self:getOwnUnits()
-    
-    -- Use ThreatAnalyzer for comprehensive force analysis
-    return ThreatAnalyzer.analyzeUnits(units)
+    return GroupProfiler.profileUnits(self:getOwnUnits())
 end
 
 function GroupCommander:analyzeThreatCapabilities()
-    -- Get threat units from threat tracker
-    -- Only include threats that are Observed or recently Suspected (not stale)
     local threats = self.threatTracker:getRecentThreats()
     local threatUnits = {}
-    
     for unitName, _ in pairs(threats) do
         local unit = Unit.getByName(unitName)
         if unit and unit:isExist() then
             table.insert(threatUnits, unit)
         end
     end
-    
-    -- Use ThreatAnalyzer for comprehensive force analysis
-    return ThreatAnalyzer.analyzeUnits(threatUnits)
+    return GroupProfiler.profileUnits(threatUnits)
 end
 
 -- Assess threat situation including staleness, center of mass, and comparative strength
 function GroupCommander:assessThreats()
-    -- Analyze threat capabilities
     local threatAnalysis = self:analyzeThreatCapabilities()
-    
+
     -- Calculate threat center if threats exist
     local threatCenter = nil
     local recentThreats = self.threatTracker:getRecentThreats()
-    if threatAnalysis.count > 0 then
+    if threatAnalysis.unitCount > 0 then
         threatCenter = SpatialAgent.calculateCenterOfObjects(recentThreats)
     end
-    
-    -- Calculate favorability if threats exist
-    local favorability = 0
 
-    -- If we have ally intel, include nearby allies in combined force calculation
+    -- Combine own force with ally intel for favorability calculation
     local combinedForce = self.ownForceStrength
-    if self.allyIntel and self.allyIntel.count > 0 then
-        -- Combine our force with nearby allies
+    if self.allyIntel and self.allyIntel.unitCount and self.allyIntel.unitCount > 0 then
         combinedForce = {
-            count = self.ownForceStrength.count + self.allyIntel.count,
-            composition = {
-                infantry = self.ownForceStrength.composition.infantry + self.allyIntel.composition.infantry,
-                ["light-armor"] = self.ownForceStrength.composition["light-armor"] + self.allyIntel.composition["light-armor"],
-                ["heavy-armor"] = self.ownForceStrength.composition["heavy-armor"] + self.allyIntel.composition["heavy-armor"],
-                support = self.ownForceStrength.composition.support + self.allyIntel.composition.support
-            },
+            unitCount = self.ownForceStrength.unitCount + self.allyIntel.unitCount,
             offensiveCapability = {
                 vsInfantry = self.ownForceStrength.offensiveCapability.vsInfantry + self.allyIntel.offensiveCapability.vsInfantry,
-                vsArmor = self.ownForceStrength.offensiveCapability.vsArmor + self.allyIntel.offensiveCapability.vsArmor,
-                vsAir = self.ownForceStrength.offensiveCapability.vsAir + self.allyIntel.offensiveCapability.vsAir
-            }
+                vsArmor    = self.ownForceStrength.offensiveCapability.vsArmor    + self.allyIntel.offensiveCapability.vsArmor,
+                vsAir      = self.ownForceStrength.offensiveCapability.vsAir      + self.allyIntel.offensiveCapability.vsAir,
+            },
+            composition = {
+                infantry   = self.ownForceStrength.composition.infantry   + self.allyIntel.composition.infantry,
+                lightArmor = self.ownForceStrength.composition.lightArmor + self.allyIntel.composition.lightArmor,
+                heavyArmor = self.ownForceStrength.composition.heavyArmor + self.allyIntel.composition.heavyArmor,
+                support    = self.ownForceStrength.composition.support    + self.allyIntel.composition.support,
+            },
         }
     end
-    
-    -- Calculate favorability using combined force (our power / enemy power)
-    local ourPower = ThreatAnalyzer.calculateCombatPower(combinedForce, threatAnalysis)
-    local enemyPower = ThreatAnalyzer.calculateCombatPower(threatAnalysis, combinedForce)
-    
-    if enemyPower > 0 then
-        favorability = ourPower / enemyPower
-    elseif ourPower > 0 then
-        favorability = math.huge
-    end
-    
-    -- Store consolidated threat assessment
+
+    local favorability = GroupProfiler.calculateFavorability(combinedForce, threatAnalysis)
+
     return {
-        count = threatAnalysis.count,
-        analysis = threatAnalysis,
-        center = threatCenter,
-        favorability = favorability
+        count        = threatAnalysis.unitCount,
+        analysis     = threatAnalysis,
+        center       = threatCenter,
+        favorability = favorability,
     }
 end
 
--- HELPER METHODS (used by TacticalEngagementPlan)
+function GroupCommander:getSuitability(missionProfile)
+    if not missionProfile then return 1.0 end
+    local profile = self.groupProfile
+    if not profile then return 0.0 end
+
+    -- Proximity score: 1.0 = perfect match, approaches 0 as difference grows.
+    -- Handles unbounded capability values (which are summed across unit count).
+    local function proximity(actual, ideal)
+        return 1 / (1 + math.abs((actual or 0) - ideal))
+    end
+
+    local score = 0.0
+    local count = 0
+
+    if missionProfile.offensiveCapability then
+        local idealCap = missionProfile.offensiveCapability
+        local ownCap   = profile.offensiveCapability
+        for _, field in ipairs({"vsInfantry", "vsArmor", "vsAir"}) do
+            if idealCap[field] ~= nil then
+                score = score + proximity(ownCap[field], idealCap[field])
+                count = count + 1
+            end
+        end
+    end
+
+    if missionProfile.attritionRate ~= nil then
+        score = score + proximity(profile.attritionRate, missionProfile.attritionRate)
+        count = count + 1
+    end
+
+    if missionProfile.ammoRatio ~= nil then
+        score = score + proximity(profile.ammoRatio, missionProfile.ammoRatio)
+        count = count + 1
+    end
+
+    if count == 0 then return 1.0 end
+    return score / count
+end
+
+-- Static: remove destroyed instances from the global instances list
+function GroupCommander.removeDestroyed()
+    local surviving = {}
+    local removed = 0
+    for _, instance in ipairs(GroupCommander.instances) do
+        if not instance.destroyed then
+            table.insert(surviving, instance)
+        else
+            removed = removed + 1
+            env.info(string.format("*** GroupCommander: Removing destroyed group %s from memory",
+                instance.groupName or "unknown"))
+        end
+    end
+    if removed > 0 then
+        GroupCommander.instances = surviving
+    end
+end
 
 function GroupCommander:getStatusReport()
     return ForceStatusAnalyzer.getStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
@@ -498,7 +555,7 @@ end
 
 function GroupCommander:updateAllyIntel(allyIntel)
     -- Receive nearby ally strength info from operational commander
-    -- allyIntel: {count, composition, offensiveCapability} from ThreatAnalyzer
+    -- allyIntel: GroupProfile from GroupProfiler.profileUnits
     self.allyIntel = allyIntel
 end
 
@@ -506,7 +563,6 @@ function GroupCommander:updateFuelConsumption(currentTime, currentPos)
     if currentPos and self.lastPosition then
         -- Calculate distance traveled
         local distanceTraveled = SpatialAgent.distance2D(currentPos, self.lastPosition)
-        
         -- Calculate time elapsed
         local timeElapsed = currentTime - self.lastObserveTime
         
