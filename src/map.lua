@@ -3,7 +3,7 @@ local settings = require("settings")
 local Map = {}
 Map.__index = Map
 
-function Map.new(blueCenter, redCenter)
+function Map.new()
     local self = setmetatable({}, Map)
     self.markerCounter = 5000
     self.markers = {
@@ -14,10 +14,6 @@ function Map.new(blueCenter, redCenter)
         zones = {},
         zoneLabels = {},
         edges = {},
-    }
-    self.center = {
-        blue = blueCenter,
-        red = redCenter
     }
     return self
 end
@@ -70,9 +66,6 @@ function Map:drawZones(zones)
     for name, info in pairs(zones) do
         self:drawZone(name, info.color, info.point)
     end
-
-    trigger.action.circleToAll(-1, 9998, mist.utils.makeVec3GL(self.center["red"]), 420, {1,0,0,1}, {1,0,0,0.2}, 1)
-    trigger.action.circleToAll(-1, 9999, mist.utils.makeVec3GL(self.center["blue"]), 420, {0,0,1,1}, {0,0,1,0.2}, 1)
 end
 
 function Map:drawEdges(edges)
@@ -101,6 +94,40 @@ function Map:drawFrontline(edges, color)
             local lineColor = rgb[color]
             trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
             -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
+        end
+    end
+end
+
+function Map:drawFrontlineFromPoints(points, color, erasePrevious)
+    local OFFSET = 1500
+    -- first erase any existing lines
+    if erasePrevious and self.markers.front[color] then
+        for _, id in pairs(self.markers.front[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.markers.front[color] = {}
+    end
+
+    --then draw a line for each edge of the current color's front
+    local sides = self:getVisibility(color, "frontlines")
+    local prevPts = {}
+    for _, side in pairs(sides) do
+        local firstPass = true
+        for _, data in pairs(points) do
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            local lineColor = rgb[color]
+            local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
+            local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
+            if not firstPass then
+                trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+            end
+            prevPts[1] = point1
+            prevPts[2] = point2
+            firstPass = false
         end
     end
 end
