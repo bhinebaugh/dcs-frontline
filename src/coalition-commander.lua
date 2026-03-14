@@ -1,16 +1,38 @@
+-- aka Strategic Commander
+
+-- local constants = require("constants")
+-- local GroupCommander = require("group-commander")
+-- local GroupProfiler = require("group-profiler")
+local OperationalCommander = require("operational-commander")
+local OODACommander = require("ooda-commander")
+local Objective = require("objective")
+-- local Order = require("order")
+-- local OrderCoordinator = require("order-coordinator")
+-- local PlanningContext = require("planning-context")
+-- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
+-- local SpatialAgent = require("spatial-agent")
+-- local ThreatTracker = require("threat-tracker")
+
+-- local alr = constants.acceptableLevelsOfRisk
+-- local orderStatus = constants.orderStatus
+-- local taskTypes = constants.taskTypes
+-- local dispositionTypes = constants.dispositionTypes
+
 local taskTypes = require("constants").taskTypes
 local statusTypes = require("constants").statusTypes
 
 local CoalitionCommander = {}
+setmetatable(CoalitionCommander, {__index = OODACommander})
 CoalitionCommander.__index = CoalitionCommander
 
-function CoalitionCommander.new(parent, config, groundTemplates)
-    local self = setmetatable({}, CoalitionCommander)
+function CoalitionCommander.new(parent, config)
+    local self = OODACommander.new({interval = 120.0})
+    setmetatable(self, CoalitionCommander)
     self.map = parent
     self.coalition = config.color
     self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
-    self.templates = groundTemplates
+    self.templates = config.groundTemplates
     self.groupId = 1
     self.groups = {} -- e.g. name location task
     self.groupsByZone = {}
@@ -21,6 +43,7 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     for i, j in pairs(taskTypes) do
         self.groupsByTask[j] = {}
     end
+    self.opscom = {}
     self.operations = {
         active = {},
         history = {},
@@ -30,6 +53,68 @@ function CoalitionCommander.new(parent, config, groundTemplates)
     -- attitude/aggressiveness = offensive, defensive, cautious, etc
     return self
 end
+
+-- setup
+-- assign groups in zones along front
+-- lump into sections for opscoms
+function CoalitionCommander:initiate(front)
+    local opscom = OperationalCommander.new({color = self.color})
+    table.insert(self.opscom, opscom)
+
+    -- local frontlineForces = self:chooseZoneReinforcements(front.zones)
+    local reinforcements = {}
+    for _, zoneName in pairs(front.zones) do
+        local r = math.random(#self.templates)
+        local group = self.templates[r]
+        local groupName = zoneName.."-"..self:getNewGroupId()
+        reinforcements[zoneName] = {
+            groupName = groupName,
+            template = group
+        }
+        -- self:addGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
+    end
+    -- front.length
+
+    -- assign operation/objectives
+    -- .rallyPoints
+    -- .orderCoordinator.objectives
+    local randomZone = front.zones[math.random(#front.zones)]
+    local enemyNeighbors = self.map:getNeighbors(randomZone, self.opponent, true)
+    local target = enemyNeighbors[math.random(#enemyNeighbors)]
+    local targetPosition = self.map:getZone(target).point
+
+    opscom.orderCoordinator.objectives = {
+        Objective.new({
+            type = taskTypes.ASSAULT,
+            position = targetPosition,
+            radius = 500,
+        })
+    }
+
+    return reinforcements
+end
+
+-- assess overall situation,
+-- by looking at territory, front characteristics, strength and distribution, current combat, intel, enemy losses
+-- compare to desired outcome (strategic objective)
+-- NOTE: Doctrine usage example:
+-- To assign a specific strategy to an objective, create the Doctrine and assign it:
+--   local objective = Objective.new({...})
+--   objective.doctrine = ReconRallyAssaultPlan.new(commanderName, config)
+-- The OperationalCommander will use the Doctrine in its DECIDE phase.
+-- If no Doctrine is assigned, it defaults to ReconRallyAssaultPlan.
+function CoalitionCommander:observe()
+end
+
+function CoalitionCommander:orient()
+end
+
+function CoalitionCommander:decide()
+end
+
+function CoalitionCommander:act()
+end
+
 
 function CoalitionCommander:getNewGroupId()
     self.groupId = self.groupId + 1
@@ -114,85 +199,6 @@ function CoalitionCommander:registerGroupLost(groupName)
     else
         env.info("    ("..groupName.." was already reported lost)")
     end
-end
-
-function CoalitionCommander:chooseZoneReinforcements(zones)
-    local reinforcements = {}
-    for _, zoneName in pairs(zones) do
-        local r = math.random(#self.templates)
-        local group = self.templates[r]
-        local groupName = zoneName.."-"..self:getNewGroupId()
-        reinforcements[zoneName] = {
-            groupName = groupName,
-            template = group
-        }
-        self:addGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
-    end
-    return reinforcements
-end
-
-function CoalitionCommander:designateAssault()
-    local frontlineReserves = {}
-    local frontZones = self.map:getPerimeterZones(self.color)
-
-    for _, zoneName in pairs(frontZones) do
-        local groupsInZone = self.groupsByZone[zoneName]
-        if #groupsInZone > 1 then
-            local defensive = 0
-            local zoneReserves = {}
-            for _, groupName in pairs(groupsInZone) do
-                if self.groups[groupName] and self.groups[groupName].task == taskTypes.DEFEND then
-                    defensive = defensive + 1
-                    table.insert(zoneReserves, groupName)
-                end
-            end
-            if #zoneReserves > 1 then
-                table.insert(frontlineReserves, {zone = zoneName, groups = zoneReserves})
-            end
-        end
-    end
-
-    if #frontlineReserves < 1 then
-        env.info("    no frontline zones have groups available for offensive tasking")
-        return nil
-    end
-    local randomReserves = frontlineReserves[math.random(#frontlineReserves)]
-
-    local enemyNeighbors = self.map:getNeighbors(randomReserves.zone, self.opponent, true)
-    local target = enemyNeighbors[math.random(#enemyNeighbors)]
-
-    --for now, choose single group
-    if #randomReserves.groups > 1 then --can task multiple groups if available
-        env.info("    "..#randomReserves.groups.." groups available at "..randomReserves.zone)
-    end
-    local taskedGroup = randomReserves.groups[1]
-
-    self:updateGroup(taskedGroup, {task = taskTypes.ASSAULT, target = target})
-    table.insert(self.operations.active, {type = "assault", origin = randomReserves.zone, destination = target, group = taskedGroup})
-    env.info("    tasking "..taskedGroup.." to assault "..target)
-
-    return {
-        group = taskedGroup,
-        origin = self.map:getZone(randomReserves.zone),
-        destination = self.map:getZone(target),
-    }
-
-end
-
-function CoalitionCommander:issueOrders()
-    env.info(self.color.." generating orders")
-    if #self.operations.active > 4 then --limit number of active operations
-        env.info("    pass (at capacity)")
-        return nil
-    end
-    if math.random() < 0.5 then
-        env.info("    pass (random)")
-        return nil
-    end
-
-    local params = self:designateAssault()
-
-    return params
 end
 
 return CoalitionCommander
