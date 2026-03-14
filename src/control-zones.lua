@@ -1,5 +1,7 @@
 local rgb = require("constants").rgb
+local garrisonTemplates = require("constants").garrisonTemplates
 local Map = require("map")
+local GroupCommander = require("group-commander")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 
 local ControlZones = {}
@@ -83,6 +85,8 @@ function ControlZones:setup(options)
     self.map = Map.new()
 
     self.perimeter = self:findPerimeter(self.allZones)
+    self.centroid["blue"] = self:centroidOfZones(self:getCluster("blue"))
+    self.centroid["red"] = self:centroidOfZones(self:getCluster("red"))
 
 end
 
@@ -750,6 +754,8 @@ function ControlZones:getOrderedFrontlines(color)
         end
     end
 
+    self.front[color] = fronts
+
     return fronts
 end
 
@@ -921,12 +927,40 @@ function ControlZones:orientToClosestEnemy(zoneName)
     return heading
 end
 
+function ControlZones:spawnStaticInZone(groupName, zoneName, color, template, heading)
+    local zn = self:getZone(zoneName)
+
+    local searchRadius = zn.radius
+    local clearRadius = 15
+    -- heavy calculation? improve performance; get single, larger spot to speed up?
+    local spots = Disposition.getSimpleZones(zn.point, searchRadius, clearRadius, 1)
+
+    if not spots or #spots < 1 then
+        env.info("!! coundn't spawn garrison for "..zoneName)
+        return false
+    end
+
+    local vars = {
+        type = template, --"Airshow_Crowd",
+        country = color == "blue" and "USA" or "USSR",
+        category = "Unarmed",
+        x = spots[1].x,
+        y = spots[1].y,
+        name = groupName,
+        heading = heading
+    }
+    local newGroup = mist.dynAddStatic(vars)
+
+    return newGroup --groupName
+end
+
 function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
     local zn = self:getZone(zoneName)
     local unitSet = {}
 
     local searchRadius = zn.radius
     local clearRadius = 50
+    -- heavy calculation? improve performance; get single, larger spot to speed up?
     local spots = Disposition.getSimpleZones(zn.point, searchRadius, clearRadius, #template)
 
     if #spots < #template then
@@ -978,84 +1012,28 @@ function ControlZones:processDeadUnit(unitName)
     end
 end
 
-function ControlZones:constructTask(params)
-    local task = {}
-    local pt = params.destination.point
+function ControlZones:populateZones(groupList, color)
+    for zoneName, data in pairs(groupList) do
+        local heading = self:orientToClosestEnemy(zoneName)
+        local groupName = self:spawnGroupInZone(data.groupName, zoneName, color, data.template, heading)
 
-    local route = {
-        ["points"] = {
-            [1] = {
-                type= AI.Task.WaypointType.TURNING_POINT,
-                x = pt.x,
-                y = pt.z,
-                speed = 100,
-                action = AI.Task.VehicleFormation.RANK
-            },
-            [2] = {
-                type= AI.Task.WaypointType.TURNING_POINT,
-                x = pt.x,
-                y = pt.z,
-                speed = 100,
-                action = AI.Task.VehicleFormation.RANK
-            },
-        }
-    }
-
-    --also mist.ground.buildWP or mist.groupToPoint(groupName, zoneName, ...)
-    local taskMove = {
-        id = 'Mission',
-        params = {
-            route = route,
-        }
-    }
-
-    task = taskMove
-    return task
-end
-
-function ControlZones:setGroupTask(groupName, task)
-    local group = Group.getByName(groupName)
-    if not group then
-        env.info("Not assigning task: no group "..groupName)
-        return false
+        local group = Group.getByName(groupName)
+        if group and group:isExist() then
+            GroupCommander.new(groupName, {
+                color = color,
+                stratcom = opsCommander
+            })
+        else
+            env.info("!!!!!! could not find group just spawned")
+        end
     end
-
-    group:getController():setTask(task)
-    --remove group from self.groupsByZone[]
-    return true
 end
-
-function ControlZones:populateZones()
+function ControlZones:garrisonZones(zones, color)
     -- on first pass spawn basic template to hold zone,
-    -- later reinforce zones prioritized by each commander
-    for _, cmd in pairs(self.commanders) do
-        --a single group for each zone to start
-        local zones = self:getCluster(cmd.color)
-        local avgHeading =  mist.utils.getHeadingPoints(self.centroid[cmd.color], self.centroid[self:getOpponent(cmd.color)])
-        local reinforcements = cmd:chooseZoneReinforcements(zones)
-        for zoneName, data in pairs(reinforcements) do
-            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template, avgHeading)
-        end
-
-        --front zones get an additional group
-        local frontlineZones = self:getPerimeterZones(cmd.color)
-        reinforcements = cmd:chooseZoneReinforcements(frontlineZones)
-        for zoneName, data in pairs(reinforcements) do
-            local heading = self:orientToClosestEnemy(zoneName)
-            self:spawnGroupInZone(data.groupName, zoneName, cmd.color, data.template, heading)
-        end
-    end
-end
-
-function ControlZones:requestOrders()
-    for _, cmd in pairs(self.commanders) do
-        local params = cmd:issueOrders()
-        if params then
-            env.info("    constructing task for "..params.group)
-            local task = self:constructTask(params)
-            self:setGroupTask(params.group, task)
-            self.map:drawDirective(self:getZone(params.origin.name).point, self:getZone(params.destination.name).point, cmd.color)
-        end
+    local type = garrisonTemplates[color]
+    local avgHeading =  mist.utils.getHeadingPoints(self.centroid[color], self.centroid[self:getOpponent(color)])
+    for _, zoneName in pairs(zones) do
+        self:spawnStaticInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
     end
 end
 
@@ -1067,8 +1045,9 @@ function ControlZones:kickoff()
     self.map:drawZones(zoneInfo)
     self.map:drawEdges(self:getAllEdges())
 
-    for color, _ in pairs(self.commanders) do
-        self.centroid[color] = self:centroidOfZones(self:getCluster(color))
+    for color, cmd in pairs(self.commanders) do
+        self:garrisonZones(self:getCluster(color), color)
+
         local fronts = self:getOrderedFrontlines(color)
 
         -- for each front, draw frontline and place FARPs
@@ -1081,18 +1060,12 @@ function ControlZones:kickoff()
                 local center = self:centroidOfZones({tri[1], tri[2], tri[3]})
                 self:placeFARP(color, center)
             end
+
+            local groupList = cmd:initiate(front)
+            self:populateZones(groupList, color)
         end
     end
 
-    self:populateZones()
-    timer.scheduleFunction(
-        function(params)
-            params.context:requestOrders()
-            return timer.getTime() + 30
-        end,
-        {context = self},
-        timer.getTime() + 8
-    )
 end
 
 return ControlZones

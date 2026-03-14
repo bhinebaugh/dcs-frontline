@@ -26,6 +26,21 @@ local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima
 local unitLostHandler = UnitLostHandler.new(cz)
 world.addEventHandler(unitLostHandler)
 
-cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue"}, constants.groundTemplates.blue))
-cz:addCommander("red", CoalitionCommander.new(cz, {color = "red"}, constants.groundTemplates.red))
+ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
+ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
+cz:addCommander("blue", ccBlue)
+cz:addCommander("red", ccRed)
 cz:kickoff()
+
+-- cz.commanders.blue:initiate()
+-- ccBlue:initiate(cz.front["blue"][1])
+
+-- timer.scheduleFunction(
+--     function(params)
+--         local groupList = ccBlue:initiate(cz.front["blue"][1])
+--         cz:populateZones(groupList, "blue")
+--         return nil
+--     end,
+--     {context = ccBlue},
+--     timer.getTime() + 8
+-- )
