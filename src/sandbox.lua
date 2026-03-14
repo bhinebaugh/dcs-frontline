@@ -1,21 +1,101 @@
+local constants = require("constants")
+local taskTypes = constants.taskTypes
 
 local GroupCommander = require("group-commander")
+local Objective = require("objective")
+local Order = require("order")
+local OperationalCommander = require("operational-commander")
+local PatrolPlan = require("doctrines.tactical.patrol-doctrine")
 
-local groupA = GroupCommander.new("Alpha", {color = "blue"})
-local groupB = GroupCommander.new("Bravo", {color = "red"})
-
--- Destination N 43 11.290 E 044 31.248
--- Convert DMS to decimal degrees: 43 + 11.290/60, 44 + 31.248/60
-local lat = 43 + 20/60 + 20/3600
-local lon = 44 + 13/60 + 13/3600
-local groupBDestination = coord.LLtoLO(lat, lon)
-
--- Delay the move order until mission is fully loaded
-mist.scheduleFunction(
-    function()
-        env.info("Delayed move order execution for Bravo")
-        groupB:issueMoveOrder(groupBDestination)
-    end,
-    {},
-    timer.getTime() + 5  -- Wait 5 seconds after mission start
+-- Initial objective for Alpha is to defend the bridge
+-- near the coordinates:
+local blueDefendPosition = coord.LLtoLO(
+    42 + 32/60 + 1/3600,
+    44 + 05/60 + 38/3600
 )
+
+-- Known safe rally point for Blue forces
+local blueRallyPosition = coord.LLtoLO(
+    42 + 31/60 + 45/3600,
+    44 + 05/60 + 35/3600
+)
+
+-- Initial objective for Bravo is to reposition to the
+-- Kvemo-Khoshka village at these coordinates:
+local redRepositionPosition = coord.LLtoLO(
+    42 + 27/60 + 53/3600,
+    44 + 03/60 + 37/3600
+)
+
+-- Known safe rally point for Red forces
+local redRallyPosition = coord.LLtoLO(
+    42 + 34/60 + 0/3600,
+    44 + 06/60 + 30/3600
+)
+
+local opsBlue = OperationalCommander.new({color = "blue"})
+local opsRed = OperationalCommander.new({color = "red"})
+
+-- Assign rally points to strategic commanders
+opsBlue.rallyPoints = {
+    {position = blueRallyPosition, radius = 500}
+}
+
+opsRed.rallyPoints = {
+    {position = redRallyPosition, radius = 500}
+}
+
+-- Create and assign objectives directly
+opsBlue.orderCoordinator.objectives = {
+    -- Objective.new({
+    --     type = taskTypes.ASSAULT,
+    --     position = blueDefendPosition,
+    --     radius = 500,
+    -- })
+}
+
+opsRed.orderCoordinator.objectives = {
+    -- Objective.new({
+    --     type = taskTypes.ASSAULT,
+    --     position = redRepositionPosition,
+    --     deadline = timer.getTime() + 1800,  -- 30 minute deadline
+    -- })
+}
+
+local function createGroupCommandersForFilter(color, opsCommander)
+    for groupName, groupData in pairs(mist.DBs.groupsByName) do
+        if groupData.coalition == color then
+            local group = Group.getByName(groupName)
+            if group and group:isExist() then
+                GroupCommander.new(groupName, {
+                    color = color
+                })
+            end
+        end
+    end
+end
+
+createGroupCommandersForFilter("blue", opsBlue)
+createGroupCommandersForFilter("red", opsRed)
+
+local blueCommanders = GroupCommander.getInstances("blue")
+local firstBlueCommander = blueCommanders[1]
+local order = Order.new({
+    type = taskTypes.PATROL,
+    position = blueRallyPosition,
+    radius = 500,
+})
+if firstBlueCommander then
+    firstBlueCommander:issueOrder(order)
+end
+
+-- ## General scenario setup
+-- 1. Bravo encounters Alpha overlooking the bridge
+--   - Should spot them when near Kvemo-Roka villag
+--   - at a fork in the road
+-- 2. Bravo retreats up either branch of the fork
+-- 3. Alpha pursues, but loses sight due to terrain
+-- 4. Alpha breaks off pursuit and returns to defend the bridge
+-- 5. Bravo reports enemy position to strategic command
+-- 6. Strategic command dispatches reinforcements to assist Bravo
+-- 7. Bravo attempts to continue to Kvemo-Khoshka village after the threat is removed
