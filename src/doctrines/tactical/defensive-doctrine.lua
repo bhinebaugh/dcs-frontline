@@ -76,10 +76,12 @@ function DefensiveDoctrine:considerAdvance(context)
     local advanceAssessment = 0.0
 
     -- threat favorability
-    if threat.count > 0 and threat.favorability < 1.0 then
-        advanceAssessment = advanceAssessment + threat.favorability
-    else
-        advanceAssessment = advanceAssessment + threat.favorability / 2
+    if threat.count > 0 then
+        if threat.favorability < 1.0 then
+            advanceAssessment = advanceAssessment + threat.favorability
+        else
+            advanceAssessment = advanceAssessment + threat.favorability / 2
+        end
     end
 
     -- attrition rate

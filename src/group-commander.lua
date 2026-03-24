@@ -182,14 +182,14 @@ function GroupCommander:decide()
         end
     end
 
-    if self.orders and self.orders:isFinished() then
-        self.orders = nil
-        self.doctrine = DefensiveDoctrine.new(self.groupName)
-    end
+    -- if self.orders and self.orders:isFinished() then
+    --     self.orders = nil
+    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
+    -- end
 
-    if not self.doctrine then
-        self.doctrine = DefensiveDoctrine.new(self.groupName)
-    end
+    -- if not self.doctrine then
+    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
+    -- end
 
     -- Check if we have valid assessment data
     if not self.ownForceStrength or not self.threatAssessment then
@@ -208,6 +208,7 @@ function GroupCommander:decide()
     end
         
     -- Use Doctrine to make tactical decisions
+    if not self.doctrine then return end
     local decision = self.doctrine:plan(context)
     if decision then
         self:setDisposition(decision.disposition)
@@ -248,14 +249,19 @@ function GroupCommander:act()
     end
 
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
-    if self.destination and (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
-        -- Only issue if destination has changed (more than 100m tolerance)
-        if not self.lastMoveOrder or 
-           math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
-           math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
-            self:issueMoveOrder(self.destination)
-            self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
+    -- If destination has been set to nil, stop the group where they are
+    if self.destination then
+        if (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
+            -- Only issue if destination has changed (more than 100m tolerance)
+            if not self.lastMoveOrder or 
+            math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
+            math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
+                self:issueMoveOrder(self.destination)
+                self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
+            end
         end
+    else
+        self:stopMovement()
     end
 end
 
