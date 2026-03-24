@@ -24,8 +24,8 @@ local formationTypes = {
     ECHELONR = "EchelonR", -- moving in Echelon Right formation  
 }
 local garrisonTemplates = { --static objects
-    red = "Ural-375", --category "Unarmed" {"KAMAZ Truck", "KAMAZ Truck"}, -- {"Ural-375", "Ural-375", "GAZ-66"},
-    blue = "M 818", --category "Unarmed" --{"M 818", "M 818"},
+    red = {"Ural-375"}, --category "Unarmed" {"KAMAZ Truck", "KAMAZ Truck"}, -- {"Ural-375", "Ural-375", "GAZ-66"},
+    blue = {"M 818"}, --category "Unarmed" --{"M 818", "M 818"},
 }
 local groundTemplates = { --frontline, rear, farp
     red = {
@@ -33,18 +33,18 @@ local groundTemplates = { --frontline, rear, farp
         -- {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
         -- {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
         -- {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
-        {"MTLB", "MTLB", "MTLB"},
-        { "BTR-80", "BTR-80", "BTR-80", "BTR-80"},
+        {"BRDM-2", "BRDM-2", "BRDM-2"},
+        {"BTR-80", "BTR-80", "BTR-80", "BTR-80"},
         {"BMP-2", "BMP-2", "BTR-80", "BTR-80"},
-        {"T-55", "T-55", "T-55"}
+        {"T-72B", "T-72B", "BTR-60"}
     },
     blue = {
         -- {"Hummer", "M 818", "M 818", "M 818"},
         -- {"M-113", "Hummer", "M 818", "M 818"},
-        {"M1043 HMMWV Armament",  "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
+        {"M1045 HMMWV TOW",  "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
         {"M-113", "M-113", "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
         {"M-2 Bradley", "M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament"},
-        {"M-60", "M-60", "M-60"}
+        {"M-1 Abrams", "M-1 Abrams", "M-113"}
     }
 }
 

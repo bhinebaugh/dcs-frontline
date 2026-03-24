@@ -33,6 +33,13 @@ function Map:getVisibility(color, feature)
     end
 end
 
+function Map:removeMarks(markIds)
+    if not markIds then return end
+    for _, id in pairs(markIds) do
+        trigger.action.removeMark(id)
+    end
+end
+
 function Map:drawZone(name, color, pt)
     if not settings.draw.zones then return end
     if not self.markers.zones[name] then self.markers.zones[name] = {} end
@@ -134,10 +141,13 @@ end
 
 function Map:drawDirective(originPoint, targetPoint, color)
     if not settings.draw.directives then return end
+    local Ids = {}
     local sides = self:getVisibility(color, "directives")
     for _, side in pairs(sides) do
         local nextId = self:getNewMarker()
-        local lineColor = {1,1,0.2,1}
+        local lineColor = {1,1,0.2,0.2}
+        -- lineColor[4] = 0.2
+        lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.2}
         local fillColor = lineColor
         local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
         local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
@@ -145,8 +155,9 @@ function Map:drawDirective(originPoint, targetPoint, color)
         local lineStart = mist.projectPoint(originPoint, distance+200, heading)
         local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
         trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
+        table.insert(Ids, nextId)
     end
-    return true
+    return Ids
 end
 
 return Map

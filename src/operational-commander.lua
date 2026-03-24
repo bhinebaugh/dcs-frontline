@@ -33,6 +33,7 @@ function OperationalCommander.new(config)
     self.lastIssuedOrders = {}
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
+    self.groupCommanders = config.groupCommanders or {}
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
@@ -42,11 +43,27 @@ function OperationalCommander.new(config)
     return self
 end
 
+function OperationalCommander:disband()
+    self:cancelSchedule()
+    local survivors = {}
+    for _, gc in ipairs(self.groupCommanders) do
+        if not gc.destroyed then
+            table.insert(survivors, gc)
+        end
+    end
+    env.info("*** " .. self.color .. " Ops: disbanded, returning " .. #survivors .. " groups to reserves")
+    return survivors
+end
+
+function OperationalCommander:addGroupCommander(gc)
+    table.insert(self.groupCommanders, gc)
+end
+
 function OperationalCommander:observe()
     self:aggregateThreatsFromGroups()
-    
+
     -- Log consolidated OBSERVE summary
-    local groupCommanders = GroupCommander.getInstances(self.color)
+    local groupCommanders = self.groupCommanders
     local activeGroups = 0
     for _ in pairs(groupCommanders) do
         activeGroups = activeGroups + 1
@@ -60,8 +77,7 @@ function OperationalCommander:orient()
     self:cleanupDestroyedCommanders()
     
     -- Sync order statuses from commanders back to order graph
-    local groupCommanders = GroupCommander.getInstances(self.color)
-    self.orderCoordinator:syncOrderStatuses(groupCommanders)
+    self.orderCoordinator:syncOrderStatuses(self.groupCommanders)
     
     -- Assess objective progress
     self.objectivesNeedingOrders = {}
@@ -181,6 +197,24 @@ function OperationalCommander:cleanupDestroyedCommanders()
     -- Remove destroyed commanders from the global instances list
     GroupCommander.removeDestroyed()
 
+    -- Prune destroyed commanders from this opscom's managed list
+    local surviving = {}
+    for _, gc in ipairs(self.groupCommanders) do
+        if not gc.destroyed then
+            table.insert(surviving, gc)
+        end
+    end
+    self.groupCommanders = surviving
+
+    -- If all groups are gone, the objective can no longer be pursued
+    if #self.groupCommanders == 0 then
+        local objective = self.orderCoordinator.objectives[1]
+        if objective and not objective:isComplete() then
+            objective:markFailed("all groups destroyed")
+            env.info("*** " .. self.color .. " Ops: objective failed - all groups destroyed")
+        end
+    end
+
     -- Abort orders assigned to groups that no longer exist
     if self.orderCoordinator and self.orderCoordinator.objectives then
         for _, objective in ipairs(self.orderCoordinator.objectives) do
@@ -189,7 +223,7 @@ function OperationalCommander:cleanupDestroyedCommanders()
                     if order.status ~= constants.orderStatus.ABORTED and
                        order.status ~= constants.orderStatus.COMPLETED then
                         local groupStillExists = false
-                        for _, instance in ipairs(GroupCommander.getInstances(self.color)) do
+                        for _, instance in ipairs(self.groupCommanders) do
                             if instance.groupName == order.assignedTo then
                                 groupStillExists = true
                                 break
@@ -235,7 +269,7 @@ function OperationalCommander:assignOrderTemplate(template, objective)
 
     -- Score available commanders by suitability against the template's missionProfile
     local suitabilityResults = {}
-    for _, commander in ipairs(GroupCommander.getInstances(self.color)) do
+    for _, commander in ipairs(self.groupCommanders) do
         local s = commander:getStatus()
         if not s.orderStatus or
            s.orderStatus == orderStatus.COMPLETED or
@@ -315,7 +349,7 @@ end
 
 function OperationalCommander:getAvailableGroupCommanders()
     local available = {}
-    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
+    for _, commander in ipairs(self.groupCommanders) do
         local status = commander:getStatus()
         local currentStatus = status.orderStatus
         -- Include groups without orders, or with completed/aborted orders
@@ -371,7 +405,7 @@ function OperationalCommander:assessObjectiveProgress(objective)
 end
 
 function OperationalCommander:aggregateThreatsFromGroups()
-    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
+    for _, commander in ipairs(self.groupCommanders) do
         local status = commander:getStatus()
         self.threatTracker:mergeThreatIntel(status.threats)
     end
@@ -379,7 +413,7 @@ end
 
 function OperationalCommander:getOwnGroupsNearPosition(position, radius)
     local nearbyOwnForces = {}
-    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
+    for _, commander in ipairs(self.groupCommanders) do
         local status = commander:getStatus()
         if SpatialAgent.isWithinRadius(status.position, position, radius) then
             table.insert(nearbyOwnForces, commander)
@@ -392,7 +426,7 @@ function OperationalCommander:updateAllyIntelForAllGroups()
     -- Update ally intel for all active groups so they know about nearby friendlies
     local supportRadius = 5000  -- 5km support range
     
-    for _, commander in pairs(GroupCommander.getInstances(self.color)) do
+    for _, commander in ipairs(self.groupCommanders) do
         local status = commander:getStatus()
         if status.position then
             local allyIntel = self:assessNearbyAllyStrength(status.position, supportRadius, commander.groupName)

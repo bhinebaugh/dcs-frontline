@@ -1,7 +1,7 @@
 -- aka Strategic Commander
 
 -- local constants = require("constants")
--- local GroupCommander = require("group-commander")
+local GroupCommander = require("group-commander")
 -- local GroupProfiler = require("group-profiler")
 local OperationalCommander = require("operational-commander")
 local OODACommander = require("ooda-commander")
@@ -10,7 +10,7 @@ local Objective = require("objective")
 -- local OrderCoordinator = require("order-coordinator")
 -- local PlanningContext = require("planning-context")
 -- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
--- local SpatialAgent = require("spatial-agent")
+local SpatialAgent = require("spatial-agent")
 -- local ThreatTracker = require("threat-tracker")
 
 -- local alr = constants.acceptableLevelsOfRisk
@@ -25,8 +25,10 @@ local CoalitionCommander = {}
 setmetatable(CoalitionCommander, {__index = OODACommander})
 CoalitionCommander.__index = CoalitionCommander
 
+local oodaInterval = 45.0 -- seconds
+
 function CoalitionCommander.new(parent, config)
-    local self = OODACommander.new({interval = 120.0})
+    local self = OODACommander.new({interval = oodaInterval})
     setmetatable(self, CoalitionCommander)
     self.map = parent
     self.coalition = config.color
@@ -35,6 +37,7 @@ function CoalitionCommander.new(parent, config)
     self.templates = config.groundTemplates
     self.groupId = 1
     self.groups = {} -- e.g. name location task
+    self.reserves = {}
     self.groupsByZone = {}
     for _, name in pairs(self.map.allZones) do
         self.groupsByZone[name] = {}
@@ -43,7 +46,7 @@ function CoalitionCommander.new(parent, config)
     for i, j in pairs(taskTypes) do
         self.groupsByTask[j] = {}
     end
-    self.opscom = {}
+    self.opscoms = {}
     self.operations = {
         active = {},
         history = {},
@@ -54,49 +57,34 @@ function CoalitionCommander.new(parent, config)
     return self
 end
 
--- setup
--- assign groups in zones along front
--- lump into sections for opscoms
-function CoalitionCommander:initiate(front)
-    local opscom = OperationalCommander.new({color = self.color})
-    table.insert(self.opscom, opscom)
 
-    -- local frontlineForces = self:chooseZoneReinforcements(front.zones)
+-- A preliminary phase to allow commander to choose group templates for all front zones
+-- (random for now, TODO apply some strategy to placement of different types)
+function CoalitionCommander:initiate(front)
     local reinforcements = {}
     for _, zoneName in pairs(front.zones) do
-        local r = math.random(#self.templates)
-        local group = self.templates[r]
-        local groupName = zoneName.."-"..self:getNewGroupId()
-        reinforcements[zoneName] = {
-            groupName = groupName,
-            template = group
-        }
-        -- self:addGroup(groupName, r, taskTypes.DEFEND, zoneName, zoneName)
+        reinforcements[zoneName] = {}
+        for i = 1, math.random(3) do
+            local r = math.random(#self.templates)
+            local group = self.templates[r]
+            local groupName = zoneName.."-"..self:getNewGroupId()
+    
+            local gc = GroupCommander.new(groupName, {
+                color = self.color,
+            })
+            table.insert(self.reserves, gc)
+    
+            local groupData = {
+                groupName = groupName,
+                template = group
+            }
+            table.insert(reinforcements[zoneName], groupData)
+        end
     end
-    -- front.length
-
-    -- assign operation/objectives
-    -- .rallyPoints
-    -- .orderCoordinator.objectives
-    local randomZone = front.zones[math.random(#front.zones)]
-    local enemyNeighbors = self.map:getNeighbors(randomZone, self.opponent, true)
-    local target = enemyNeighbors[math.random(#enemyNeighbors)]
-    local targetPosition = self.map:getZone(target).point
-
-    opscom.orderCoordinator.objectives = {
-        Objective.new({
-            type = taskTypes.ASSAULT,
-            position = targetPosition,
-            radius = 500,
-        })
-    }
 
     return reinforcements
 end
 
--- assess overall situation,
--- by looking at territory, front characteristics, strength and distribution, current combat, intel, enemy losses
--- compare to desired outcome (strategic objective)
 -- NOTE: Doctrine usage example:
 -- To assign a specific strategy to an objective, create the Doctrine and assign it:
 --   local objective = Objective.new({...})
@@ -104,101 +92,139 @@ end
 -- The OperationalCommander will use the Doctrine in its DECIDE phase.
 -- If no Doctrine is assigned, it defaults to ReconRallyAssaultPlan.
 function CoalitionCommander:observe()
+    -- Prune destroyed groups from reserves
+    local surviving = {}
+    for _, gc in ipairs(self.reserves) do
+        if not gc.destroyed then
+            table.insert(surviving, gc)
+        end
+    end
+    self.reserves = surviving
+
+    env.info(string.format("___ %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | opscoms=%d",
+        self.color,
+        #self.map:getCluster("blue"),
+        #self.map:getCluster("red"),
+        #self.reserves,
+        #self.opscoms))
 end
 
 function CoalitionCommander:orient()
+    -- Identify opscoms whose objective is complete or failed
+    self.opscoms_to_disband = {}
+    local activeCount = 0
+    for i, opscom in ipairs(self.opscoms) do
+        local objective = opscom.orderCoordinator.objectives[1]
+        if objective and objective:isComplete() then
+            table.insert(self.opscoms_to_disband, i)
+        else
+            activeCount = activeCount + 1
+        end
+    end
+
+    -- If no active opscoms will remain after disbanding, and reserves are available, find a target
+    self.pending_target = nil
+    if activeCount == 0 and #self.reserves > 0 then
+        local ownZones = self.map:getCluster(self.color)
+        for _, zoneName in ipairs(ownZones) do
+            local enemyNeighbors = self.map:getNeighbors(zoneName, self.opponent, true)
+            if enemyNeighbors and #enemyNeighbors > 0 then
+                local target = enemyNeighbors[math.random(#enemyNeighbors)]
+                self.pending_target = {
+                    zoneName = target,
+                    position = self.map:getZone(target).point,
+                }
+                break
+            end
+        end
+    end
 end
 
 function CoalitionCommander:decide()
+    -- Select groups from reserves by proximity to the pending target
+    self.pending_groups = {}
+    if self.pending_target then
+        local maxGroups = 3
+        local candidates = {}
+        for _, gc in ipairs(self.reserves) do
+            local status = gc:getStatus()
+            if status.position then
+                table.insert(candidates, {
+                    gc = gc,
+                    dist = SpatialAgent.distance2D(status.position, self.pending_target.position),
+                })
+            end
+        end
+        table.sort(candidates, function(a, b) return a.dist < b.dist end)
+        for i = 1, math.min(maxGroups, #candidates) do
+            table.insert(self.pending_groups, candidates[i].gc)
+        end
+    end
 end
 
 function CoalitionCommander:act()
+    -- Disband completed opscoms (iterate in reverse to safely remove by index)
+    table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
+    for _, i in ipairs(self.opscoms_to_disband) do
+        local opscom = self.opscoms[i]
+        self.map.map:removeMarks(opscom.markers)
+        local survivors = opscom:disband()
+        for _, gc in ipairs(survivors) do
+            table.insert(self.reserves, gc)
+        end
+        table.remove(self.opscoms, i)
+        env.info(string.format("___ %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
+            self.color, #survivors))
+    end
+
+    -- Create a new opscom if a target and groups are ready
+    if self.pending_target and #self.pending_groups > 0 then
+        -- Remove assigned groups from reserves
+        for _, gc in ipairs(self.pending_groups) do
+            for i, reserveGc in ipairs(self.reserves) do
+                if reserveGc == gc then
+                    table.remove(self.reserves, i)
+                    break
+                end
+            end
+        end
+
+        local opscom = OperationalCommander.new({
+            color = self.color,
+            groupCommanders = self.pending_groups,
+        })
+        opscom.orderCoordinator.objectives = {
+            Objective.new({
+                type = taskTypes.ASSAULT,
+                position = self.pending_target.position,
+                radius = 500,
+            })
+        }
+        table.insert(self.opscoms, opscom)
+        env.info(string.format("___ %s StratCom ACT: created opscom → %s with %d groups",
+            self.color, self.pending_target.zoneName, #self.pending_groups))
+
+        -- Draw arrows on map from each tasked group to the target point
+        local markers = {}
+        for _, gc in ipairs(self.pending_groups) do
+            local originPoint = gc:getOwnPosition()
+            local groupMarkers = self.map.map:drawDirective(originPoint, self.pending_target.position, self.color)
+            for _, mk in pairs(groupMarkers) do
+                table.insert(markers, mk)
+            end
+        end
+        opscom.markers = markers
+    end
 end
 
+
+-- ============================================================================
+-- HELPER METHODS
+-- ============================================================================
 
 function CoalitionCommander:getNewGroupId()
     self.groupId = self.groupId + 1
     return self.groupId
-end
-
-function CoalitionCommander:addGroup(groupName, templateID, task, target, zoneName)
-    self.groups[groupName] = {
-        name = groupName,
-        template = templateID,
-        strength = #self.templates[templateID],
-        task = task or taskTypes.DEFEND,
-        location = zoneName,
-        status = statusTypes.HOLD, -- preparing, en route, complete/at destination
-        target = target or nil,
-        origin = zoneName, --or point, or other value
-    }
-    table.insert(self.groupsByTask[task], groupName)
-    if zoneName then
-        table.insert(self.groupsByZone[zoneName], groupName)
-    end
-end
-function CoalitionCommander:updateGroup(groupName, params)
-    local grp = self.groups[groupName]
-    for k, v in pairs(params) do
-        if k == "task" then
-            local oldTask = grp.task
-            local newTask = v
-            for i, g in pairs(self.groupsByTask[oldTask]) do
-                if g == groupName then table.remove(self.groupsByTask[oldTask], i) end
-            end
-            table.insert(self.groupsByTask[newTask], groupName)
-            --if groups was not already EN_ROUTE...
-            if newTask == taskTypes.ASSAULT or newTask == taskTypes.REINFORCE or newTask == taskTypes.RECON then
-                grp.status = statusTypes.EN_ROUTE
-                for i, g in pairs(self.groupsByZone[grp.location]) do
-                    if g == groupName then table.remove(self.groupsByZone[grp.location], i) end
-                end
-            end
-        end
-        self.groups[groupName][k] = v
-    end
-end
-function CoalitionCommander:removeGroup(groupName)
-    local task = self.groups[groupName].task
-    local zone = self.groups[groupName].location
-    local status = self.groups[groupName].status
-    for i, g in pairs(self.groupsByTask[task]) do
-        if g == groupName then table.remove(self.groupsByTask[task], i) end
-    end
-    if zone and status == statusTypes.HOLD then
-        for i, g in pairs(self.groupsByZone[zone]) do
-            if g == groupName then table.remove(self.groupsByZone[zone], i) end
-        end
-    end
-    self.groups[groupName] = nil
-end
-
-function CoalitionCommander:registerUnitLost(unitName, groupName)
-    env.info(self.coalition.." command: receiving report on "..unitName.." of "..groupName)
-    local grp = self.groups[groupName]
-    env.info("    "..self.coalition.." command lost "..unitName.." in assault on "..grp.target)
-    grp.strength = grp.strength - 1
-    env.info("    group strength is now "..grp.strength)
-end
-function CoalitionCommander:registerGroupLost(groupName)
-    env.info(self.coalition.." command: receiving report on "..groupName)
-    local grp = self.groups[groupName]
-    if grp then
-        env.info("    lost "..grp.name.." - assault on "..grp.target.." failed")
-        for i, op in pairs(self.operations.active) do
-            if op.group == groupName then
-                table.insert(self.operations.history, op)
-                self.operations.active[i] = nil
-                env.info("+++ updated operations list")
-                env.info(mist.utils.tableShow(self.operations.active))
-                env.info("--- past operations list")
-                env.info(mist.utils.tableShow(self.operations.history))
-            end
-        end
-        self:removeGroup(groupName)
-    else
-        env.info("    ("..groupName.." was already reported lost)")
-    end
 end
 
 return CoalitionCommander

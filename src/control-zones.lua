@@ -1,7 +1,6 @@
 local rgb = require("constants").rgb
 local garrisonTemplates = require("constants").garrisonTemplates
 local Map = require("map")
-local GroupCommander = require("group-commander")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 
 local ControlZones = {}
@@ -528,7 +527,7 @@ function ControlZones:precalculateConnections()
                 local heading = mist.utils.getHeadingPoints(z1.point, z2.point)
                 local distance = mist.utils.get2DDist(z1.point, z2.point)
                 local roadPath = land.findPathOnRoads("roads", z1.x, z1.y, z2.x, z2.y)
-                local roadDistance = mist.getPathLength(roadPath)
+                local roadDistance = roadPath and mist.getPathLength(roadPath) or 10*distance
                 local allowable_detour = 1.4
                 local cross_country = roadDistance / distance > allowable_detour
 
@@ -880,6 +879,14 @@ function ControlZones:placeFARP(color, pt)
     local farp_stock = {
         blue = {
             "UH-1H",
+            -- "UH-60L",
+            "OH-6A",
+            "AH-6J",
+            "OH-58D",
+            -- "SA342L",
+            -- "SA342M",
+            -- "SA342Minigun",
+            -- "SA342Mistral",
             "AH-64D_BLK_II",
         },
         red = {
@@ -985,6 +992,7 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, hea
         local unitName = unit:getName()
         if unitName then self.groupOfUnit[unitName] = newGroup.name end
     end
+    -- REMOVE
     self.groundGroups[newGroup.name] = {
         origin = zoneName,
         color = color,
@@ -997,34 +1005,11 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, hea
     return groupName
 end
 
-function ControlZones:processDeadUnit(unitName)
-    env.info("control zone: unit "..unitName.." is dead")
-    local grpName = self.groupOfUnit[unitName]
-    local grpColor = self.groundGroups[grpName].color
-    env.info("    from group "..grpName.." of "..grpColor)
-    if mist.groupIsDead(grpName) then --error if player
-        env.info("    >>> GROUP LOST all units of "..grpName.." are dead")
-        self.commanders[grpColor]:registerGroupLost(grpName)
-        local originZone = self.groundGroups[grpName].origin
-        self:updateZoneOwner(originZone)
-    else
-        self.commanders[grpColor]:registerUnitLost(unitName, grpName)
-    end
-end
-
 function ControlZones:populateZones(groupList, color)
     for zoneName, data in pairs(groupList) do
         local heading = self:orientToClosestEnemy(zoneName)
-        local groupName = self:spawnGroupInZone(data.groupName, zoneName, color, data.template, heading)
-
-        local group = Group.getByName(groupName)
-        if group and group:isExist() then
-            GroupCommander.new(groupName, {
-                color = color,
-                stratcom = opsCommander
-            })
-        else
-            env.info("!!!!!! could not find group just spawned")
+        for _, group in pairs(data) do
+            self:spawnGroupInZone(group.groupName, zoneName, color, group.template, heading)
         end
     end
 end
@@ -1033,7 +1018,10 @@ function ControlZones:garrisonZones(zones, color)
     local type = garrisonTemplates[color]
     local avgHeading =  mist.utils.getHeadingPoints(self.centroid[color], self.centroid[self:getOpponent(color)])
     for _, zoneName in pairs(zones) do
-        self:spawnStaticInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
+        -- Static vehicle units are more suited to the limited requirements of garrison forces
+        -- but commanded dynamic units don't respond to them by default
+        -- self:spawnStaticInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
+        self:spawnGroupInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
     end
 end
 

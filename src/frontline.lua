@@ -8,8 +8,6 @@ require("table") --Load modified standard libraries
 local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
 local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
 
-local UnitLostHandler = require("handlers").UnitLostHandler --Load event handlers
-
 local constants = require("constants") --Load constants
 
 cz = ControlZones.new(nil, constants.groundTemplates)
@@ -19,28 +17,9 @@ cz:constructDelaunayIndex()
 cz:precalculateConnections()
 
 cz:assignCompassMaxima()
-local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
-local height = cz.maxima.northmost.x - cz.maxima.southmost.x
-local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
-
-local unitLostHandler = UnitLostHandler.new(cz)
-world.addEventHandler(unitLostHandler)
 
 ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
 ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
 cz:addCommander("blue", ccBlue)
 cz:addCommander("red", ccRed)
 cz:kickoff()
-
--- cz.commanders.blue:initiate()
--- ccBlue:initiate(cz.front["blue"][1])
-
--- timer.scheduleFunction(
---     function(params)
---         local groupList = ccBlue:initiate(cz.front["blue"][1])
---         cz:populateZones(groupList, "blue")
---         return nil
---     end,
---     {context = ccBlue},
---     timer.getTime() + 8
--- )

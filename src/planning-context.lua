@@ -103,10 +103,8 @@ function PlanningContext.deriveObjectivePlanningContext(objective, commander)
     local statusCounts = objective:getOrderStatusCounts()
 
     -- Count available group commanders
-    local GroupCommander = require("group-commander")
-    local allCommanders = GroupCommander.getInstances(commander.color)
     local availableCount = 0
-    for _, cmd in ipairs(allCommanders) do
+    for _, cmd in ipairs(commander.groupCommanders) do
         local s = cmd:getStatus()
         if not s.orderStatus or
            s.orderStatus == constants.orderStatus.COMPLETED or
