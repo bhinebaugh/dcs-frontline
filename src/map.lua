@@ -84,28 +84,7 @@ function Map:drawEdges(edges)
     end
 end
 
-function Map:drawFrontline(edges, color)
-    --first erase any existing lines
-    if self.markers.front[color] then
-        for _, id in pairs(self.markers.front[color]) do
-            trigger.action.removeMark(id)
-        end
-        self.markers.front[color] = {}
-    end
-    --then draw a line for each edge of the current color's front
-    local sides = self:getVisibility(color, "frontlines")
-    for _, side in pairs(sides) do
-        for _, zonePoints in pairs(edges) do
-            local lineId = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId)
-            local lineColor = rgb[color]
-            trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
-            -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
-        end
-    end
-end
-
-function Map:drawFrontlineFromPoints(points, color, erasePrevious)
+function Map:drawFrontline(points, color, erasePrevious)
     local OFFSET = 1500
     -- first erase any existing lines
     if erasePrevious and self.markers.front[color] then

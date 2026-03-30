@@ -144,7 +144,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
         local fronts = self:getOrderedFrontlines(formerOwner)
         local firstPass = true
         for _, front in pairs(fronts) do
-            self.map:drawFrontlineFromPoints(front.points, formerOwner, firstPass)
+            self.map:drawFrontline(front.points, formerOwner, firstPass)
             firstPass = false
         end
     end
@@ -152,7 +152,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
         local fronts = self:getOrderedFrontlines(newOwner)
         local firstPass = true
         for _, front in pairs(fronts) do
-            self.map:drawFrontlineFromPoints(front.points, newOwner, firstPass)
+            self.map:drawFrontline(front.points, newOwner, firstPass)
             firstPass = false
         end
     end
@@ -704,6 +704,13 @@ function ControlZones:getOrderedFrontlines(color)
                 table.insert(segment.points, {center = lastPoint, heading = enemyHeading})
             end
             segment.isLoop = true
+        else
+            -- extend left edge
+            local firstItem = segment.points[1]
+            table.insert(segment.points, 1, {center = firstItem.center, heading = firstItem.heading - math.pi/2})
+            -- extend right edge
+            local lastItem = segment.points[#segment.points]
+            table.insert(segment.points, {center = lastItem.center, heading = lastItem.heading + math.pi/2})
         end
         segment.length = self:calculateLength(segment)
 
@@ -1045,15 +1052,15 @@ function ControlZones:kickoff()
         for i, front in pairs(fronts) do
             env.info(color.." "..i)
             local pts = front.points
-            self.map:drawFrontlineFromPoints(pts, color)
+            self.map:drawFrontline(pts, color)
 
             for _, tri in pairs(self:selectTrianglesForFARPs(color, front)) do
                 local center = self:centroidOfZones({tri[1], tri[2], tri[3]})
                 self:placeFARP(color, center)
             end
 
-            local groupList = cmd:initiate(front)
-            self:populateZones(groupList, color)
+            -- local groupList = cmd:initiate(front)
+            -- self:populateZones(groupList, color)
         end
     end
 
