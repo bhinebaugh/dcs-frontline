@@ -52,8 +52,6 @@ require("table") --Load modified standard libraries
 local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
 local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
 
--- local UnitLostHandler = require("handlers").UnitLostHandler --Load event handlers
-
 local constants = require("constants") --Load constants
 
 cz = ControlZones.new(nil, constants.groundTemplates)
@@ -63,12 +61,6 @@ cz:constructDelaunayIndex()
 cz:precalculateConnections()
 
 cz:assignCompassMaxima()
-local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
-local height = cz.maxima.northmost.x - cz.maxima.southmost.x
-local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
-
--- local unitLostHandler = UnitLostHandler.new(cz)
--- world.addEventHandler(unitLostHandler)
 
 ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
 ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
@@ -258,7 +250,6 @@ local OODACommander = require("ooda-commander")
 local Objective = require("objective")
 -- local Order = require("order")
 -- local OrderCoordinator = require("order-coordinator")
--- local PlanningContext = require("planning-context")
 -- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
 local SpatialAgent = require("spatial-agent")
 -- local ThreatTracker = require("threat-tracker")
@@ -1088,7 +1079,6 @@ local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
 local OrderCoordinator = require("order-coordinator")
-local PlanningContext = require("planning-context")
 local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
 local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
@@ -1104,6 +1094,32 @@ OperationalCommander.__index = OperationalCommander
 
 local oodaInterval = 30.0 -- seconds
 
+local function isOrderChanged(lastOrder, newOrder, commanderStatus)
+    if not lastOrder then
+        return true
+    end
+    if commanderStatus and commanderStatus.orderStatus then
+        if commanderStatus.orderStatus == orderStatus.COMPLETED or
+           commanderStatus.orderStatus == orderStatus.ABORTED then
+            return true
+        end
+    end
+    if lastOrder.type ~= newOrder.type then
+        return true
+    end
+    if not lastOrder.position then
+        return true
+    end
+    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
+       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
+        return true
+    end
+    if lastOrder.radius ~= newOrder.radius then
+        return true
+    end
+    return false
+end
+
 function OperationalCommander.new(config)
     -- Initialize parent class (sets up OODA loop scheduling)
     local self = OODACommander.new({interval = oodaInterval})
@@ -1118,12 +1134,13 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
-    self.markers = {}
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
     self.assaultStagingDistance = config.assaultStagingDistance or 10000
     self.maxReconGroups = config.maxReconGroups or 1
+
+    self.doctrine = nil
 
     return self
 end
@@ -1194,20 +1211,19 @@ end
 function OperationalCommander:decide()
     self.plannedOrders = {}
     self.plannedThisCycle = {}  -- Track which commanders have orders planned this cycle
-    
+
+    if not self.doctrine then
+        self.doctrine = ReconRallyAssaultPlan.new(self.name, {
+            maxReconGroups         = self.maxReconGroups,
+            reconRadius            = self.reconRadius,
+            assaultRadius          = self.assaultRadius,
+            assaultStagingDistance = self.assaultStagingDistance,
+        })
+        env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan doctrine")
+    end
+
     for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
-            -- Assign default Doctrine if none exists
-            if not objective.doctrine then
-                objective.doctrine = ReconRallyAssaultPlan.new(self.name, {
-                    maxReconGroups         = self.maxReconGroups,
-                    reconRadius            = self.reconRadius,
-                    assaultRadius          = self.assaultRadius,
-                    assaultStagingDistance = self.assaultStagingDistance,
-                })
-                env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan to objective")
-            end
-
             self:planObjectiveWithDoctrine(objective)
         end
     end
@@ -1236,7 +1252,7 @@ function OperationalCommander:act()
         local lastOrder = self.lastIssuedOrders[commander.groupName]
         local commanderStatus = commander:getStatus()
 
-        if PlanningContext.isOrderChanged(lastOrder, order, commanderStatus) then
+        if isOrderChanged(lastOrder, order, commanderStatus) then
             -- Send nearby ally strength intel (within support range)
             local allyIntel = self:assessNearbyAllyStrength(order.position, 5000, commander.groupName)
             if allyIntel then
@@ -1328,21 +1344,74 @@ function OperationalCommander:cleanupDestroyedCommanders()
 end
 
 
--- Plan objective orders using Doctrine strategy
+--- @class ObjectiveContext
+--- @field objectivePosition table
+--- @field objectiveRadius number
+--- @field objectiveDeadline number|nil
+--- @field statusCounts table
+--- @field threatProfile table
+--- @field threatCenter table|nil
+--- @field threats table
+--- @field threatCount number
+--- @field availableCommanderCount number
+--- @return ObjectiveContext
+function OperationalCommander:buildObjectiveContext(objective)
+    local GroupProfiler = require("group-profiler")
+
+    local threatsNear = self:getThreatsNearPosition(objective.position, self.reconRadius)
+    local threatCount = 0
+    local threatUnits = {}
+    for unitName, _ in pairs(threatsNear) do
+        threatCount = threatCount + 1
+        local unit = Unit.getByName(unitName)
+        if unit and unit:isExist() then
+            table.insert(threatUnits, unit)
+        end
+    end
+
+    local threatProfile = GroupProfiler.profileUnits(threatUnits)
+    local threatCenter = nil
+    if threatCount > 0 then
+        threatCenter = SpatialAgent.calculateCenterOfObjects(threatsNear)
+    end
+
+    local statusCounts = objective:getOrderStatusCounts()
+
+    local availableCount = 0
+    for _, cmd in ipairs(self.groupCommanders) do
+        local s = cmd:getStatus()
+        if not s.orderStatus or
+           s.orderStatus == constants.orderStatus.COMPLETED or
+           s.orderStatus == constants.orderStatus.ABORTED then
+            availableCount = availableCount + 1
+        end
+    end
+
+    return {
+        objectivePosition       = objective.position,
+        objectiveRadius         = objective.radius or 2000,
+        objectiveDeadline       = objective.deadline,
+        statusCounts            = statusCounts,
+        threatProfile           = threatProfile,
+        threatCenter            = threatCenter,
+        threats                 = threatsNear,
+        threatCount             = threatCount,
+        availableCommanderCount = availableCount,
+    }
+end
+
+-- Plan objective orders using Doctrine strategy.
+-- Doctrines signal completion by returning { objectiveComplete = true, ... }.
 function OperationalCommander:planObjectiveWithDoctrine(objective)
-    local context = PlanningContext.deriveObjectivePlanningContext(objective, self)
-    if not context then
-        env.info("ERROR: Could not derive planning context for objective " .. (objective.name or "unknown"))
-        return
+    local context = self:buildObjectiveContext(objective)
+    local result = self.doctrine:plan(context)
+    if not result then return end
+
+    if result.objectiveComplete then
+        objective:markAchieved()
     end
 
-    local orderTemplates = objective.doctrine:plan(context)
-
-    if not orderTemplates or #orderTemplates == 0 then
-        return
-    end
-
-    for _, template in ipairs(orderTemplates) do
+    for _, template in ipairs(result.orders or {}) do
         self:assignOrderTemplate(template, objective)
     end
 end
@@ -1382,7 +1451,7 @@ function OperationalCommander:assignOrderTemplate(template, objective)
 
     local encirclingPositions
     if template.targetPosition then
-        encirclingPositions = SpatialAgent.calculateEncirclingPositions(template.targetPosition, template.radius, commanderPositions, template.stagingArc)
+        encirclingPositions = SpatialAgent.calculateEncirclingPositions(template.targetPosition, template.stagingRadius, commanderPositions, template.stagingArc)
     end
 
     for i, result in ipairs(selected) do
@@ -1395,7 +1464,7 @@ function OperationalCommander:assignOrderTemplate(template, objective)
             local order = Order.new({
                 type           = template.type,
                 position       = orderPosition,
-                radius         = template.radius,
+                proximity      = template.proximity,
                 alr            = template.alr,
                 missionProfile = template.missionProfile,
                 objective      = objective,
@@ -1553,6 +1622,222 @@ function OperationalCommander:assessNearbyAllyStrength(position, radius, exclude
 end
 
 return OperationalCommander
+
+end)
+__bundle_register("group-profiler", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- GroupProfiler: Unified force analysis and status profiling
+-- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
+-- Returns GroupProfile tables with capability, composition, unit count, and status.
+--
+-- GroupProfile schema:
+-- {
+--     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
+--     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
+--     unitCount           = N,
+--     -- Status fields (only from profileGroup, nil from profileUnits):
+--     attritionRate       = 0.0-1.0,
+--     ammoRatio           = 0.0-1.0,
+--     fuelRatio           = 0.0-1.0,
+-- }
+
+local constants = require("constants")
+local unitClassification = constants.unitClassification
+
+local GroupProfiler = {}
+
+-- ============================================================================
+-- UNIT CLASSIFICATION
+-- ============================================================================
+
+function GroupProfiler.classifyUnit(unit)
+    if not unit or not unit:isExist() then
+        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    end
+
+    local typeName = unit:getTypeName()
+    if not typeName then
+        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    end
+
+    local classification = unitClassification[typeName]
+    if classification then
+        return classification
+    end
+
+    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
+    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
+end
+
+-- ============================================================================
+-- UNIT COLLECTION HELPERS
+-- ============================================================================
+
+function GroupProfiler.getUnitsFromGroups(groups)
+    local units = {}
+
+    local groupList = {}
+    if type(groups) == "table" and groups.getUnits then
+        groupList = {groups}
+    else
+        groupList = groups
+    end
+
+    for _, group in ipairs(groupList) do
+        if group and group:isExist() then
+            local groupUnits = group:getUnits()
+            for _, unit in ipairs(groupUnits) do
+                if unit and unit:isExist() then
+                    table.insert(units, unit)
+                end
+            end
+        end
+    end
+
+    return units
+end
+
+function GroupProfiler.getUnitsFromGroupNames(groupNames)
+    local groups = {}
+    for _, groupName in ipairs(groupNames) do
+        local group = Group.getByName(groupName)
+        if group and group:isExist() then
+            table.insert(groups, group)
+        end
+    end
+    return GroupProfiler.getUnitsFromGroups(groups)
+end
+
+-- ============================================================================
+-- PROFILE CONSTRUCTION
+-- ============================================================================
+
+-- Build a capability/composition profile from a list of unit references.
+-- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
+function GroupProfiler.profileUnits(units)
+    local profile = {
+        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
+        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        unitCount           = 0,
+    }
+
+    if not units or #units == 0 then
+        return profile
+    end
+
+    for _, unit in ipairs(units) do
+        if unit and unit:isExist() then
+            local classification = GroupProfiler.classifyUnit(unit)
+            local threats = classification.threats
+
+            profile.unitCount = profile.unitCount + 1
+
+            local cat = classification.category
+            if cat == "infantry" then
+                profile.composition.infantry = profile.composition.infantry + 1
+            elseif cat == "light-armor" then
+                profile.composition.lightArmor = profile.composition.lightArmor + 1
+            elseif cat == "heavy-armor" then
+                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
+            elseif cat == "support" then
+                profile.composition.support = profile.composition.support + 1
+            end
+
+            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
+            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
+                                                     + threats["light-armor"]
+                                                     + threats["heavy-armor"]
+            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
+        end
+    end
+
+    return profile
+end
+
+-- Build a full profile for a named DCS group, including status ratios.
+function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
+    local zeroed = {
+        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
+        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        unitCount           = 0,
+        attritionRate       = 1,
+        ammoRatio           = 0,
+        fuelRatio           = 0,
+    }
+
+    local group = Group.getByName(groupName)
+    if not group or not group:isExist() then
+        return zeroed
+    end
+
+    -- Collect alive units
+    local aliveUnits = {}
+    for _, unit in ipairs(group:getUnits()) do
+        if unit and unit:isExist() then
+            table.insert(aliveUnits, unit)
+        end
+    end
+
+    local profile = GroupProfiler.profileUnits(aliveUnits)
+
+    -- Attrition rate
+    local initialCount = (initialUnitNames and #initialUnitNames) or 0
+    if initialCount == 0 then
+        profile.attritionRate = 0
+    else
+        profile.attritionRate = 1 - (profile.unitCount / initialCount)
+    end
+
+    -- Ammo ratio
+    if not initialAmmoCount or initialAmmoCount == 0 then
+        profile.ammoRatio = 1.0  -- unarmed units are always considered "full"
+    else
+        local currentAmmo = 0
+        for _, unit in ipairs(aliveUnits) do
+            local ammoTable = unit:getAmmo()
+            if ammoTable then
+                for _, entry in ipairs(ammoTable) do
+                    if entry.count then
+                        currentAmmo = currentAmmo + entry.count
+                    end
+                end
+            end
+        end
+        profile.ammoRatio = currentAmmo / initialAmmoCount
+    end
+
+    -- Fuel (simulated, passed in directly)
+    profile.fuelRatio = fuelRemaining or 0
+
+    return profile
+end
+
+-- ============================================================================
+-- FORCE COMPARISON
+-- ============================================================================
+
+-- Returns how favorable our position is against the threat.
+-- Higher = better for us. math.huge = no opposition.
+function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
+    local ownCap    = ownProfile.offensiveCapability
+    local theirComp = threatProfile.composition
+
+    local ourPower = ownCap.vsInfantry * theirComp.infantry
+                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
+                   + ownCap.vsAir      * theirComp.support
+
+    local theirCap = threatProfile.offensiveCapability
+    local ownComp  = ownProfile.composition
+
+    local theirPower = theirCap.vsInfantry * ownComp.infantry
+                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
+                     + theirCap.vsAir      * ownComp.support
+
+    if ourPower == 0 and theirPower == 0 then return 0 end
+    if theirPower == 0 and ourPower > 0 then return math.huge end
+    return ourPower / theirPower
+end
+
+return GroupProfiler
 
 end)
 __bundle_register("threat-tracker", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -1840,11 +2125,12 @@ __bundle_register("doctrines.operational.recon-rally-assault-plan", function(req
 -- Phase 3 (Assault): Execute synchronized assault on objective
 -- Phase 4 (Defend):  Hold objective once secured
 --
--- Returns order templates (plain data). OperationalCommander handles
--- commander selection and order assignment.
+-- Returns { orders = { ... }, objectiveComplete = true/nil }.
+-- OperationalCommander handles commander selection and order assignment.
 
 local constants = require("constants")
 local Doctrine = require("doctrine")
+local SpatialAgent = require("spatial-agent")
 
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
@@ -1874,9 +2160,7 @@ function ReconRallyAssaultPlan.new(commanderName, config)
 end
 
 function ReconRallyAssaultPlan:reconPhase(context)
-    local objective    = context.goal
-    local situation    = context.situation
-    local statusCounts = situation.statusCounts
+    local statusCounts = context.statusCounts
 
     -- Wait for any active orders to resolve
     if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
@@ -1888,26 +2172,32 @@ function ReconRallyAssaultPlan:reconPhase(context)
     local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
     local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
 
-    -- Advance to Rally when recon orders are resolved
+    -- Recon orders resolved — check if objective itself is already clear
     if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
-        self:changePhase("Rally", statusCounts)
+        if context.threatCount == 0 then
+            self:changePhase("Defend", statusCounts)
+        else
+            self:changePhase("Rally", statusCounts)
+        end
         return {}
     end
 
     -- No orders issued yet this phase — dispatch recon
     if totalThisPhase == 0 then
         return {
-            {
-                type     = taskTypes.RECON,
-                position = objective.position,
-                radius   = self.config.reconRadius,
-                alr      = alr.LOW,
-                count    = self.config.maxReconGroups,
-                missionProfile = {
-                    offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
-                    attritionRate = 0.0,
-                    ammoRatio     = 0.2,
-                },
+            orders = {
+                {
+                    type     = taskTypes.RECON,
+                    position = context.objectivePosition,
+                    radius   = self.config.reconRadius,
+                    alr      = alr.LOW,
+                    count    = self.config.maxReconGroups,
+                    missionProfile = {
+                        offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
+                        attritionRate = 0.0,
+                        ammoRatio     = 0.2,
+                    },
+                }
             }
         }
     end
@@ -1916,11 +2206,9 @@ function ReconRallyAssaultPlan:reconPhase(context)
 end
 
 function ReconRallyAssaultPlan:rallyPhase(context)
-    local objective     = context.goal
-    local situation     = context.situation
-    local statusCounts  = situation.statusCounts
-    local threatProfile = situation.threatProfile
-    local threatCenter  = situation.threatCenter
+    local statusCounts  = context.statusCounts
+    local threatProfile = context.threatProfile
+    local threatCenter  = context.threatCenter
 
     -- Wait for active orders
     if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
@@ -1943,25 +2231,27 @@ function ReconRallyAssaultPlan:rallyPhase(context)
         return {}
     end
 
-    if situation.availableCommanderCount == 0 then
+    if context.availableCommanderCount == 0 then
         return {}
     end
 
     -- Issue rally order template
     if totalThisPhase == 0 then
         return {
-            {
-                type            = taskTypes.RALLY,
-                targetPosition  = threatCenter,
-                stagingDistance = self.config.assaultStagingDistance,
-                stagingArc      = 120,
-                radius          = 5000,
-                alr             = alr.MEDIUM,
-                count           = 3,
-                missionProfile  = {
-                    attritionRate = 0.0,
-                    ammoRatio     = 0.8,
-                },
+            orders = {
+                {
+                    type            = taskTypes.RALLY,
+                    targetPosition  = threatCenter,
+                    proximity       = 500,
+                    stagingArc      = 120,
+                    stagingRadius   = 5000,
+                    alr             = alr.MEDIUM,
+                    count           = 3,
+                    missionProfile  = {
+                        attritionRate = 0.0,
+                        ammoRatio     = 0.8,
+                    },
+                }
             }
         }
     end
@@ -1970,11 +2260,9 @@ function ReconRallyAssaultPlan:rallyPhase(context)
 end
 
 function ReconRallyAssaultPlan:assaultPhase(context)
-    local objective     = context.goal
-    local situation     = context.situation
-    local statusCounts  = situation.statusCounts
-    local threatProfile = situation.threatProfile
-    local threatCenter  = situation.threatCenter
+    local statusCounts  = context.statusCounts
+    local threatProfile = context.threatProfile
+    local threatCenter  = context.threatCenter
 
     -- Wait for active orders
     if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
@@ -1985,14 +2273,14 @@ function ReconRallyAssaultPlan:assaultPhase(context)
     local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
     local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
 
-    -- Advance to Defend when assault orders resolve
+    -- Assault orders resolved
     if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
-        self:changePhase("Defend", statusCounts)
+        self:changePhase("Recon", statusCounts)
         return {}
     end
 
     if totalThisPhase == 0 then
-        local assaultPosition = threatCenter or objective.position
+        local assaultPosition = threatCenter or context.objectivePosition
 
         -- Build missionProfile from threat capability (need to match or exceed it)
         local missionProfile = {
@@ -2008,14 +2296,16 @@ function ReconRallyAssaultPlan:assaultPhase(context)
         end
 
         return {
-            {
-                type           = taskTypes.ASSAULT,
-                position       = assaultPosition,
-                radius         = self.config.assaultRadius,
-                alr            = alr.HIGH,
-                count          = situation.availableCommanderCount,
-                deadline       = objective.deadline or (timer.getTime() + 1800),
-                missionProfile = missionProfile,
+            orders = {
+                {
+                    type           = taskTypes.ASSAULT,
+                    position       = assaultPosition,
+                    radius         = self.config.assaultRadius,
+                    alr            = alr.HIGH,
+                    count          = context.availableCommanderCount,
+                    deadline       = context.objectiveDeadline or (timer.getTime() + 1800),
+                    missionProfile = missionProfile,
+                }
             }
         }
     end
@@ -2024,32 +2314,31 @@ function ReconRallyAssaultPlan:assaultPhase(context)
 end
 
 function ReconRallyAssaultPlan:defendPhase(context)
-    local objective    = context.goal
-    local situation    = context.situation
-    local threatCenter = situation.threatCenter
-
-    objective:markAchieved()
+    local threatCenter = context.threatCenter
 
     -- Bias defend position toward objective, acknowledging threats
-    local defendPosition = objective.position
+    local defendPosition = context.objectivePosition
     if threatCenter then
         defendPosition = {
-            x = (objective.position.x + threatCenter.x) / 2,
-            z = (objective.position.z + threatCenter.z) / 2,
+            x = (context.objectivePosition.x + threatCenter.x) / 2,
+            z = (context.objectivePosition.z + threatCenter.z) / 2,
         }
     end
 
     return {
-        {
-            type           = taskTypes.DEFEND,
-            position       = defendPosition,
-            radius         = objective.radius or 2000,
-            alr            = alr.MEDIUM,
-            count          = situation.availableCommanderCount,
-            missionProfile = {
-                attritionRate = 0.0,
-                ammoRatio     = 0.5,
-            },
+        objectiveComplete = true,
+        orders = {
+            {
+                type           = taskTypes.DEFEND,
+                position       = defendPosition,
+                radius         = context.objectiveRadius,
+                alr            = alr.MEDIUM,
+                count          = context.availableCommanderCount,
+                missionProfile = {
+                    attritionRate = 0.0,
+                    ammoRatio     = 0.5,
+                },
+            }
         }
     }
 end
@@ -2083,8 +2372,9 @@ function Doctrine.new(name, commanderName)
 end
 
 -- Main planning method - subclasses must implement
--- @param context PlanningContext table with goal, situation, resources, commander
+-- @param context snapshot table (TacticalContext or ObjectiveContext)
 -- @return decisions table (structure varies by commander type)
+--   Operational doctrines return { orders = { ... }, objectiveComplete = true/nil }.
 function Doctrine:plan(context)
     env.info(self.commanderName .. " " .. self.name .. " executing phase " .. tostring(self.currentPhaseName))
     return self.phases[self.currentPhaseName](self, context)
@@ -2118,390 +2408,6 @@ function Doctrine:changePhase(phaseName, statusCounts)
 end
 
 return Doctrine
-
-end)
-__bundle_register("planning-context", function(require, _LOADED, __bundle_register, __bundle_modules)
--- PlanningContext: Stateless context derivation utilities
--- Builds context structs passed to Doctrine:plan() at each command level.
--- Extracted from OrderCoordinator to keep that class focused on order graph ownership.
-
-local constants = require("constants")
-local SpatialAgent = require("spatial-agent")
-
-local alr = constants.acceptableLevelsOfRisk
-local orderStatus = constants.orderStatus
-
-local PlanningContext = {}
-
--- ============================================================================
--- GROUP COMMANDER CONTEXT (tactical level)
--- ============================================================================
-
--- Derive order context for GroupCommander's ORIENT phase
-function PlanningContext.deriveOrderContext(order, commanderPos, commanderALR)
-    if not order or not order:isActive() then
-        return nil
-    end
-
-    if not commanderPos then
-        return nil
-    end
-
-    local orderedPosition = order.position
-    local orderedRadius = order.radius or 500
-
-    local distanceToOrdered = SpatialAgent.distance2D(commanderPos, orderedPosition)
-    local withinObjective = distanceToOrdered <= orderedRadius
-
-    local orderedALR = order.alr or alr.LOW
-    local retreatThreshold = 0.4
-
-    if orderedALR == alr.LOW then
-        retreatThreshold = 0.8
-    elseif orderedALR == alr.HIGH then
-        retreatThreshold = 0.2
-    end
-
-    return {
-        position         = orderedPosition,
-        radius           = orderedRadius,
-        type             = order.type,
-        alr              = orderedALR,
-        distanceToOrdered = distanceToOrdered,
-        withinObjective  = withinObjective,
-        retreatThreshold = retreatThreshold,
-    }
-end
-
--- Build tactical context for GroupCommander's DECIDE phase
-function PlanningContext.buildTacticalContext(commander)
-    if not commander then
-        return nil
-    end
-
-    return {
-        situation = {
-            threatAssessment = commander.threatAssessment,
-            statusReport     = commander:getStatusReport(),
-            orderContext     = commander.orderContext,
-            hasActiveOrders  = (commander.orders and commander.orders:isActive()),
-            suitability      = commander.suitability,
-        },
-        commander = commander,
-    }
-end
-
--- ============================================================================
--- OPERATIONAL COMMANDER CONTEXT
--- ============================================================================
-
--- Derive planning context for OperationalCommander's ORIENT phase (per objective).
--- The resulting context is passed to operational Doctrines via plan().
--- Doctrines receive only data — no commander references.
-function PlanningContext.deriveObjectivePlanningContext(objective, commander)
-    local GroupProfiler = require("group-profiler")
-
-    -- Gather threats near objective
-    local threatsNear = commander:getThreatsNearPosition(objective.position, commander.reconRadius)
-    local threatCount = 0
-    local threatUnits = {}
-    for unitName, _ in pairs(threatsNear) do
-        threatCount = threatCount + 1
-        local unit = Unit.getByName(unitName)
-        if unit and unit:isExist() then
-            table.insert(threatUnits, unit)
-        end
-    end
-
-    -- Build threat GroupProfile
-    local threatProfile = GroupProfiler.profileUnits(threatUnits)
-
-    -- Compute threat center of mass
-    local threatCenter = nil
-    if threatCount > 0 then
-        threatCenter = SpatialAgent.calculateCenterOfObjects(threatsNear)
-    end
-
-    -- Order status counts
-    local statusCounts = objective:getOrderStatusCounts()
-
-    -- Count available group commanders
-    local availableCount = 0
-    for _, cmd in ipairs(commander.groupCommanders) do
-        local s = cmd:getStatus()
-        if not s.orderStatus or
-           s.orderStatus == constants.orderStatus.COMPLETED or
-           s.orderStatus == constants.orderStatus.ABORTED then
-            availableCount = availableCount + 1
-        end
-    end
-
-    return {
-        goal = objective,
-        situation = {
-            statusCounts            = statusCounts,
-            threatProfile           = threatProfile,
-            threatCenter            = threatCenter,
-            threats                 = threatsNear,
-            threatCount             = threatCount,
-            availableCommanderCount = availableCount,
-        },
-    }
-end
-
--- ============================================================================
--- ORDER CHANGE DETECTION
--- ============================================================================
-
--- Check if an order has changed enough to warrant re-issuing (stateless utility)
-function PlanningContext.isOrderChanged(lastOrder, newOrder, commanderStatus)
-    if not lastOrder then
-        return true
-    end
-
-    if commanderStatus and commanderStatus.orderStatus then
-        if commanderStatus.orderStatus == orderStatus.COMPLETED or
-           commanderStatus.orderStatus == orderStatus.ABORTED then
-            return true
-        end
-    end
-
-    if lastOrder.type ~= newOrder.type then
-        return true
-    end
-    if not lastOrder.position then
-        return true
-    end
-
-    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
-       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
-        return true
-    end
-
-    if lastOrder.radius ~= newOrder.radius then
-        return true
-    end
-
-    return false
-end
-
-return PlanningContext
-
-end)
-__bundle_register("group-profiler", function(require, _LOADED, __bundle_register, __bundle_modules)
--- GroupProfiler: Unified force analysis and status profiling
--- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
--- Returns GroupProfile tables with capability, composition, unit count, and status.
---
--- GroupProfile schema:
--- {
---     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
---     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
---     unitCount           = N,
---     -- Status fields (only from profileGroup, nil from profileUnits):
---     attritionRate       = 0.0-1.0,
---     ammoRatio           = 0.0-1.0,
---     fuelRatio           = 0.0-1.0,
--- }
-
-local constants = require("constants")
-local unitClassification = constants.unitClassification
-
-local GroupProfiler = {}
-
--- ============================================================================
--- UNIT CLASSIFICATION
--- ============================================================================
-
-function GroupProfiler.classifyUnit(unit)
-    if not unit or not unit:isExist() then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
-    end
-
-    local typeName = unit:getTypeName()
-    if not typeName then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
-    end
-
-    local classification = unitClassification[typeName]
-    if classification then
-        return classification
-    end
-
-    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
-    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
-end
-
--- ============================================================================
--- UNIT COLLECTION HELPERS
--- ============================================================================
-
-function GroupProfiler.getUnitsFromGroups(groups)
-    local units = {}
-
-    local groupList = {}
-    if type(groups) == "table" and groups.getUnits then
-        groupList = {groups}
-    else
-        groupList = groups
-    end
-
-    for _, group in ipairs(groupList) do
-        if group and group:isExist() then
-            local groupUnits = group:getUnits()
-            for _, unit in ipairs(groupUnits) do
-                if unit and unit:isExist() then
-                    table.insert(units, unit)
-                end
-            end
-        end
-    end
-
-    return units
-end
-
-function GroupProfiler.getUnitsFromGroupNames(groupNames)
-    local groups = {}
-    for _, groupName in ipairs(groupNames) do
-        local group = Group.getByName(groupName)
-        if group and group:isExist() then
-            table.insert(groups, group)
-        end
-    end
-    return GroupProfiler.getUnitsFromGroups(groups)
-end
-
--- ============================================================================
--- PROFILE CONSTRUCTION
--- ============================================================================
-
--- Build a capability/composition profile from a list of unit references.
--- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
-function GroupProfiler.profileUnits(units)
-    local profile = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
-        unitCount           = 0,
-    }
-
-    if not units or #units == 0 then
-        return profile
-    end
-
-    for _, unit in ipairs(units) do
-        if unit and unit:isExist() then
-            local classification = GroupProfiler.classifyUnit(unit)
-            local threats = classification.threats
-
-            profile.unitCount = profile.unitCount + 1
-
-            local cat = classification.category
-            if cat == "infantry" then
-                profile.composition.infantry = profile.composition.infantry + 1
-            elseif cat == "light-armor" then
-                profile.composition.lightArmor = profile.composition.lightArmor + 1
-            elseif cat == "heavy-armor" then
-                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
-            elseif cat == "support" then
-                profile.composition.support = profile.composition.support + 1
-            end
-
-            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
-            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
-                                                     + threats["light-armor"]
-                                                     + threats["heavy-armor"]
-            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
-        end
-    end
-
-    return profile
-end
-
--- Build a full profile for a named DCS group, including status ratios.
-function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
-    local zeroed = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
-        unitCount           = 0,
-        attritionRate       = 1,
-        ammoRatio           = 0,
-        fuelRatio           = 0,
-    }
-
-    local group = Group.getByName(groupName)
-    if not group or not group:isExist() then
-        return zeroed
-    end
-
-    -- Collect alive units
-    local aliveUnits = {}
-    for _, unit in ipairs(group:getUnits()) do
-        if unit and unit:isExist() then
-            table.insert(aliveUnits, unit)
-        end
-    end
-
-    local profile = GroupProfiler.profileUnits(aliveUnits)
-
-    -- Attrition rate
-    local initialCount = (initialUnitNames and #initialUnitNames) or 0
-    if initialCount == 0 then
-        profile.attritionRate = 0
-    else
-        profile.attritionRate = 1 - (profile.unitCount / initialCount)
-    end
-
-    -- Ammo ratio
-    if not initialAmmoCount or initialAmmoCount == 0 then
-        profile.ammoRatio = 1.0  -- unarmed units are always considered "full"
-    else
-        local currentAmmo = 0
-        for _, unit in ipairs(aliveUnits) do
-            local ammoTable = unit:getAmmo()
-            if ammoTable then
-                for _, entry in ipairs(ammoTable) do
-                    if entry.count then
-                        currentAmmo = currentAmmo + entry.count
-                    end
-                end
-            end
-        end
-        profile.ammoRatio = currentAmmo / initialAmmoCount
-    end
-
-    -- Fuel (simulated, passed in directly)
-    profile.fuelRatio = fuelRemaining or 0
-
-    return profile
-end
-
--- ============================================================================
--- FORCE COMPARISON
--- ============================================================================
-
--- Returns how favorable our position is against the threat.
--- Higher = better for us. math.huge = no opposition.
-function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
-    local ownCap    = ownProfile.offensiveCapability
-    local theirComp = threatProfile.composition
-
-    local ourPower = ownCap.vsInfantry * theirComp.infantry
-                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
-                   + ownCap.vsAir      * theirComp.support
-
-    local theirCap = threatProfile.offensiveCapability
-    local ownComp  = ownProfile.composition
-
-    local theirPower = theirCap.vsInfantry * ownComp.infantry
-                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
-                     + theirCap.vsAir      * ownComp.support
-
-    if ourPower == 0 and theirPower == 0 then return 0 end
-    if theirPower == 0 and ourPower > 0 then return math.huge end
-    return ourPower / theirPower
-end
-
-return GroupProfiler
 
 end)
 __bundle_register("order-coordinator", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -2676,7 +2582,6 @@ local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
-local PlanningContext = require("planning-context")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
@@ -2696,7 +2601,7 @@ GroupCommander.__index = GroupCommander
 GroupCommander.instances = {}
 
 local oodaInterval = 10.0 -- seconds
-local detectionRadius = 4500 -- meters
+local detectionRadius = 8000 -- meters
 
 function GroupCommander.new(groupName, config)
     -- Initialize parent class (sets up OODA loop scheduling)
@@ -2831,9 +2736,8 @@ function GroupCommander:orient()
 
     self.threatAssessment = self:assessThreats()
 
-    -- Derive order context and group profile
+    -- Derive group profile
     local ownPos = self:getOwnPosition()
-    self.orderContext = PlanningContext.deriveOrderContext(self.orders, ownPos, self.alr)
     self.groupProfile = GroupProfiler.profileGroup(self.groupName, self.initialUnitNames, self.initialAmmoCount, self.fuelRemaining)
 
     -- Update suitability against current order's mission profile
@@ -2842,6 +2746,76 @@ function GroupCommander:orient()
     else
         self.suitability = nil
     end
+end
+
+--- @class TacticalContext
+--- @field groupName string
+--- @field ownPosition table
+--- @field totalUnits number
+--- @field initialAmmoCount number
+--- @field threatAssessment table
+--- @field statusReport table
+--- @field suitability number|nil
+--- @field hasActiveOrders boolean
+--- @field orderType string|nil
+--- @field orderPosition table|nil
+--- @field orderProximity number|nil
+--- @field orderAlr string|nil
+--- @field distanceToOrdered number|nil
+--- @field withinObjective boolean|nil
+--- @field retreatThreshold number|nil
+--- @field orderIsExpired boolean|nil
+--- @field orderHasDeadline boolean|nil
+--- @return TacticalContext|nil
+function GroupCommander:buildDecisionContext()
+    local ownPosition = self:getOwnPosition()
+    if not ownPosition then return nil end
+
+    local hasActiveOrders = self.orders ~= nil and self.orders:isActive()
+
+    local orderType, orderPosition, orderProximity, orderAlr
+    local distanceToOrdered, withinObjective, retreatThreshold
+    local orderIsExpired, orderHasDeadline
+
+    if hasActiveOrders then
+        orderType     = self.orders.type
+        orderPosition = self.orders.position
+        orderProximity   = self.orders.proximity or 500
+        orderAlr      = self.orders.alr or alr.LOW
+
+        distanceToOrdered = SpatialAgent.distance2D(ownPosition, orderPosition)
+        withinObjective   = distanceToOrdered <= orderProximity
+
+        retreatThreshold = 0.4
+        if orderAlr == alr.LOW then
+            retreatThreshold = 0.8
+        elseif orderAlr == alr.HIGH then
+            retreatThreshold = 0.2
+        end
+
+        orderHasDeadline = self.orders.expirationTime ~= nil
+        orderIsExpired   = self.orders:isExpired() or false
+    end
+
+    return {
+        groupName        = self.groupName,
+        ownPosition      = ownPosition,
+        totalUnits       = #self.initialUnitNames,
+        initialAmmoCount = self.initialAmmoCount,
+        threatAssessment = self.threatAssessment,
+        statusReport     = self:getStatusReport(),
+        suitability      = self.suitability,
+        hasActiveOrders  = hasActiveOrders or false,
+        orderType        = orderType,
+        orderPosition    = orderPosition,
+        orderProximity   = orderProximity,
+        orderAlr         = orderAlr,
+        distanceToOrdered = distanceToOrdered,
+        withinObjective  = withinObjective,
+        retreatThreshold = retreatThreshold,
+        orderIsExpired   = orderIsExpired,
+        orderHasDeadline = orderHasDeadline,
+    }
 end
 
 function GroupCommander:decide()
@@ -2871,8 +2845,8 @@ function GroupCommander:decide()
         return
     end
 
-    -- Get tactical planning context
-    local context = PlanningContext.buildTacticalContext(self)
+    -- Build decision context snapshot
+    local context = self:buildDecisionContext()
     if not context then
         env.info("ERROR: Could not build tactical context for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
@@ -2932,6 +2906,8 @@ function GroupCommander:act()
                 self:issueMoveOrder(self.destination)
                 self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
             end
+        else
+            self:stopMovement()
         end
     else
         self:stopMovement()
@@ -3634,11 +3610,7 @@ function ReconDoctrine.new(commanderName)
 end
 
 function ReconDoctrine:considerAdvance(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
 
     local advanceAssessment = 0.0
 
@@ -3650,11 +3622,7 @@ function ReconDoctrine:considerAdvance(context)
 end
 
 function ReconDoctrine:considerObserve(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
 
     local observeAssessment = 0.0
 
@@ -3666,17 +3634,12 @@ function ReconDoctrine:considerObserve(context)
 end
 
 function ReconDoctrine:advancePhase(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
-
-    local ownPosition = commander:getOwnPosition()
-    local objectiveDestination = commander.orders.position
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
+    local objectiveDestination = context.orderPosition
 
     local observeThreshold = 1.0
-    
+
     if self:considerObserve(context) >= observeThreshold then
         self:changePhase("Observe")
         return {
@@ -3697,18 +3660,12 @@ function ReconDoctrine:advancePhase(context)
 
     return {
         disposition = dispositionTypes.ADVANCE,
-        destination = commander.orders.position,
+        destination = context.orderPosition,
         orderAction = "start",
     }
 end
 
 function ReconDoctrine:observePhase(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
-
     local advanceThreshold = 1.0
 
     if self:considerAdvance(context) >= advanceThreshold then
@@ -3750,23 +3707,20 @@ function PatrolDoctrine.new(commanderName)
 end
 
 function PatrolDoctrine:outboundPhase(context)
-    local commander = context.commander
-    local orders = commander.orders
-
     if not self.state.StartingPoint then
-        self.state.StartingPoint = commander:getOwnPosition()
+        self.state.StartingPoint = context.ownPosition
     end
 
     if not self.state.Destination then
-        self.state.Destination = orders and orders.position or self.state.StartingPoint
+        self.state.Destination = context.orderPosition or self.state.StartingPoint
     end
 
-    local distanceToDestination = self.state.Destination and SpatialAgent.distance2D(commander:getOwnPosition(), self.state.Destination)
-    env.info(commander.groupName .. " is " .. tostring(distanceToDestination) .. " meters from patrol destination")
+    local distanceToDestination = self.state.Destination and SpatialAgent.distance2D(context.ownPosition, self.state.Destination)
+    env.info(context.groupName .. " is " .. tostring(distanceToDestination) .. " meters from patrol destination")
     local isAtDestination = distanceToDestination and distanceToDestination < 50
 
     if isAtDestination then
-        env.info(commander.groupName .. " has reached patrol destination, switching to InboundLeg")
+        env.info(context.groupName .. " has reached patrol destination, switching to InboundLeg")
         self:changePhase("InboundLeg")
         return {disposition = dispositionTypes.HOLD, destination = nil}
     else
@@ -3775,12 +3729,10 @@ function PatrolDoctrine:outboundPhase(context)
 end
 
 function PatrolDoctrine:inboundPhase(context)
-    local commander = context.commander
-
-    local isAtStart = self.state.StartingPoint and SpatialAgent.distance2D(commander:getOwnPosition(), self.state.StartingPoint) < 50
+    local isAtStart = self.state.StartingPoint and SpatialAgent.distance2D(context.ownPosition, self.state.StartingPoint) < 50
 
     if isAtStart then
-        env.info(commander.groupName .. " has returned to starting point, switching to OutboundLeg")
+        env.info(context.groupName .. " has returned to starting point, switching to OutboundLeg")
         self:changePhase("OutboundLeg")
         return {disposition = dispositionTypes.HOLD, destination = nil}
     else
@@ -3824,18 +3776,16 @@ function AsOrderedDoctrine.new(commanderName)
     self:registerPhase("Engage", AsOrderedDoctrine.engagePhase)
     self:registerPhase("Defend", AsOrderedDoctrine.defendPhase)
     self:registerPhase("Abort", AsOrderedDoctrine.abortPhase)
-    
+
     return self
 end
 
 function AsOrderedDoctrine:considerEngage(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
-    local ownPosition = commander:getOwnPosition()
-    local objectivePosition = situation.orderContext and situation.orderContext.position or nil
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
+    local ownPosition = context.ownPosition
+    local objectivePosition = context.orderPosition
 
     local engageAssessment = 0.0
 
@@ -3852,32 +3802,30 @@ function AsOrderedDoctrine:considerEngage(context)
     if distanceToObjective and distanceToThreat and distanceToObjective > 0 and distanceToThreat < distanceToObjective then
         engageAssessment = engageAssessment + distanceToThreat / distanceToObjective
     end
-    
+
     -- attrition rate
     local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
     engageAssessment = engageAssessment - attritionRate
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         engageAssessment = 0.0
     end
 
-    if ForceStatusAnalyzer.isUnarmed(commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isUnarmed(context.initialAmmoCount) then
         engageAssessment = 0.0
     end
-    
+
     return engageAssessment
 end
 
 function AsOrderedDoctrine:considerDefend(context)
-    local commander = context.commander
-    local situation = context.situation
-    local objectivePosition = situation.orderContext and situation.orderContext.position or nil
+    local objectivePosition = context.orderPosition
 
     local defendAssessment = 0.0
 
-    local distanceToObjective = SpatialAgent.distance2D(commander:getOwnPosition(), objectivePosition)
-    if distanceToObjective and distanceToObjective < situation.orderContext.radius then
+    local distanceToObjective = SpatialAgent.distance2D(context.ownPosition, objectivePosition)
+    if distanceToObjective and distanceToObjective < context.orderProximity then
         defendAssessment = defendAssessment + 1.0
     end
 
@@ -3885,18 +3833,16 @@ function AsOrderedDoctrine:considerDefend(context)
 end
 
 function AsOrderedDoctrine:considerAbort(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
 
     local retreatAssessment = 0.0
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 0.5
     end
 
@@ -3912,7 +3858,7 @@ function AsOrderedDoctrine:considerAbort(context)
     end
 
     -- suitability: if group no longer meets missionProfile, increase abort pressure
-    local suitability = context.situation.suitability
+    local suitability = context.suitability
     if suitability and suitability < 0.3 then
         retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
     end
@@ -3922,9 +3868,7 @@ end
 
 function AsOrderedDoctrine:advancePhase(context)
     -- Move toward objective location
-    local commander = context.commander
-    local orders = commander.orders
-    local destination = orders and orders.position or nil
+    local destination = context.orderPosition
 
     local engageThreshold = 0.4
     local abortThreshold = 0.8
@@ -3942,7 +3886,7 @@ function AsOrderedDoctrine:advancePhase(context)
         self:changePhase("Engage")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = destination
         }
     end
 
@@ -3964,7 +3908,7 @@ end
 function AsOrderedDoctrine:engagePhase(context)
     -- Engage threats encountered along route
 
-    local threat = context.situation.threatAssessment
+    local threat = context.threatAssessment
 
     local engageThreshold = 0.3
     local abortThreshold = 0.8
@@ -3978,7 +3922,7 @@ function AsOrderedDoctrine:engagePhase(context)
     end
 
     if self:considerEngage(context) >= engageThreshold then
-        local ownPosition      = context.commander:getOwnPosition()
+        local ownPosition      = context.ownPosition
         local standoffDistance = 1000
         local tolerance        = 100
 
@@ -4011,18 +3955,14 @@ end
 
 function AsOrderedDoctrine:defendPhase(context)
     -- Hold position and defend against nearby threats
-    local commander = context.commander
-    local destination = context.situation.orderContext.position
-    local radius = context.situation.orderContext.radius or 500
+    local destination = context.orderPosition
+    local proximity = context.orderProximity or 500
 
-    local hasExpiration = commander.orders and commander.orders.expirationTime
-    local isExpired = context.commander.orders:isExpired()
-
-    if isExpired or not hasExpiration then
+    if context.orderIsExpired or not context.orderHasDeadline then
         return {
             disposition = dispositionTypes.DEFEND,
             destination = destination,
-            radius      = radius,
+            proximity   = proximity,
             orderAction = "complete",
         }
     end
@@ -4030,17 +3970,14 @@ function AsOrderedDoctrine:defendPhase(context)
     return {
         disposition = dispositionTypes.DEFEND,
         destination = destination,
-        radius      = radius,
+        proximity   = proximity,
     }
 end
 
 function AsOrderedDoctrine:abortPhase(context)
     -- Move away from threats toward safety
-    local commander = context.commander
-    local situation = context.situation
-
-    local threat = situation.threatAssessment
-    local ownPosition = commander:getOwnPosition()
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
 
     -- Use directly observed threats if available (more stable)
     local retreatDest = nil
@@ -4459,23 +4396,21 @@ function DefensiveDoctrine.new(commanderName)
     self:registerPhase("Hold", DefensiveDoctrine.holdPhase)
     self:registerPhase("Retreat", DefensiveDoctrine.retreatPhase)
     self:registerPhase("Advance", DefensiveDoctrine.advancePhase)
-    
+
     return self
 end
 
 function DefensiveDoctrine:considerRetreat(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
 
     local retreatAssessment = 0.0
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 0.5
     end
 
@@ -4491,7 +4426,7 @@ function DefensiveDoctrine:considerRetreat(context)
     end
 
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
-    local suitability = context.situation.suitability
+    local suitability = context.suitability
     if suitability and suitability < 0.3 then
         retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
     end
@@ -4500,11 +4435,8 @@ function DefensiveDoctrine:considerRetreat(context)
 end
 
 function DefensiveDoctrine:considerAdvance(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
+    local status = context.statusReport
 
     local advanceAssessment = 0.0
 
@@ -4518,14 +4450,14 @@ function DefensiveDoctrine:considerAdvance(context)
     end
 
     -- attrition rate
-    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, context.totalUnits)
     advanceAssessment = advanceAssessment - attritionRate
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         advanceAssessment = 0.0
     end
-    
+
     return advanceAssessment
 end
 
@@ -4543,11 +4475,8 @@ function DefensiveDoctrine:holdPhase(context)
 end
 
 function DefensiveDoctrine:retreatPhase(context)
-    local commander = context.commander
-    local situation = context.situation
-
-    local threat = situation.threatAssessment
-    local ownPosition = commander:getOwnPosition()
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
 
     -- Use directly observed threats if available (more stable)
     local retreatDest = nil
@@ -4566,11 +4495,8 @@ function DefensiveDoctrine:retreatPhase(context)
 end
 
 function DefensiveDoctrine:advancePhase(context)
-    local commander = context.commander
-    local situation = context.situation
-
-    local threat = situation.threatAssessment
-    local ownPosition = commander:getOwnPosition()
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
 
     local holdThreshold = 0.5
     local retreatThreshold = 0.3
