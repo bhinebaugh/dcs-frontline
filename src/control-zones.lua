@@ -11,6 +11,7 @@ function ControlZones.new(namedZones, groundTemplates)
     if not namedZones then
         self.allZones = {}      --array of names of zones
         self.zonesByName = {}   --full zone details indexed by zone name
+        self.zoneCheckCounter = 1 --zone to be considered by next scheduled ownership check
         self.owner = {}
         self.neighbors = {}
         self.edges = {}
@@ -87,6 +88,12 @@ function ControlZones:setup(options)
     self.centroid["blue"] = self:centroidOfZones(self:getCluster("blue"))
     self.centroid["red"] = self:centroidOfZones(self:getCluster("red"))
 
+    self.timerId = mist.scheduleFunction(
+        ControlZones.checkOwnership,
+        {self},
+        timer.getTime() + 20,
+        2 --every two seconds
+    )
 end
 
 function ControlZones:centroidOfZones(zones)
@@ -151,44 +158,40 @@ function ControlZones:changeZoneOwner(name, newOwner)
     end
 end
 
-function ControlZones:checkOwnership(time)
-    -- if owner units not in a color zone, lose control 
-    -- if units in a neutral zone, gain control 
-    -- if both colors in zone, no change
-    env.info("checking zone control......")
-    for zoneName, _ in pairs(self.zonesByName) do
-        self:updateZoneOwner(zoneName)
-    end
-    return time + 30
+function ControlZones:checkOwnership()
+    local zoneName = self.allZones[self.zoneCheckCounter]
+    self:updateZoneOwner(zoneName)
+
+    self.zoneCheckCounter = self.zoneCheckCounter + 1
+    if self.zoneCheckCounter > #self.allZones then self.zoneCheckCounter = 1 end
 end
 
 function ControlZones:updateZoneOwner(zoneName)
-    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
-        local groundInZone = {
-            blue = mist.getUnitsInZones(blueGround, zoneName),
-            red = mist.getUnitsInZones(redGround, zoneName)
-        }
-        if ownerColor == "neutral" then
+    local groundInZone = {
+        blue = mist.getUnitsInZones(blueGround, zoneName),
+        red = mist.getUnitsInZones(redGround, zoneName)
+    }
+    if ownerColor == "neutral" then
         -- if blue and no red, blue now owns
         -- if red and no blue, red now owns
-            -- if neither or both, stays neutral
-            if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
-                self:changeZoneOwner(zoneName, "blue")
-            elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
-                self:changeZoneOwner(zoneName, "red")
-            end
-        elseif ownerColor and #groundInZone[ownerColor] <= 0 then
-            env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
-            local opponentColor = self:getOpponent(ownerColor)
-            if #groundInZone[opponentColor] > 0 then
-                self:changeZoneOwner(zoneName, opponentColor)
-            else
-                self:changeZoneOwner(zoneName, "neutral")
-            end
+        -- if neither or both, stays neutral
+        if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
+            self:changeZoneOwner(zoneName, "blue")
+        elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
+            self:changeZoneOwner(zoneName, "red")
         end
+    elseif ownerColor and #groundInZone[ownerColor] <= 0 then
+        env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
+        local opponentColor = self:getOpponent(ownerColor)
+        if #groundInZone[opponentColor] > 0 then
+            self:changeZoneOwner(zoneName, opponentColor)
+        else
+            self:changeZoneOwner(zoneName, "neutral")
+        end
+    end
 end
 
 function ControlZones:addNeighbor(key1, key2) --bidirectional
