@@ -144,7 +144,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
         local fronts = self:getOrderedFrontlines(formerOwner)
         local firstPass = true
         for _, front in pairs(fronts) do
-            self.map:drawFrontline(front.points, formerOwner, firstPass)
+            self.map:drawFrontline(front.points, formerOwner, firstPass, front.isLoop)
             firstPass = false
         end
     end
@@ -152,7 +152,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
         local fronts = self:getOrderedFrontlines(newOwner)
         local firstPass = true
         for _, front in pairs(fronts) do
-            self.map:drawFrontline(front.points, newOwner, firstPass)
+            self.map:drawFrontline(front.points, newOwner, firstPass, front.isLoop)
             firstPass = false
         end
     end
@@ -639,7 +639,7 @@ function ControlZones:getOrderedFrontlines(color)
         }
         local current = startKey
         local lastEnemy = nil
-        local isPenultimate = false
+        local prevOnPerimeter = false
 
         repeat -- keep hopping to allied neighbor (the one on closest cw heading after enemy neighbor)
             globalVisited[current] = true
@@ -670,47 +670,38 @@ function ControlZones:getOrderedFrontlines(color)
                 if self.owner[neighbor] == color then
                     nextFriendlyZone = neighbor
                     break
-                else
+                else --enemy neighbor, record heading
                     lastEnemy = neighbor
                     local enemyHeading = self:getHeading(current, neighbor)
                     table.insert(segment.points, {center = z.point, heading = enemyHeading})
-                    -- if current is a flank anchor (on the perimeter), stop at first enemy also on perimeter
-                    -- (handles lone perimeter zone that has no allied neighbors)
-                    if isPenultimate and table.contains(self.perimeter, neighbor) then
-                        break
-                    end
                 end
             end
 
-            if isPenultimate then
-                foundNext = false
-            elseif nextFriendlyZone then
-                if frontZones[nextFriendlyZone] then -- neighbor is also on frontline
-                    if table.contains(self.perimeter, nextFriendlyZone) then
-                        isPenultimate = true
-                    end
+            if nextFriendlyZone and frontZones[nextFriendlyZone] then --end if not on frontline (not facing enemy)
+                local currentOnPerimeter = table.contains(self.perimeter, current)
+                if currentOnPerimeter and prevOnPerimeter and globalVisited[nextFriendlyZone] then
+                    foundNext = false
+                elseif currentOnPerimeter and nextFriendlyZone == startKey then
+                    foundNext = false
+                else
                     foundNext = true
+                    prevOnPerimeter = currentOnPerimeter
                     prev = current
                     current = nextFriendlyZone
                 end
             end
-        until (current == startKey and not table.contains(anchors, current)) or not foundNext
+        until (current == startKey) or not foundNext
 
-        if current == startKey and not table.contains(self.perimeter, current) then
+        if current == startKey then
             -- make a final, extra line back to original zone, offset toward shared enemy neighbor
+            if not table.contains(self.perimeter, current) then
+                segment.isLoop = true
+            end
             if lastEnemy then
                 local lastPoint = self:getZone(current).point
                 local enemyHeading = mist.utils.getHeadingPoints(lastPoint, self:getZone(lastEnemy).point)
                 table.insert(segment.points, {center = lastPoint, heading = enemyHeading})
             end
-            segment.isLoop = true
-        else
-            -- extend left edge
-            local firstItem = segment.points[1]
-            table.insert(segment.points, 1, {center = firstItem.center, heading = firstItem.heading - math.pi/2})
-            -- extend right edge
-            local lastItem = segment.points[#segment.points]
-            table.insert(segment.points, {center = lastItem.center, heading = lastItem.heading + math.pi/2})
         end
         segment.length = self:calculateLength(segment)
 
@@ -1052,15 +1043,15 @@ function ControlZones:kickoff()
         for i, front in pairs(fronts) do
             env.info(color.." "..i)
             local pts = front.points
-            self.map:drawFrontline(pts, color)
+            self.map:drawFrontline(pts, color, false, front.isLoop)
 
             for _, tri in pairs(self:selectTrianglesForFARPs(color, front)) do
                 local center = self:centroidOfZones({tri[1], tri[2], tri[3]})
                 self:placeFARP(color, center)
             end
 
-            -- local groupList = cmd:initiate(front)
-            -- self:populateZones(groupList, color)
+            local groupList = cmd:initiate(front)
+            self:populateZones(groupList, color)
         end
     end
 
