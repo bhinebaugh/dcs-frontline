@@ -607,11 +607,38 @@ end
 
 -- Calculates edges in contiguous sequence, returning multiple if frontline is disconnected
 function ControlZones:getOrderedFrontlines(color)
+    local fronts = {}
+
+    -- Find any isolated zones (no friendly neighbors)
+    local ownZones = self:getCluster(color)
+    env.info(mist.utils.tableShow(ownZones))
+    for _, zone in pairs(ownZones) do
+        local friendlyNeighbors = self:getNeighbors(zone, color, false)
+        env.info(zone.."has neighbors "..#friendlyNeighbors)
+        if #friendlyNeighbors == 0 then
+            env.info("0000000000 this zone is all alone :-( "..zone)
+
+            local segment = {
+                zones = {zone},
+                points = {},
+                length = nil,
+                isLoop = true,
+            }
+            local pt = self:getZone(zone).point
+            local eighth = math.pi/4
+            for i=1,8 do
+                table.insert(segment.points, {center = pt, heading = i*eighth})
+            end
+            table.insert(segment.points, {center = pt, heading = eighth})
+
+            table.insert(fronts, segment)
+        end
+    end
+
     local edges = self:getPerimeterEdges(color)
 
-    if #edges == 0 then return {} end
+    if #edges == 0 then return fronts end
     local globalVisited = {}
-    local fronts = {}
 
     -- Generate a lookup table for all own border zones
     local frontZones = {}

@@ -42,40 +42,260 @@ local __bundle_require, __bundle_loaded, __bundle_register, __bundle_modules = (
 	return require, loaded, register, modules
 end)(require)
 __bundle_register("__root", function(require, _LOADED, __bundle_register, __bundle_modules)
--- requires MIST to be loaded first
--- DO SCRIPT FILE: mist.lua
---[[ This is handy for development, so that you don't need to delete and re-add the individual scripts in the ME when you make a change.  These will not be packaged with the .miz, so you shouldn't use this script loader for packaging .miz files for other machines/users.  You'll want to add each script individually with a DO SCRIPT FILE ]]--
--- DO SCRIPT: assert(loadfile("C:\\Users\\username\\...\\bundled.lua"))()
-
 require("table") --Load modified standard libraries
 
 local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
 local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
 
--- local UnitLostHandler = require("handlers").UnitLostHandler --Load event handlers
-
 local constants = require("constants") --Load constants
 
 cz = ControlZones.new(nil, constants.groundTemplates)
 
-cz:setup()
+
+local zoneOwners = {
+    -- single perimeter, surrounded by enemy
+    -- ["control-56"] = "blue",
+    -- ["control-60"] = "blue",
+    -- ["control-5"] = "blue",
+    -- ["control-16"] = "blue",
+    -- ["control-64"] = "red",
+    -- ["control-57"] = "red",
+    -- ["control-65"] = "red",
+    -- ["control-19"] = "red",
+    -- ["control-17"] = "red",
+    -- ["control-18"] = "red",
+    -- ["control-61"] = "blue",
+    -- ["control-67"] = "blue",
+    -- ["control-58"] = "blue",
+
+    -- single perimeter point, closed as loop to 1st point
+    -- ["control-25"] = "blue",
+    -- ["control-26"] = "blue",
+    -- ["control-28"] = "blue",
+    -- ["control-54"] = "blue",
+
+    -- 3 perimeter points, confuses calculations
+    -- ["control-1"] = "blue",
+    -- ["control-16"] = "blue",
+    -- ["control-35"] = "blue",
+    -- ["control-2"] = "blue",
+    -- ["control-10"] = "blue",
+    -- ["control-24"] = "blue",
+    -- ["control-43"] = "blue",
+    -- ["control-8"] = "blue",
+    -- ["control-44"] = "blue",
+    -- ["control-47"] = "blue",
+    -- ["control-49"] = "blue",
+    -- ["control-32"] = "blue",
+    -- ["control-12"] = "blue",
+
+    -- single perimeter point, treated as loop
+    ["control-31"] = "blue",
+    ["control-13"] = "blue",
+    ["control-14"] = "blue",
+    ["control-40"] = "blue",
+    ["control-41"] = "blue",
+
+    -- single perimeter point, treated as loop
+    ["control-17"] = "blue",
+    ["control-18"] = "blue",
+    -- ["control-5"] = "blue",
+    ["control-45"] = "blue",
+    ["control-16"] = "blue",
+    ["control-9"] = "blue",
+
+    -- another loop on perimeter
+    -- ["control-30"] = "blue",
+    -- ["control-51"] = "blue",
+    -- ["control-55"] = "blue",
+    -- ["control-41"] = "blue",
+
+    -- -- difficult one
+    -- ["control-12"] = "blue",
+    -- ["control-13"] = "blue",
+    -- ["control-49"] = "blue",
+    -- ["control-50"] = "blue",
+    -- ["control-55"] = "blue",
+    -- ["control-41"] = "blue",
+
+    -- -- difficult one with trouble connecting offset points
+    -- ["control-22"] = "blue",
+    -- ["control-23"] = "blue",
+    -- ["control-63"] = "blue",
+    -- ["control-62"] = "blue",
+    -- ["control-21"] = "blue",
+    -- ["control-66"] = "blue",
+    -- ["control-59"] = "blue",
+    -- ["control-67"] = "blue",
+    -- ["control-58"] = "blue",
+    -- ["control-65"] = "blue",
+    -- ["control-57"] = "blue",
+    -- ["control-60"] = "blue",
+    -- ["control-45"] = "blue",
+    -- ["control-64"] = "blue",
+    -- ["control-56"] = "blue",
+
+    -- -- arc anchored on perimeter
+    -- ["control-1"] = "blue",
+    -- ["control-46"] = "blue",
+    -- ["control-2"] = "blue",
+    -- ["control-6"] = "blue",
+    -- ["control-24"] = "blue",
+    -- ["control-10"] = "blue",
+    -- ["control-43"] = "blue",
+    -- ["control-7"] = "blue",
+
+    -- -- arc anchored on perimeter with spur 
+    -- ["control-1"] = "blue",
+    -- ["control-46"] = "blue",
+    -- ["control-2"] = "blue",
+    -- ["control-3"] = "blue",
+    -- ["control-6"] = "blue",
+    -- ["control-24"] = "blue",
+    -- ["control-10"] = "blue",
+    -- ["control-43"] = "blue",
+    -- ["control-7"] = "blue",
+
+    -- -- two loops connected by single edge
+    -- ["control-55"] = "blue",
+    -- ["control-41"] = "blue",
+    -- ["control-29"] = "blue",
+    -- ["control-15"] = "blue",
+    -- ["control-52"] = "blue",
+    -- ["control-53"] = "blue",
+    -- ["control-28"] = "blue",
+
+    -- -- complete loop
+    -- ["control-4"] = "red",
+    -- ["control-48"] = "red",
+    -- ["control-39"] = "red",
+    -- ["control-9"] = "red",
+    -- ["control-36"] = "red",
+    -- ["control-34"] = "red",
+    -- ["control-18"] = "red",
+    -- ["control-14"] = "red",
+
+    -- -- arc anchored on perimeter
+    -- ["control-61"] = "red",
+    -- ["control-62"] = "red",
+    -- ["control-67"] = "red",
+["control-42"] = "blue", ["control-8"] = "red"
+}
+
+env.info("#### Doing setup")
+-- cz:quickSetup(zoneOwners)
+-- OR
+-- cz:randomSetup()
+-- OR
+-- cz:setup()
+
 cz:constructDelaunayIndex()
 cz:precalculateConnections()
 
-cz:assignCompassMaxima()
-local width = cz.maxima.eastmost.y - cz.maxima.westmost.y
-local height = cz.maxima.northmost.x - cz.maxima.southmost.x
-local centerpoint = { y = 200, x = cz.maxima.southmost.x+height/2, z = cz.maxima.westmost.y+width/2 }
+cz:addCommander("blue", CoalitionCommander.new(cz, {color = "blue", constants.groundTemplates.blue}))
+cz:addCommander("red", CoalitionCommander.new(cz, {color = "red", constants.groundTemplates.red}))
 
--- local unitLostHandler = UnitLostHandler.new(cz)
--- world.addEventHandler(unitLostHandler)
-
-ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
-ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
-cz:addCommander("blue", ccBlue)
-cz:addCommander("red", ccRed)
 cz:kickoff()
 
+
+function ControlZones:randomSetup()
+
+    for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
+        if string.sub(zonename,1,7) == 'control' then
+            self.zonesByName[zonename] = zoneobj --indexed by name of the trigger zone
+            table.insert(self.allZones, zoneobj.name) --list of all zone names / names of all zones
+        end
+    end
+
+    local initialRedZone
+    local initialBlueZone
+    for i=1, 2 do
+        -- Voronoi distribution from two initial random points
+        local redSeed = self.allZones[math.random(#self.allZones)]
+        local blueSeed = self.allZones[math.random(#self.allZones)]
+        while blueSeed == redSeed do
+            blueSeed = self.allZones[math.random(#self.allZones)]
+        end
+    
+        initialRedZone = self.zonesByName[redSeed]
+        initialBlueZone = self.zonesByName[blueSeed]
+    
+        for name, zone in pairs(self.zonesByName) do
+            local redDistance = self:distance(zone, initialRedZone)
+            local blueDistance = self:distance(zone, initialBlueZone)
+    
+            if self.owner[name] == nil then self.owner[name] = "neutral" end
+            if (redDistance < blueDistance) then
+                if redDistance < 11000 then self.owner[name] = "red" end
+            else
+                if blueDistance < 11000 then self.owner[name] = "blue" end
+            end
+        end
+    end
+    self.centroid["blue"] = { x = initialBlueZone.x, y = initialBlueZone.y }
+    self.centroid["red"] = { x = initialRedZone.x, y = initialRedZone.y }
+
+    self.map = Map.new()
+
+    self.perimeter = self:findPerimeter(self.allZones)
+
+end
+
+function ControlZones:quickSetup(zoneOwners)
+
+    for zonename, zoneobj in pairs(mist.DBs.zonesByName) do
+        if string.sub(zonename,1,7) == 'control' then
+            self.zonesByName[zonename] = zoneobj --indexed by name of the trigger zone
+            table.insert(self.allZones, zoneobj.name) --list of all zone names / names of all zones
+        end
+    end
+
+    -- for k, c in pairs(zoneOwners) do
+    --     self.owner[k] = c
+    -- end
+    self.owner = zoneOwners
+
+    -- env.info(mist.utils.tableShow(self.owners))
+    self.centroid["blue"] = { x = self:getZone("control-1").x, y = self:getZone("control-1").y }
+    self.centroid["red"] = { x = self:getZone("control-10").x, y = self:getZone("control-10").y }
+
+    -- local initialRedZone
+    -- local initialBlueZone
+    -- for i=1, 2 do
+    --     -- Voronoi distribution from two initial random points
+    --     local redSeed = self.allZones[math.random(#self.allZones)]
+    --     local blueSeed = self.allZones[math.random(#self.allZones)]
+    --     while blueSeed == redSeed do
+    --         blueSeed = self.allZones[math.random(#self.allZones)]
+    --     end
+    
+    --     initialRedZone = self.zonesByName[redSeed]
+    --     initialBlueZone = self.zonesByName[blueSeed]
+    
+    --     for name, zone in pairs(self.zonesByName) do
+    --         local redDistance = self:distance(zone, initialRedZone)
+    --         local blueDistance = self:distance(zone, initialBlueZone)
+    
+    --         if self.owner[name] == nil then self.owner[name] = "neutral" end
+    --         if (redDistance < blueDistance) then
+    --             if redDistance < 11000 then self.owner[name] = "red" end
+    --         else
+    --             if blueDistance < 11000 then self.owner[name] = "blue" end
+    --         end
+    --     end
+    -- end
+    -- self.centroid["blue"] = { x = initialBlueZone.x, y = initialBlueZone.y }
+    -- self.centroid["red"] = { x = initialRedZone.x, y = initialRedZone.y }
+
+    for k, _ in pairs(self.zonesByName) do
+        if not self.owner[k] then self.owner[k] = "neutral" end
+    end
+
+    self.map = Map.new()
+
+    self.perimeter = self:findPerimeter(self.allZones)
+
+end
 end)
 __bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
 local acceptableLevelsOfRisk = {
@@ -1118,7 +1338,6 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
-    self.markers = {}
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
@@ -2696,7 +2915,7 @@ GroupCommander.__index = GroupCommander
 GroupCommander.instances = {}
 
 local oodaInterval = 10.0 -- seconds
-local detectionRadius = 4500 -- meters
+local detectionRadius = 8000 -- meters
 
 function GroupCommander.new(groupName, config)
     -- Initialize parent class (sets up OODA loop scheduling)
@@ -4614,6 +4833,7 @@ function ControlZones.new(namedZones, groundTemplates)
     if not namedZones then
         self.allZones = {}      --array of names of zones
         self.zonesByName = {}   --full zone details indexed by zone name
+        self.zoneCheckCounter = 1 --zone to be considered by next scheduled ownership check
         self.owner = {}
         self.neighbors = {}
         self.edges = {}
@@ -4690,6 +4910,12 @@ function ControlZones:setup(options)
     self.centroid["blue"] = self:centroidOfZones(self:getCluster("blue"))
     self.centroid["red"] = self:centroidOfZones(self:getCluster("red"))
 
+    self.timerId = mist.scheduleFunction(
+        ControlZones.checkOwnership,
+        {self},
+        timer.getTime() + 20,
+        2 --every two seconds
+    )
 end
 
 function ControlZones:centroidOfZones(zones)
@@ -4740,7 +4966,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
         local fronts = self:getOrderedFrontlines(formerOwner)
         local firstPass = true
         for _, front in pairs(fronts) do
-            self.map:drawFrontlineFromPoints(front.points, formerOwner, firstPass)
+            self.map:drawFrontline(front.points, formerOwner, firstPass, front.isLoop)
             firstPass = false
         end
     end
@@ -4748,50 +4974,46 @@ function ControlZones:changeZoneOwner(name, newOwner)
         local fronts = self:getOrderedFrontlines(newOwner)
         local firstPass = true
         for _, front in pairs(fronts) do
-            self.map:drawFrontlineFromPoints(front.points, newOwner, firstPass)
+            self.map:drawFrontline(front.points, newOwner, firstPass, front.isLoop)
             firstPass = false
         end
     end
 end
 
-function ControlZones:checkOwnership(time)
-    -- if owner units not in a color zone, lose control 
-    -- if units in a neutral zone, gain control 
-    -- if both colors in zone, no change
-    env.info("checking zone control......")
-    for zoneName, _ in pairs(self.zonesByName) do
-        self:updateZoneOwner(zoneName)
-    end
-    return time + 30
+function ControlZones:checkOwnership()
+    local zoneName = self.allZones[self.zoneCheckCounter]
+    self:updateZoneOwner(zoneName)
+
+    self.zoneCheckCounter = self.zoneCheckCounter + 1
+    if self.zoneCheckCounter > #self.allZones then self.zoneCheckCounter = 1 end
 end
 
 function ControlZones:updateZoneOwner(zoneName)
-    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
-        local groundInZone = {
-            blue = mist.getUnitsInZones(blueGround, zoneName),
-            red = mist.getUnitsInZones(redGround, zoneName)
-        }
-        if ownerColor == "neutral" then
+    local groundInZone = {
+        blue = mist.getUnitsInZones(blueGround, zoneName),
+        red = mist.getUnitsInZones(redGround, zoneName)
+    }
+    if ownerColor == "neutral" then
         -- if blue and no red, blue now owns
         -- if red and no blue, red now owns
-            -- if neither or both, stays neutral
-            if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
-                self:changeZoneOwner(zoneName, "blue")
-            elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
-                self:changeZoneOwner(zoneName, "red")
-            end
-        elseif ownerColor and #groundInZone[ownerColor] <= 0 then
-            env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
-            local opponentColor = self:getOpponent(ownerColor)
-            if #groundInZone[opponentColor] > 0 then
-                self:changeZoneOwner(zoneName, opponentColor)
-            else
-                self:changeZoneOwner(zoneName, "neutral")
-            end
+        -- if neither or both, stays neutral
+        if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
+            self:changeZoneOwner(zoneName, "blue")
+        elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
+            self:changeZoneOwner(zoneName, "red")
         end
+    elseif ownerColor and #groundInZone[ownerColor] <= 0 then
+        env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
+        local opponentColor = self:getOpponent(ownerColor)
+        if #groundInZone[opponentColor] > 0 then
+            self:changeZoneOwner(zoneName, opponentColor)
+        else
+            self:changeZoneOwner(zoneName, "neutral")
+        end
+    end
 end
 
 function ControlZones:addNeighbor(key1, key2) --bidirectional
@@ -5207,11 +5429,38 @@ end
 
 -- Calculates edges in contiguous sequence, returning multiple if frontline is disconnected
 function ControlZones:getOrderedFrontlines(color)
+    local fronts = {}
+
+    -- Find any isolated zones (no friendly neighbors)
+    local ownZones = self:getCluster(color)
+    env.info(mist.utils.tableShow(ownZones))
+    for _, zone in pairs(ownZones) do
+        local friendlyNeighbors = self:getNeighbors(zone, color, false)
+        env.info(zone.."has neighbors "..#friendlyNeighbors)
+        if #friendlyNeighbors == 0 then
+            env.info("0000000000 this zone is all alone :-( "..zone)
+
+            local segment = {
+                zones = {zone},
+                points = {},
+                length = nil,
+                isLoop = true,
+            }
+            local pt = self:getZone(zone).point
+            local eighth = math.pi/4
+            for i=1,8 do
+                table.insert(segment.points, {center = pt, heading = i*eighth})
+            end
+            table.insert(segment.points, {center = pt, heading = eighth})
+
+            table.insert(fronts, segment)
+        end
+    end
+
     local edges = self:getPerimeterEdges(color)
 
-    if #edges == 0 then return {} end
+    if #edges == 0 then return fronts end
     local globalVisited = {}
-    local fronts = {}
 
     -- Generate a lookup table for all own border zones
     local frontZones = {}
@@ -5239,7 +5488,7 @@ function ControlZones:getOrderedFrontlines(color)
         }
         local current = startKey
         local lastEnemy = nil
-        local isPenultimate = false
+        local prevOnPerimeter = false
 
         repeat -- keep hopping to allied neighbor (the one on closest cw heading after enemy neighbor)
             globalVisited[current] = true
@@ -5270,40 +5519,38 @@ function ControlZones:getOrderedFrontlines(color)
                 if self.owner[neighbor] == color then
                     nextFriendlyZone = neighbor
                     break
-                else
+                else --enemy neighbor, record heading
                     lastEnemy = neighbor
                     local enemyHeading = self:getHeading(current, neighbor)
                     table.insert(segment.points, {center = z.point, heading = enemyHeading})
-                    -- if current is a flank anchor (on the perimeter), stop at first enemy also on perimeter
-                    -- (handles lone perimeter zone that has no allied neighbors)
-                    if isPenultimate and table.contains(self.perimeter, neighbor) then
-                        break
-                    end
                 end
             end
 
-            if isPenultimate then
-                foundNext = false
-            elseif nextFriendlyZone then
-                if frontZones[nextFriendlyZone] then -- neighbor is also on frontline
-                    if table.contains(self.perimeter, nextFriendlyZone) then
-                        isPenultimate = true
-                    end
+            if nextFriendlyZone and frontZones[nextFriendlyZone] then --end if not on frontline (not facing enemy)
+                local currentOnPerimeter = table.contains(self.perimeter, current)
+                if currentOnPerimeter and prevOnPerimeter and globalVisited[nextFriendlyZone] then
+                    foundNext = false
+                elseif currentOnPerimeter and nextFriendlyZone == startKey then
+                    foundNext = false
+                else
                     foundNext = true
+                    prevOnPerimeter = currentOnPerimeter
                     prev = current
                     current = nextFriendlyZone
                 end
             end
-        until (current == startKey and not table.contains(anchors, current)) or not foundNext
+        until (current == startKey) or not foundNext
 
-        if current == startKey and not table.contains(self.perimeter, current) then
+        if current == startKey then
             -- make a final, extra line back to original zone, offset toward shared enemy neighbor
+            if not table.contains(self.perimeter, current) then
+                segment.isLoop = true
+            end
             if lastEnemy then
                 local lastPoint = self:getZone(current).point
                 local enemyHeading = mist.utils.getHeadingPoints(lastPoint, self:getZone(lastEnemy).point)
                 table.insert(segment.points, {center = lastPoint, heading = enemyHeading})
             end
-            segment.isLoop = true
         end
         segment.length = self:calculateLength(segment)
 
@@ -5645,7 +5892,7 @@ function ControlZones:kickoff()
         for i, front in pairs(fronts) do
             env.info(color.." "..i)
             local pts = front.points
-            self.map:drawFrontlineFromPoints(pts, color)
+            self.map:drawFrontline(pts, color, false, front.isLoop)
 
             for _, tri in pairs(self:selectTrianglesForFARPs(color, front)) do
                 local center = self:centroidOfZones({tri[1], tri[2], tri[3]})
@@ -5762,28 +6009,7 @@ function Map:drawEdges(edges)
     end
 end
 
-function Map:drawFrontline(edges, color)
-    --first erase any existing lines
-    if self.markers.front[color] then
-        for _, id in pairs(self.markers.front[color]) do
-            trigger.action.removeMark(id)
-        end
-        self.markers.front[color] = {}
-    end
-    --then draw a line for each edge of the current color's front
-    local sides = self:getVisibility(color, "frontlines")
-    for _, side in pairs(sides) do
-        for _, zonePoints in pairs(edges) do
-            local lineId = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId)
-            local lineColor = rgb[color]
-            trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
-            -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
-        end
-    end
-end
-
-function Map:drawFrontlineFromPoints(points, color, erasePrevious)
+function Map:drawFrontline(points, color, erasePrevious, isLoop)
     local OFFSET = 1500
     -- first erase any existing lines
     if erasePrevious and self.markers.front[color] then
@@ -5798,21 +6024,38 @@ function Map:drawFrontlineFromPoints(points, color, erasePrevious)
     local prevPts = {}
     for _, side in pairs(sides) do
         local firstPass = true
+        local lineColor = rgb[color]
         for _, data in pairs(points) do
             local lineId1 = self:getNewMarker()
             local lineId2 = self:getNewMarker()
             table.insert(self.markers.front[color], lineId1)
             table.insert(self.markers.front[color], lineId2)
-            local lineColor = rgb[color]
             local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
             local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
-            if not firstPass then
+            if firstPass then
+                if not isLoop then
+                    prevPts[1] = mist.projectPoint(point1, OFFSET, data.heading - math.pi/2)
+                    prevPts[2] = mist.projectPoint(point2, OFFSET, data.heading - math.pi/2)
+                    trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                    trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+                end
+            else
                 trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
                 trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
             end
             prevPts[1] = point1
             prevPts[2] = point2
             firstPass = false
+        end
+        if not isLoop then
+            local finalPt1 = mist.projectPoint(prevPts[1], OFFSET, points[#points].heading + math.pi/2)
+            local finalPt2 = mist.projectPoint(prevPts[2], OFFSET, points[#points].heading + math.pi/2)
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            trigger.action.lineToAll(side, lineId1, prevPts[1], finalPt1, lineColor, 1)
+            trigger.action.lineToAll(side, lineId2, prevPts[2], finalPt2, lineColor, 1)
         end
     end
 end
