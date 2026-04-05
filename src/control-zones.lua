@@ -20,6 +20,10 @@ function ControlZones.new(namedZones, groundTemplates)
             blue = {},
             red = {}
         }
+        self.depthMap = {
+            blue = {},
+            red = {}
+        }
     else
         -- self.zonesByName = namedZones
         --put keys into allZones
@@ -614,10 +618,7 @@ function ControlZones:getOrderedFrontlines(color)
     env.info(mist.utils.tableShow(ownZones))
     for _, zone in pairs(ownZones) do
         local friendlyNeighbors = self:getNeighbors(zone, color, false)
-        env.info(zone.."has neighbors "..#friendlyNeighbors)
         if #friendlyNeighbors == 0 then
-            env.info("0000000000 this zone is all alone :-( "..zone)
-
             local segment = {
                 zones = {zone},
                 points = {},
@@ -844,6 +845,44 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
+function ControlZones:calculateDepthMap(color)
+    local depthMap = {}
+    local queue = {}
+
+    for _, zoneName in ipairs(self:getPerimeterZones(color)) do
+        if not depthMap[zoneName] then
+            depthMap[zoneName] = 0
+            table.insert(queue, zoneName)
+        end
+    end
+
+    local head = 1
+    while head <= #queue do
+        local current = queue[head]
+        head = head + 1
+        for _, neighbor in ipairs(self:getNeighbors(current, color)) do
+            if not depthMap[neighbor] then
+                depthMap[neighbor] = depthMap[current] + 1
+                table.insert(queue, neighbor)
+            end
+        end
+    end
+
+    self.depthMap[color] = depthMap
+    return depthMap
+end
+
+function ControlZones:selectZonesAtDepth(color, targetDepth)
+    local result = {}
+    for zoneName, depth in pairs(self.depthMap[color]) do
+        if depth == targetDepth then
+            table.insert(result, zoneName)
+        end
+    end
+    return result
+end
+
+-- DEPRECATED
 function ControlZones:selectTrianglesForFARPs(color, front)
     if #front.zones < 2 then
         return {}
@@ -954,10 +993,10 @@ function ControlZones:orientToClosestEnemy(zoneName)
     local heading
     if nearestEnemy then
         heading = mist.utils.getHeadingPoints(self:getZone(zoneName).point, self:getZone(nearestEnemy).point)
-        env.info("-> Orienting units in"..zoneName..": "..mist.utils.toDegree(heading))
+        -- env.info("-> Orienting units in"..zoneName..": "..mist.utils.toDegree(heading))
     else
         heading =  mist.utils.getHeadingPoints(self.centroid[self.owner[zoneName]], self.centroid[opponent])
-        env.info("!? could not find nearestEnemy (might not be frontline zone)")
+        env.info("!? could not find nearestEnemy ("..zoneName.." might not be frontline zone?)")
     end
     return heading
 end
@@ -1060,22 +1099,26 @@ function ControlZones:kickoff()
     end
     self.map:drawZones(zoneInfo)
     self.map:drawEdges(self:getAllEdges())
-
     for color, cmd in pairs(self.commanders) do
-        self:garrisonZones(self:getCluster(color), color)
+        -- self:garrisonZones(self:getCluster(color), color)
 
         local fronts = self:getOrderedFrontlines(color)
+        self:calculateDepthMap(color)
 
-        -- for each front, draw frontline and place FARPs
-        for i, front in pairs(fronts) do
-            env.info(color.." "..i)
-            local pts = front.points
-            self.map:drawFrontline(pts, color, false, front.isLoop)
-
-            for _, tri in pairs(self:selectTrianglesForFARPs(color, front)) do
-                local center = self:centroidOfZones({tri[1], tri[2], tri[3]})
+        -- place FARPs a zone back from the front using depth map
+        local singleHopZones = self:selectZonesAtDepth(color, 1)
+        env.info(".......... "..#singleHopZones.." potential FARP placement zones found")
+        if #singleHopZones > 0 then
+            for _, zoneName in pairs(singleHopZones) do
+                local center = self:getZone(zoneName).point
                 self:placeFARP(color, center)
             end
+        end
+
+        -- draw frontlines
+        for i, front in pairs(fronts) do
+            -- env.info("___________ "..color.." front "..i.." has length of "..math.floor(front.length/1000).."km across "..#front.zones.." zones")
+            self.map:drawFrontline(front.points, color, false, front.isLoop)
 
             local groupList = cmd:initiate(front)
             self:populateZones(groupList, color)
