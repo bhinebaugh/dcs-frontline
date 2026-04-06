@@ -42,8 +42,6 @@ function ControlZones.new(namedZones, groundTemplates)
         red = {}
     }
     self.groupOfUnit = {}
-    self.groundGroups = {}
-    self.groupsByZone = {}
     self.centroid = {}
     return self
 end
@@ -128,10 +126,6 @@ end
 
 function ControlZones:getZone(name)
     return self.zonesByName[name]
-end
-
-function ControlZones:getGroupsInZone(zoneName)
-    return self.groupsByZone[zoneName]
 end
 
 function ControlZones:changeZoneOwner(name, newOwner)
@@ -1028,20 +1022,17 @@ function ControlZones:spawnStaticInZone(groupName, zoneName, color, template, he
     return newGroup --groupName
 end
 
-function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
-    local zn = self:getZone(zoneName)
+function ControlZones:spawnGroupAtPoint(groupName, point, color, template, heading)
     local unitSet = {}
 
-    local searchRadius = zn.radius
+    local searchRadius = 500
     local clearRadius = 50
     -- heavy calculation? improve performance; get single, larger spot to speed up?
-    local spots = Disposition.getSimpleZones(zn.point, searchRadius, clearRadius, #template)
+    local spots = Disposition.getSimpleZones(point, searchRadius, clearRadius, #template)
 
     if #spots < #template then
-        env.info("!! not enough spots for spawning all units in "..zoneName..". spots found: "..#spots.." of "..#template)
-        for i=1, #template do
-            if not spots[i] then spots[i] = mist.getRandomPointInZone(zoneName) end
-        end
+        env.info("!! not enough spots for spawning all units of "..groupName..". spots found: "..#spots.." of "..#template)
+        return nil
     end
 
     for j, unitName in pairs(template) do
@@ -1059,17 +1050,12 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, hea
         local unitName = unit:getName()
         if unitName then self.groupOfUnit[unitName] = newGroup.name end
     end
-    -- REMOVE
-    self.groundGroups[newGroup.name] = {
-        origin = zoneName,
-        color = color,
-    }
-    if not self.groupsByZone[zoneName] then
-        self.groupsByZone[zoneName] = { groupName }
-    else
-        table.insert(self.groupsByZone[zoneName], groupName)
-    end
     return groupName
+end
+
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
+    local zn = self:getZone(zoneName)
+    return self:spawnGroupAtPoint(groupName, zn.point, color, template, heading)
 end
 
 function ControlZones:populateZones(groupList, color)
