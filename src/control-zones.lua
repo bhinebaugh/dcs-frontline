@@ -1,5 +1,6 @@
 local rgb = require("constants").rgb
 local garrisonTemplates = require("constants").garrisonTemplates
+local groundTemplates = require("constants").groundTemplates
 local Map = require("map")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 
@@ -842,6 +843,7 @@ end
 function ControlZones:calculateDepthMap(color)
     local depthMap = {}
     local queue = {}
+    local maxDepth = 0
 
     for _, zoneName in ipairs(self:getPerimeterZones(color)) do
         if not depthMap[zoneName] then
@@ -857,6 +859,7 @@ function ControlZones:calculateDepthMap(color)
         for _, neighbor in ipairs(self:getNeighbors(current, color)) do
             if not depthMap[neighbor] then
                 depthMap[neighbor] = depthMap[current] + 1
+                if depthMap[neighbor] > maxDepth then maxDepth = depthMap[neighbor] end
                 table.insert(queue, neighbor)
             end
         end
@@ -876,8 +879,47 @@ function ControlZones:selectZonesAtDepth(color, targetDepth)
     return result
 end
 
--- DEPRECATED
-function ControlZones:selectTrianglesForFARPs(color, front)
+-- Returns a random point on the edge between two adjacent zones of the given depth.
+-- Pass an optional bias (0-1) to weight t toward the midpoint; default 0 = uniform.
+function ControlZones:randomPointOnEdgeAtDepth(color, targetDepth, bias)
+    local eligibleEdges = self:edgesAtDepth(color, targetDepth)
+    if #eligibleEdges == 0 then return nil end
+
+    local edge = eligibleEdges[math.random(#eligibleEdges)]
+    return self:randomPointOnEdge(edge, bias)
+end
+
+function ControlZones:edgesAtDepth(color, targetDepth)
+    local zones = self:selectZonesAtDepth(color, targetDepth)
+
+    -- Collect all edges where both endpoints are at targetDepth
+    local eligibleEdges = {}
+    for i = 1, #zones do
+        for j = i + 1, #zones do
+            local edge = self:getEdge(zones[i], zones[j])
+            if edge then
+                table.insert(eligibleEdges, edge)
+            end
+        end
+    end
+
+    return eligibleEdges
+end
+
+function ControlZones:randomPointOnEdge(e, bias)
+    local t = math.random()
+    if bias and bias > 0 then
+        -- blend toward 0.5 by the bias factor
+        t = t + bias * (0.5 - t)
+    end
+
+    return {
+        x = e.p1.x + t * (e.p2.x - e.p1.x),
+        y = e.p1.y + t * (e.p2.y - e.p1.y),
+    }
+end
+
+function ControlZones:selectTrianglesWithFrontEdge(color, front) --formed from two+ front zones
     if #front.zones < 2 then
         return {}
     end
@@ -1058,13 +1100,43 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, hea
     return self:spawnGroupAtPoint(groupName, zn.point, color, template, heading)
 end
 
-function ControlZones:populateZones(groupList, color)
+function ControlZones:fillFrontGaps(front, color)
+    if #front.zones < 2 then
+        return {}
+    end
+
+    local midpoints = {}
+    local MAX_FRONT_GAP = 6000
+    local avgHeading =  mist.utils.getHeadingPoints(self.centroid[color], self.centroid[self:getOpponent(color)])
+
+    for i=2, #front.zones do
+        local edge = self:getEdge(front.zones[i], front.zones[i-1])
+        -- if edge.crosscountry
+        if edge.distance.straight > MAX_FRONT_GAP then
+            local pt = self:randomPointOnEdge(edge, 0.7)
+
+            local r = math.random(#groundTemplates)
+            local template = groundTemplates[color][r]
+
+            table.insert(midpoints, pt)
+            self:spawnGroupAtPoint("mid_"..math.random(1000,9000), mist.utils.makeVec3(pt), color, template, avgHeading)
+        end
+    end
+
+    env.info("padded gaps in frontline: "..#midpoints)
+    env.info(mist.utils.tableShow(midpoints))
+    return midpoints
+end
+
+function ControlZones:spawnFrontForces(front, groupList, color)
     for zoneName, data in pairs(groupList) do
         local heading = self:orientToClosestEnemy(zoneName)
         for _, group in pairs(data) do
             self:spawnGroupInZone(group.groupName, zoneName, color, group.template, heading)
         end
     end
+    -- select points at intervals along segments
+    self:fillFrontGaps(front, color)
 end
 function ControlZones:garrisonZones(zones, color)
     -- on first pass spawn basic template to hold zone,
@@ -1086,7 +1158,7 @@ function ControlZones:kickoff()
     self.map:drawZones(zoneInfo)
     self.map:drawEdges(self:getAllEdges())
     for color, cmd in pairs(self.commanders) do
-        -- self:garrisonZones(self:getCluster(color), color)
+        self:garrisonZones(self:getCluster(color), color)
 
         local fronts = self:getOrderedFrontlines(color)
         self:calculateDepthMap(color)
@@ -1107,7 +1179,7 @@ function ControlZones:kickoff()
             self.map:drawFrontline(front.points, color, false, front.isLoop)
 
             local groupList = cmd:initiate(front)
-            self:populateZones(groupList, color)
+            self:spawnFrontForces(front, groupList, color)
         end
     end
 
