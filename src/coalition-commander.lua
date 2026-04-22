@@ -58,13 +58,23 @@ function CoalitionCommander.new(parent, config)
 end
 
 
+function CoalitionCommander:addReserves(groups)
+    -- self.reserves = groups
+    for _, groupName in pairs(groups) do
+        local gc = GroupCommander.new(groupName, {
+            color = self.color,
+        })
+        table.insert(self.reserves, gc)
+    end
+end
+
+-- DEPRECATED
 -- A preliminary phase to allow commander to choose group templates for all front zones
 -- (random for now, TODO apply some strategy to placement of different types)
 function CoalitionCommander:initiate(front)
     local reinforcements = {}
     for _, zoneName in pairs(front.zones) do
-        reinforcements[zoneName] = {}
-        for i = 1, math.random(3) do
+        for i = 1, math.random(2) do
             local r = math.random(#self.templates)
             local group = self.templates[r]
             local groupName = zoneName.."-"..self:getNewGroupId()

@@ -42,9 +42,13 @@ function ControlZones.new(namedZones, groundTemplates)
         blue = {},
         red = {}
     }
-    self.groupOfUnit = {}
     self.centroid = {}
     return self
+end
+
+function ControlZones:getNewGroupId()
+    self.groupCounter = self.groupCounter + 1
+    return self.groupCounter
 end
 
 function ControlZones:addCommander(side, c)
@@ -610,7 +614,6 @@ function ControlZones:getOrderedFrontlines(color)
 
     -- Find any isolated zones (no friendly neighbors)
     local ownZones = self:getCluster(color)
-    env.info(mist.utils.tableShow(ownZones))
     for _, zone in pairs(ownZones) do
         local friendlyNeighbors = self:getNeighbors(zone, color, false)
         if #friendlyNeighbors == 0 then
@@ -866,7 +869,7 @@ function ControlZones:calculateDepthMap(color)
     end
 
     self.depthMap[color] = depthMap
-    return depthMap
+    return maxDepth
 end
 
 function ControlZones:selectZonesAtDepth(color, targetDepth)
@@ -915,42 +918,91 @@ function ControlZones:randomPointOnEdge(e, bias)
 
     return {
         x = e.p1.x + t * (e.p2.x - e.p1.x),
-        y = e.p1.y + t * (e.p2.y - e.p1.y),
+        y = e.p1.z + t * (e.p2.z - e.p1.z), --yes, this is awful, but edges use Vec3 coords
     }
 end
 
-function ControlZones:selectTrianglesWithFrontEdge(color, front) --formed from two+ front zones
-    if #front.zones < 2 then
-        return {}
-    end
+-- Selects up to targetCount points from candidates using farthest-point sampling,
+-- guaranteeing maximum spread. Each pick is the candidate farthest from all
+-- already-selected points. Stops early if the next-best candidate is closer than
+-- minSeparation (optional). Accepts and returns tables of {x, y} points.
+function ControlZones:farthestPointSample(candidates, targetCount, minSeparation)
+    if #candidates == 0 then return {} end
+    targetCount = math.min(targetCount, #candidates)
 
-    FARP_MIN_INTERVAL = 20000
-    local farpEdges = {}
-    local farpTris = {}
-    local length = 0
+    local selected = {}
+    local used = {}
 
-    for i=2, #front.zones do
-        local edge = self:getEdge(front.zones[i], front.zones[i-1])
-        length = length + edge.distance.straight
-        if length > FARP_MIN_INTERVAL then
-            table.insert(farpEdges, {front.zones[i], front.zones[i-1]})
-            length = 0
-            -- or examine associated triangles right away and do not reset length if no fully-controlled found
-        end
-    end
+    local firstIdx = math.random(#candidates)
+    table.insert(selected, candidates[firstIdx])
+    used[firstIdx] = true
 
-    for _, edge in pairs(farpEdges) do
-        for _, tri in pairs(self.triangles) do
-            if self:triangleHasEdge(tri, edge[1], edge[2]) then
-                if self.owner[tri[1]] == color and self.owner[tri[2]] == color and self.owner[tri[3]] == color then
-                    table.insert(farpTris, tri)
-                    break
+    while #selected < targetCount do
+        local bestIdx = nil
+        local bestDist = -1
+
+        for i, candidate in ipairs(candidates) do
+            if not used[i] then
+                local minDist = math.huge
+                for _, sel in ipairs(selected) do
+                    local dx = candidate.x - sel.x
+                    local dy = candidate.y - sel.y
+                    local d = math.sqrt(dx * dx + dy * dy)
+                    if d < minDist then minDist = d end
+                end
+                if minDist > bestDist then
+                    bestDist = minDist
+                    bestIdx = i
                 end
             end
         end
+
+        if not bestIdx then break end
+        if minSeparation and bestDist < minSeparation then break end
+
+        table.insert(selected, candidates[bestIdx])
+        used[bestIdx] = true
     end
 
-    return farpTris
+    return selected
+end
+
+-- Returns triangles where all three vertices fall within [minDepth, maxDepth].
+-- Triangles spanning the boundary of that range (e.g. vertices at depth 1 and 2)
+-- produce points that interpolate between those depths, naturally landing in the
+-- Goldilocks zone without needing a separate containment check.
+function ControlZones:selectTrianglesByDepthRange(color, minDepth, maxDepth)
+    local result = {}
+    local depthMap = self.depthMap[color]
+    if not depthMap then return result end
+
+    for _, tri in ipairs(self.triangles) do
+        local d1 = depthMap[tri[1]]
+        local d2 = depthMap[tri[2]]
+        local d3 = depthMap[tri[3]]
+        if d1 and d2 and d3
+            and d1 >= minDepth and d1 <= maxDepth
+            and d2 >= minDepth and d2 <= maxDepth
+            and d3 >= minDepth and d3 <= maxDepth then
+            table.insert(result, tri)
+        end
+    end
+    return result
+end
+
+-- Returns a uniformly-distributed random point inside a triangle defined by zone names.
+-- Uses the sqrt(r1) formula to avoid the non-uniform clustering near the centroid
+-- that results from the naive barycentric approach.
+function ControlZones:randomPointInTriangle(tri)
+    local p1 = self:getZone(tri[1]).point
+    local p2 = self:getZone(tri[2]).point
+    local p3 = self:getZone(tri[3]).point
+    local r1 = math.sqrt(math.random())
+    local r2 = math.random()
+    return {
+        x = (1 - r1) * p1.x + r1 * (1 - r2) * p2.x + r1 * r2 * p3.x,
+        y = (1 - r1) * p1.z + r1 * (1 - r2) * p2.z + r1 * r2 * p3.z,
+    }
 end
 
 function ControlZones:placeFARP(color, pt)
@@ -1088,10 +1140,7 @@ function ControlZones:spawnGroupAtPoint(groupName, point, color, template, headi
         country = color == "blue" and "USA" or "USSR",
         category = "vehicle",
     })
-    for _, unit in pairs(Group.getByName(groupName):getUnits()) do
-        local unitName = unit:getName()
-        if unitName then self.groupOfUnit[unitName] = newGroup.name end
-    end
+
     return groupName
 end
 
@@ -1128,15 +1177,34 @@ function ControlZones:fillFrontGaps(front, color)
     return midpoints
 end
 
-function ControlZones:spawnFrontForces(front, groupList, color)
-    for zoneName, data in pairs(groupList) do
+function ControlZones:spawnFrontlineForces(front, color)
+    local reserves = {}
+    local avgHeading =  mist.utils.getHeadingPoints(self.centroid[color], self.centroid[self:getOpponent(color)])
+    local templates = groundTemplates[color]
+
+    local MAX_FRONT_GAP = 6000
+    local MAX_GROUPS_PER_ZONE = 2
+
+    for i, zoneName in ipairs(front.zones) do
         local heading = self:orientToClosestEnemy(zoneName)
-        for _, group in pairs(data) do
-            self:spawnGroupInZone(group.groupName, zoneName, color, group.template, heading)
+        for _ = 1, math.random(MAX_GROUPS_PER_ZONE) do
+            local groupName = zoneName.."-"..self:getNewGroupId()
+            self:spawnGroupInZone(groupName, zoneName, color, templates[math.random(#templates)], heading)
+            table.insert(reserves, groupName)
+        end
+
+        if i > 1 then
+            local edge = self:getEdge(zoneName, front.zones[i-1])
+            if edge.distance.straight > MAX_FRONT_GAP then
+                local groupName = "midway-"..self:getNewGroupId()
+                env.info("Adding group "..groupName.." between zones "..zoneName..front.zones[i-1])
+                self:spawnGroupAtPoint(groupName, mist.utils.makeVec3(self:randomPointOnEdge(edge, 0.7)), color, templates[math.random(#templates)], avgHeading)
+                table.insert(reserves, groupName)
+            end
         end
     end
-    -- select points at intervals along segments
-    self:fillFrontGaps(front, color)
+
+    return reserves
 end
 function ControlZones:garrisonZones(zones, color)
     -- on first pass spawn basic template to hold zone,
@@ -1163,23 +1231,25 @@ function ControlZones:kickoff()
         local fronts = self:getOrderedFrontlines(color)
         self:calculateDepthMap(color)
 
-        -- place FARPs a zone back from the front using depth map
-        local singleHopZones = self:selectZonesAtDepth(color, 1)
-        env.info(".......... "..#singleHopZones.." potential FARP placement zones found")
-        if #singleHopZones > 0 then
-            for _, zoneName in pairs(singleHopZones) do
-                local center = self:getZone(zoneName).point
-                self:placeFARP(color, center)
-            end
+        -- place FARPs slightly to the rear of depth-1 zones
+        local tris = self:selectTrianglesByDepthRange(color, 1, 2)
+        local candidates = {}
+        for _, tri in pairs(tris) do
+            table.insert(candidates, self:randomPointInTriangle(tri))
+        end
+        local MIN_FARP_SEPARATION = 9000
+        local farpPoints = self:farthestPointSample(candidates, #candidates, MIN_FARP_SEPARATION)
+        env.info(".......... "..#candidates.." potential FARP placement points found, narrowed down to "..#farpPoints)
+        for _, pt in pairs(farpPoints) do
+            self:placeFARP(color, pt)
         end
 
         -- draw frontlines
         for i, front in pairs(fronts) do
-            -- env.info("___________ "..color.." front "..i.." has length of "..math.floor(front.length/1000).."km across "..#front.zones.." zones")
             self.map:drawFrontline(front.points, color, false, front.isLoop)
 
-            local groupList = cmd:initiate(front)
-            self:spawnFrontForces(front, groupList, color)
+            local reserves = self:spawnFrontlineForces(front, color)
+            cmd:addReserves(reserves)
         end
     end
 
