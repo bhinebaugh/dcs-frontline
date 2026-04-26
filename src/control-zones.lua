@@ -136,27 +136,23 @@ end
 function ControlZones:changeZoneOwner(name, newOwner)
     local formerOwner = self.owner[name]
     if newOwner == formerOwner then
-        env.info("Notice: zone not changed, "..newOwner.." already controls "..name)
+        env.info("Warning: zone not changed, "..newOwner.." already controls "..name)
         return false
     end
     self.owner[name] = newOwner
-    env.info("Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
+    env.info("<<<<<<>>>>>>> Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
 
     self.map:redrawZone(name, newOwner, self:getZone(name).point)
     if formerOwner ~= "neutral" then
-        local fronts = self:getOrderedFrontlines(formerOwner)
-        local firstPass = true
-        for _, front in pairs(fronts) do
-            self.map:drawFrontline(front.points, formerOwner, firstPass, front.isLoop)
-            firstPass = false
+        self:recalculateGeometry(formerOwner)
+        for i, front in pairs(self.front[formerOwner]) do
+            self.map:drawFrontline(front.points, formerOwner, i == 1, front.isLoop)
         end
     end
     if newOwner ~= "neutral" then
-        local fronts = self:getOrderedFrontlines(newOwner)
-        local firstPass = true
-        for _, front in pairs(fronts) do
-            self.map:drawFrontline(front.points, newOwner, firstPass, front.isLoop)
-            firstPass = false
+        self:recalculateGeometry(newOwner)
+        for i, front in pairs(self.front[newOwner]) do
+            self.map:drawFrontline(front.points, newOwner, i == 1, front.isLoop)
         end
     end
 end
@@ -813,7 +809,7 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
 
     local zones = {}
     for _, zonename in pairs(zoneList) do
-        zone = self:getZone(zonename)
+        local zone = self:getZone(zonename)
         table.insert(zones, { name = zonename, x = zone.x, y = zone.y })
     end
 
@@ -1003,6 +999,12 @@ function ControlZones:randomPointInTriangle(tri)
         x = (1 - r1) * p1.x + r1 * (1 - r2) * p2.x + r1 * r2 * p3.x,
         y = (1 - r1) * p1.z + r1 * (1 - r2) * p2.z + r1 * r2 * p3.z,
     }
+end
+
+function ControlZones:recalculateGeometry(color)
+    env.info(".. recalculating geometry for "..color)
+    self:getOrderedFrontlines(color)
+    self:calculateDepthMap(color)
 end
 
 function ControlZones:placeFARP(color, pt)
