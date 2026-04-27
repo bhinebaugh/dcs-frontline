@@ -1007,7 +1007,7 @@ function ControlZones:recalculateGeometry(color)
     self:calculateDepthMap(color)
 end
 
-function ControlZones:placeFARP(color, pt)
+function ControlZones:spawnFARP(color, pt)
     local searchRadius = 1000
     local clearRadius = 120
     local spot = Disposition.getSimpleZones(mist.utils.makeVec3(pt), searchRadius, clearRadius, 1)
@@ -1220,6 +1220,60 @@ function ControlZones:garrisonZones(zones, color)
     end
 end
 
+function ControlZones:placeFARPs(color)
+    local MIN_FARP_SEPARATION = 9000
+    local SETBACK_DISTANCE = 4000
+
+    -- primary: place FARPs in depth 1-2 triangle interiors
+    local candidates = {}
+    local farpPoints = {}
+    local tris = self:selectTrianglesByDepthRange(color, 1, 2)
+    for _, tri in pairs(tris) do
+        table.insert(candidates, self:randomPointInTriangle(tri))
+    end
+    -- local farpPoints = self:farthestPointSample(candidates, #candidates, MIN_FARP_SEPARATION)
+
+    -- ensure the side gets at least 1 FARP
+    if #candidates == 0 then
+        env.info(".......... falling back to alternate FARP placement")
+        local heading = mist.utils.getHeadingPoints(self.centroid[self:getOpponent(color)], self.centroid[color])
+
+        -- fallback: offset a point on a depth-1 edge outward past the perimeter
+        -- self:edgesAtDepth(color, 1)
+        -- self:selectZonesAtDepth(color, 1)
+        local pt1 = self:randomPointOnEdgeAtDepth(color, 1)
+        local zns = self:selectZonesAtDepth(color, 1)
+        if pt1 then
+            env.info(".......... edge depth-1")
+            local offset1 = mist.projectPoint(pt1, SETBACK_DISTANCE, heading)
+            table.insert(farpPoints, offset1)
+        elseif #zns then
+            env.info(".......... zone depth-1")
+            local pt = self:getZone(zns[1]).point
+            local offset1 = mist.projectPoint(pt, SETBACK_DISTANCE, heading)
+            table.insert(farpPoints, offset1)
+        else
+            -- self:edgesAtDepth(color, 0)
+            local pt0 = self:randomPointOnEdgeAtDepth(color, 0)
+
+            if pt0 then
+                env.info(".......... edge depth-0")
+                local offset0 = mist.projectPoint(pt0, SETBACK_DISTANCE, heading)
+                table.insert(farpPoints, offset0)
+            else
+                env.info("!! no viable FARP placement found for "..color)
+            end
+        end
+    else
+        farpPoints = self:farthestPointSample(candidates, #candidates, MIN_FARP_SEPARATION)
+    end
+
+    env.info(".......... "..#candidates.." potential FARP placement points found, narrowed down to "..#farpPoints)
+    for _, pt in pairs(farpPoints) do
+        self:spawnFARP(color, pt)
+    end
+end
+
 function ControlZones:kickoff()
     local zoneInfo = {}
     for name, color in pairs(self.owner) do
@@ -1233,18 +1287,7 @@ function ControlZones:kickoff()
         local fronts = self:getOrderedFrontlines(color)
         self:calculateDepthMap(color)
 
-        -- place FARPs slightly to the rear of depth-1 zones
-        local tris = self:selectTrianglesByDepthRange(color, 1, 2)
-        local candidates = {}
-        for _, tri in pairs(tris) do
-            table.insert(candidates, self:randomPointInTriangle(tri))
-        end
-        local MIN_FARP_SEPARATION = 9000
-        local farpPoints = self:farthestPointSample(candidates, #candidates, MIN_FARP_SEPARATION)
-        env.info(".......... "..#candidates.." potential FARP placement points found, narrowed down to "..#farpPoints)
-        for _, pt in pairs(farpPoints) do
-            self:placeFARP(color, pt)
-        end
+        self:placeFARPs(color)
 
         -- draw frontlines
         for i, front in pairs(fronts) do
