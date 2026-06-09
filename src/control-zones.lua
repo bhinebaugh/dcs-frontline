@@ -1,5 +1,6 @@
 local rgb = require("constants").rgb
 local garrisonTemplates = require("constants").garrisonTemplates
+local groundTemplates = require("constants").groundTemplates
 local Map = require("map")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 
@@ -11,11 +12,16 @@ function ControlZones.new(namedZones, groundTemplates)
     if not namedZones then
         self.allZones = {}      --array of names of zones
         self.zonesByName = {}   --full zone details indexed by zone name
+        self.zoneCheckCounter = 1 --zone to be considered by next scheduled ownership check
         self.owner = {}
         self.neighbors = {}
         self.edges = {}
         self.perimeter = {}
         self.front = {
+            blue = {},
+            red = {}
+        }
+        self.depthMap = {
             blue = {},
             red = {}
         }
@@ -36,11 +42,13 @@ function ControlZones.new(namedZones, groundTemplates)
         blue = {},
         red = {}
     }
-    self.groupOfUnit = {}
-    self.groundGroups = {}
-    self.groupsByZone = {}
     self.centroid = {}
     return self
+end
+
+function ControlZones:getNewGroupId()
+    self.groupCounter = self.groupCounter + 1
+    return self.groupCounter
 end
 
 function ControlZones:addCommander(side, c)
@@ -87,6 +95,12 @@ function ControlZones:setup(options)
     self.centroid["blue"] = self:centroidOfZones(self:getCluster("blue"))
     self.centroid["red"] = self:centroidOfZones(self:getCluster("red"))
 
+    self.timerId = mist.scheduleFunction(
+        ControlZones.checkOwnership,
+        {self},
+        timer.getTime() + 20,
+        2 --every two seconds
+    )
 end
 
 function ControlZones:centroidOfZones(zones)
@@ -119,76 +133,64 @@ function ControlZones:getZone(name)
     return self.zonesByName[name]
 end
 
-function ControlZones:getGroupsInZone(zoneName)
-    return self.groupsByZone[zoneName]
-end
-
 function ControlZones:changeZoneOwner(name, newOwner)
     local formerOwner = self.owner[name]
     if newOwner == formerOwner then
-        env.info("Notice: zone not changed, "..newOwner.." already controls "..name)
+        env.info("Warning: zone not changed, "..newOwner.." already controls "..name)
         return false
     end
     self.owner[name] = newOwner
-    env.info("Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
+    env.info("<<<<<<>>>>>>> Control change: "..name.." switched from "..formerOwner.." to "..newOwner)
 
     self.map:redrawZone(name, newOwner, self:getZone(name).point)
     if formerOwner ~= "neutral" then
-        local fronts = self:getOrderedFrontlines(formerOwner)
-        local firstPass = true
-        for _, front in pairs(fronts) do
-            self.map:drawFrontlineFromPoints(front.points, formerOwner, firstPass)
-            firstPass = false
+        self:recalculateGeometry(formerOwner)
+        for i, front in pairs(self.front[formerOwner]) do
+            self.map:drawFrontline(front.points, formerOwner, i == 1, front.isLoop)
         end
     end
     if newOwner ~= "neutral" then
-        local fronts = self:getOrderedFrontlines(newOwner)
-        local firstPass = true
-        for _, front in pairs(fronts) do
-            self.map:drawFrontlineFromPoints(front.points, newOwner, firstPass)
-            firstPass = false
+        self:recalculateGeometry(newOwner)
+        for i, front in pairs(self.front[newOwner]) do
+            self.map:drawFrontline(front.points, newOwner, i == 1, front.isLoop)
         end
     end
 end
 
-function ControlZones:checkOwnership(time)
-    -- if owner units not in a color zone, lose control 
-    -- if units in a neutral zone, gain control 
-    -- if both colors in zone, no change
-    env.info("checking zone control......")
-    for zoneName, _ in pairs(self.zonesByName) do
-        self:updateZoneOwner(zoneName)
-    end
-    return time + 30
+function ControlZones:checkOwnership()
+    local zoneName = self.allZones[self.zoneCheckCounter]
+    self:updateZoneOwner(zoneName)
+
+    self.zoneCheckCounter = self.zoneCheckCounter + 1
+    if self.zoneCheckCounter > #self.allZones then self.zoneCheckCounter = 1 end
 end
 
 function ControlZones:updateZoneOwner(zoneName)
-    env.info("checking ownership of "..zoneName)
     local ownerColor = self.owner[zoneName]
     local blueGround = mist.makeUnitTable({'[blue][vehicle]'})
     local redGround = mist.makeUnitTable({'[red][vehicle]'})
-        local groundInZone = {
-            blue = mist.getUnitsInZones(blueGround, zoneName),
-            red = mist.getUnitsInZones(redGround, zoneName)
-        }
-        if ownerColor == "neutral" then
+    local groundInZone = {
+        blue = mist.getUnitsInZones(blueGround, zoneName),
+        red = mist.getUnitsInZones(redGround, zoneName)
+    }
+    if ownerColor == "neutral" then
         -- if blue and no red, blue now owns
         -- if red and no blue, red now owns
-            -- if neither or both, stays neutral
-            if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
-                self:changeZoneOwner(zoneName, "blue")
-            elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
-                self:changeZoneOwner(zoneName, "red")
-            end
-        elseif ownerColor and #groundInZone[ownerColor] <= 0 then
-            env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
-            local opponentColor = self:getOpponent(ownerColor)
-            if #groundInZone[opponentColor] > 0 then
-                self:changeZoneOwner(zoneName, opponentColor)
-            else
-                self:changeZoneOwner(zoneName, "neutral")
-            end
+        -- if neither or both, stays neutral
+        if #groundInZone["blue"] > 0 and #groundInZone["red"] <= 0 then
+            self:changeZoneOwner(zoneName, "blue")
+        elseif #groundInZone["red"] > 0 and #groundInZone["blue"] <= 0 then
+            self:changeZoneOwner(zoneName, "red")
         end
+    elseif ownerColor and #groundInZone[ownerColor] <= 0 then
+        env.info("####### "..ownerColor.." no longer has any units in "..zoneName)
+        local opponentColor = self:getOpponent(ownerColor)
+        if #groundInZone[opponentColor] > 0 then
+            self:changeZoneOwner(zoneName, opponentColor)
+        else
+            self:changeZoneOwner(zoneName, "neutral")
+        end
+    end
 end
 
 function ControlZones:addNeighbor(key1, key2) --bidirectional
@@ -604,11 +606,34 @@ end
 
 -- Calculates edges in contiguous sequence, returning multiple if frontline is disconnected
 function ControlZones:getOrderedFrontlines(color)
+    local fronts = {}
+
+    -- Find any isolated zones (no friendly neighbors)
+    local ownZones = self:getCluster(color)
+    for _, zone in pairs(ownZones) do
+        local friendlyNeighbors = self:getNeighbors(zone, color, false)
+        if #friendlyNeighbors == 0 then
+            local segment = {
+                zones = {zone},
+                points = {},
+                length = nil,
+                isLoop = true,
+            }
+            local pt = self:getZone(zone).point
+            local eighth = math.pi/4
+            for i=1,8 do
+                table.insert(segment.points, {center = pt, heading = i*eighth})
+            end
+            table.insert(segment.points, {center = pt, heading = eighth})
+
+            table.insert(fronts, segment)
+        end
+    end
+
     local edges = self:getPerimeterEdges(color)
 
-    if #edges == 0 then return {} end
+    if #edges == 0 then return fronts end
     local globalVisited = {}
-    local fronts = {}
 
     -- Generate a lookup table for all own border zones
     local frontZones = {}
@@ -636,7 +661,7 @@ function ControlZones:getOrderedFrontlines(color)
         }
         local current = startKey
         local lastEnemy = nil
-        local isPenultimate = false
+        local prevOnPerimeter = false
 
         repeat -- keep hopping to allied neighbor (the one on closest cw heading after enemy neighbor)
             globalVisited[current] = true
@@ -667,40 +692,38 @@ function ControlZones:getOrderedFrontlines(color)
                 if self.owner[neighbor] == color then
                     nextFriendlyZone = neighbor
                     break
-                else
+                else --enemy neighbor, record heading
                     lastEnemy = neighbor
                     local enemyHeading = self:getHeading(current, neighbor)
                     table.insert(segment.points, {center = z.point, heading = enemyHeading})
-                    -- if current is a flank anchor (on the perimeter), stop at first enemy also on perimeter
-                    -- (handles lone perimeter zone that has no allied neighbors)
-                    if isPenultimate and table.contains(self.perimeter, neighbor) then
-                        break
-                    end
                 end
             end
 
-            if isPenultimate then
-                foundNext = false
-            elseif nextFriendlyZone then
-                if frontZones[nextFriendlyZone] then -- neighbor is also on frontline
-                    if table.contains(self.perimeter, nextFriendlyZone) then
-                        isPenultimate = true
-                    end
+            if nextFriendlyZone and frontZones[nextFriendlyZone] then --end if not on frontline (not facing enemy)
+                local currentOnPerimeter = table.contains(self.perimeter, current)
+                if currentOnPerimeter and prevOnPerimeter and globalVisited[nextFriendlyZone] then
+                    foundNext = false
+                elseif currentOnPerimeter and nextFriendlyZone == startKey then
+                    foundNext = false
+                else
                     foundNext = true
+                    prevOnPerimeter = currentOnPerimeter
                     prev = current
                     current = nextFriendlyZone
                 end
             end
-        until (current == startKey and not table.contains(anchors, current)) or not foundNext
+        until (current == startKey) or not foundNext
 
-        if current == startKey and not table.contains(self.perimeter, current) then
+        if current == startKey then
             -- make a final, extra line back to original zone, offset toward shared enemy neighbor
+            if not table.contains(self.perimeter, current) then
+                segment.isLoop = true
+            end
             if lastEnemy then
                 local lastPoint = self:getZone(current).point
                 local enemyHeading = mist.utils.getHeadingPoints(lastPoint, self:getZone(lastEnemy).point)
                 table.insert(segment.points, {center = lastPoint, heading = enemyHeading})
             end
-            segment.isLoop = true
         end
         segment.length = self:calculateLength(segment)
 
@@ -786,7 +809,7 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
 
     local zones = {}
     for _, zonename in pairs(zoneList) do
-        zone = self:getZone(zonename)
+        local zone = self:getZone(zonename)
         table.insert(zones, { name = zonename, x = zone.x, y = zone.y })
     end
 
@@ -816,41 +839,175 @@ function ControlZones:findPerimeter(zoneList) --zoneList is array of indices = n
     return hull --return array of zone names
 end
 
-function ControlZones:selectTrianglesForFARPs(color, front)
-    if #front.zones < 2 then
-        return {}
-    end
+function ControlZones:calculateDepthMap(color)
+    local depthMap = {}
+    local queue = {}
+    local maxDepth = 0
 
-    FARP_MIN_INTERVAL = 20000
-    local farpEdges = {}
-    local farpTris = {}
-    local length = 0
-
-    for i=2, #front.zones do
-        local edge = self:getEdge(front.zones[i], front.zones[i-1])
-        length = length + edge.distance.straight
-        if length > FARP_MIN_INTERVAL then
-            table.insert(farpEdges, {front.zones[i], front.zones[i-1]})
-            length = 0
-            -- or examine associated triangles right away and do not reset length if no fully-controlled found
+    for _, zoneName in ipairs(self:getPerimeterZones(color)) do
+        if not depthMap[zoneName] then
+            depthMap[zoneName] = 0
+            table.insert(queue, zoneName)
         end
     end
 
-    for _, edge in pairs(farpEdges) do
-        for _, tri in pairs(self.triangles) do
-            if self:triangleHasEdge(tri, edge[1], edge[2]) then
-                if self.owner[tri[1]] == color and self.owner[tri[2]] == color and self.owner[tri[3]] == color then
-                    table.insert(farpTris, tri)
-                    break
-                end
+    local head = 1
+    while head <= #queue do
+        local current = queue[head]
+        head = head + 1
+        for _, neighbor in ipairs(self:getNeighbors(current, color)) do
+            if not depthMap[neighbor] then
+                depthMap[neighbor] = depthMap[current] + 1
+                if depthMap[neighbor] > maxDepth then maxDepth = depthMap[neighbor] end
+                table.insert(queue, neighbor)
             end
         end
     end
 
-    return farpTris
+    self.depthMap[color] = depthMap
+    return maxDepth
 end
 
-function ControlZones:placeFARP(color, pt)
+function ControlZones:selectZonesAtDepth(color, targetDepth)
+    local result = {}
+    for zoneName, depth in pairs(self.depthMap[color]) do
+        if depth == targetDepth then
+            table.insert(result, zoneName)
+        end
+    end
+    return result
+end
+
+-- Returns a random point on the edge between two adjacent zones of the given depth.
+-- Pass an optional bias (0-1) to weight t toward the midpoint; default 0 = uniform.
+function ControlZones:randomPointOnEdgeAtDepth(color, targetDepth, bias)
+    local eligibleEdges = self:edgesAtDepth(color, targetDepth)
+    if #eligibleEdges == 0 then return nil end
+
+    local edge = eligibleEdges[math.random(#eligibleEdges)]
+    return self:randomPointOnEdge(edge, bias)
+end
+
+function ControlZones:edgesAtDepth(color, targetDepth)
+    local zones = self:selectZonesAtDepth(color, targetDepth)
+
+    -- Collect all edges where both endpoints are at targetDepth
+    local eligibleEdges = {}
+    for i = 1, #zones do
+        for j = i + 1, #zones do
+            local edge = self:getEdge(zones[i], zones[j])
+            if edge then
+                table.insert(eligibleEdges, edge)
+            end
+        end
+    end
+
+    return eligibleEdges
+end
+
+function ControlZones:randomPointOnEdge(e, bias)
+    local t = math.random()
+    if bias and bias > 0 then
+        -- blend toward 0.5 by the bias factor
+        t = t + bias * (0.5 - t)
+    end
+
+    return {
+        x = e.p1.x + t * (e.p2.x - e.p1.x),
+        y = e.p1.z + t * (e.p2.z - e.p1.z), --yes, this is awful, but edges use Vec3 coords
+    }
+end
+
+-- Selects up to targetCount points from candidates using farthest-point sampling,
+-- guaranteeing maximum spread. Each pick is the candidate farthest from all
+-- already-selected points. Stops early if the next-best candidate is closer than
+-- minSeparation (optional). Accepts and returns tables of {x, y} points.
+function ControlZones:farthestPointSample(candidates, targetCount, minSeparation)
+    if #candidates == 0 then return {} end
+    targetCount = math.min(targetCount, #candidates)
+
+    local selected = {}
+    local used = {}
+
+    local firstIdx = math.random(#candidates)
+    table.insert(selected, candidates[firstIdx])
+    used[firstIdx] = true
+
+    while #selected < targetCount do
+        local bestIdx = nil
+        local bestDist = -1
+
+        for i, candidate in ipairs(candidates) do
+            if not used[i] then
+                local minDist = math.huge
+                for _, sel in ipairs(selected) do
+                    local dx = candidate.x - sel.x
+                    local dy = candidate.y - sel.y
+                    local d = math.sqrt(dx * dx + dy * dy)
+                    if d < minDist then minDist = d end
+                end
+                if minDist > bestDist then
+                    bestDist = minDist
+                    bestIdx = i
+                end
+            end
+        end
+
+        if not bestIdx then break end
+        if minSeparation and bestDist < minSeparation then break end
+
+        table.insert(selected, candidates[bestIdx])
+        used[bestIdx] = true
+    end
+
+    return selected
+end
+
+-- Returns triangles where all three vertices fall within [minDepth, maxDepth].
+-- Triangles spanning the boundary of that range (e.g. vertices at depth 1 and 2)
+-- produce points that interpolate between those depths, naturally landing in the
+-- Goldilocks zone without needing a separate containment check.
+function ControlZones:selectTrianglesByDepthRange(color, minDepth, maxDepth)
+    local result = {}
+    local depthMap = self.depthMap[color]
+    if not depthMap then return result end
+
+    for _, tri in ipairs(self.triangles) do
+        local d1 = depthMap[tri[1]]
+        local d2 = depthMap[tri[2]]
+        local d3 = depthMap[tri[3]]
+        if d1 and d2 and d3
+            and d1 >= minDepth and d1 <= maxDepth
+            and d2 >= minDepth and d2 <= maxDepth
+            and d3 >= minDepth and d3 <= maxDepth then
+            table.insert(result, tri)
+        end
+    end
+    return result
+end
+
+-- Returns a uniformly-distributed random point inside a triangle defined by zone names.
+-- Uses the sqrt(r1) formula to avoid the non-uniform clustering near the centroid
+-- that results from the naive barycentric approach.
+function ControlZones:randomPointInTriangle(tri)
+    local p1 = self:getZone(tri[1]).point
+    local p2 = self:getZone(tri[2]).point
+    local p3 = self:getZone(tri[3]).point
+    local r1 = math.sqrt(math.random())
+    local r2 = math.random()
+    return {
+        x = (1 - r1) * p1.x + r1 * (1 - r2) * p2.x + r1 * r2 * p3.x,
+        y = (1 - r1) * p1.z + r1 * (1 - r2) * p2.z + r1 * r2 * p3.z,
+    }
+end
+
+function ControlZones:recalculateGeometry(color)
+    env.info(".. recalculating geometry for "..color)
+    self:getOrderedFrontlines(color)
+    self:calculateDepthMap(color)
+end
+
+function ControlZones:spawnFARP(color, pt)
     local searchRadius = 1000
     local clearRadius = 120
     local spot = Disposition.getSimpleZones(mist.utils.makeVec3(pt), searchRadius, clearRadius, 1)
@@ -926,10 +1083,10 @@ function ControlZones:orientToClosestEnemy(zoneName)
     local heading
     if nearestEnemy then
         heading = mist.utils.getHeadingPoints(self:getZone(zoneName).point, self:getZone(nearestEnemy).point)
-        env.info("-> Orienting units in"..zoneName..": "..mist.utils.toDegree(heading))
+        -- env.info("-> Orienting units in"..zoneName..": "..mist.utils.toDegree(heading))
     else
         heading =  mist.utils.getHeadingPoints(self.centroid[self.owner[zoneName]], self.centroid[opponent])
-        env.info("!? could not find nearestEnemy (might not be frontline zone)")
+        env.info("!? could not find nearestEnemy ("..zoneName.." might not be frontline zone?)")
     end
     return heading
 end
@@ -961,20 +1118,17 @@ function ControlZones:spawnStaticInZone(groupName, zoneName, color, template, he
     return newGroup --groupName
 end
 
-function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
-    local zn = self:getZone(zoneName)
+function ControlZones:spawnGroupAtPoint(groupName, point, color, template, heading)
     local unitSet = {}
 
-    local searchRadius = zn.radius
+    local searchRadius = 500
     local clearRadius = 50
     -- heavy calculation? improve performance; get single, larger spot to speed up?
-    local spots = Disposition.getSimpleZones(zn.point, searchRadius, clearRadius, #template)
+    local spots = Disposition.getSimpleZones(point, searchRadius, clearRadius, #template)
 
     if #spots < #template then
-        env.info("!! not enough spots for spawning all units in "..zoneName..". spots found: "..#spots.." of "..#template)
-        for i=1, #template do
-            if not spots[i] then spots[i] = mist.getRandomPointInZone(zoneName) end
-        end
+        env.info("!! not enough spots for spawning all units of "..groupName..". spots found: "..#spots.." of "..#template)
+        return nil
     end
 
     for j, unitName in pairs(template) do
@@ -988,30 +1142,71 @@ function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, hea
         country = color == "blue" and "USA" or "USSR",
         category = "vehicle",
     })
-    for _, unit in pairs(Group.getByName(groupName):getUnits()) do
-        local unitName = unit:getName()
-        if unitName then self.groupOfUnit[unitName] = newGroup.name end
-    end
-    -- REMOVE
-    self.groundGroups[newGroup.name] = {
-        origin = zoneName,
-        color = color,
-    }
-    if not self.groupsByZone[zoneName] then
-        self.groupsByZone[zoneName] = { groupName }
-    else
-        table.insert(self.groupsByZone[zoneName], groupName)
-    end
+
     return groupName
 end
 
-function ControlZones:populateZones(groupList, color)
-    for zoneName, data in pairs(groupList) do
-        local heading = self:orientToClosestEnemy(zoneName)
-        for _, group in pairs(data) do
-            self:spawnGroupInZone(group.groupName, zoneName, color, group.template, heading)
+function ControlZones:spawnGroupInZone(groupName, zoneName, color, template, heading)
+    local zn = self:getZone(zoneName)
+    return self:spawnGroupAtPoint(groupName, zn.point, color, template, heading)
+end
+
+function ControlZones:fillFrontGaps(front, color)
+    if #front.zones < 2 then
+        return {}
+    end
+
+    local midpoints = {}
+    local MAX_FRONT_GAP = 6000
+    local avgHeading =  mist.utils.getHeadingPoints(self.centroid[color], self.centroid[self:getOpponent(color)])
+
+    for i=2, #front.zones do
+        local edge = self:getEdge(front.zones[i], front.zones[i-1])
+        -- if edge.crosscountry
+        if edge.distance.straight > MAX_FRONT_GAP then
+            local pt = self:randomPointOnEdge(edge, 0.7)
+
+            local r = math.random(#groundTemplates)
+            local template = groundTemplates[color][r]
+
+            table.insert(midpoints, pt)
+            self:spawnGroupAtPoint("mid_"..math.random(1000,9000), mist.utils.makeVec3(pt), color, template, avgHeading)
         end
     end
+
+    env.info("padded gaps in frontline: "..#midpoints)
+    env.info(mist.utils.tableShow(midpoints))
+    return midpoints
+end
+
+function ControlZones:spawnFrontlineForces(front, color)
+    local reserves = {}
+    local avgHeading =  mist.utils.getHeadingPoints(self.centroid[color], self.centroid[self:getOpponent(color)])
+    local templates = groundTemplates[color]
+
+    local MAX_FRONT_GAP = 6000
+    local MAX_GROUPS_PER_ZONE = 2
+
+    for i, zoneName in ipairs(front.zones) do
+        local heading = self:orientToClosestEnemy(zoneName)
+        for _ = 1, math.random(MAX_GROUPS_PER_ZONE) do
+            local groupName = zoneName.."-"..self:getNewGroupId()
+            self:spawnGroupInZone(groupName, zoneName, color, templates[math.random(#templates)], heading)
+            table.insert(reserves, groupName)
+        end
+
+        if i > 1 then
+            local edge = self:getEdge(zoneName, front.zones[i-1])
+            if edge.distance.straight > MAX_FRONT_GAP then
+                local groupName = "midway-"..self:getNewGroupId()
+                env.info("Adding group "..groupName.." between zones "..zoneName..front.zones[i-1])
+                self:spawnGroupAtPoint(groupName, mist.utils.makeVec3(self:randomPointOnEdge(edge, 0.7)), color, templates[math.random(#templates)], avgHeading)
+                table.insert(reserves, groupName)
+            end
+        end
+    end
+
+    return reserves
 end
 function ControlZones:garrisonZones(zones, color)
     -- on first pass spawn basic template to hold zone,
@@ -1025,6 +1220,60 @@ function ControlZones:garrisonZones(zones, color)
     end
 end
 
+function ControlZones:placeFARPs(color)
+    local MIN_FARP_SEPARATION = 9000
+    local SETBACK_DISTANCE = 4000
+
+    -- primary: place FARPs in depth 1-2 triangle interiors
+    local candidates = {}
+    local farpPoints = {}
+    local tris = self:selectTrianglesByDepthRange(color, 1, 2)
+    for _, tri in pairs(tris) do
+        table.insert(candidates, self:randomPointInTriangle(tri))
+    end
+    -- local farpPoints = self:farthestPointSample(candidates, #candidates, MIN_FARP_SEPARATION)
+
+    -- ensure the side gets at least 1 FARP
+    if #candidates == 0 then
+        env.info(".......... falling back to alternate FARP placement")
+        local heading = mist.utils.getHeadingPoints(self.centroid[self:getOpponent(color)], self.centroid[color])
+
+        -- fallback: offset a point on a depth-1 edge outward past the perimeter
+        -- self:edgesAtDepth(color, 1)
+        -- self:selectZonesAtDepth(color, 1)
+        local pt1 = self:randomPointOnEdgeAtDepth(color, 1)
+        local zns = self:selectZonesAtDepth(color, 1)
+        if pt1 then
+            env.info(".......... edge depth-1")
+            local offset1 = mist.projectPoint(pt1, SETBACK_DISTANCE, heading)
+            table.insert(farpPoints, offset1)
+        elseif #zns then
+            env.info(".......... zone depth-1")
+            local pt = self:getZone(zns[1]).point
+            local offset1 = mist.projectPoint(pt, SETBACK_DISTANCE, heading)
+            table.insert(farpPoints, offset1)
+        else
+            -- self:edgesAtDepth(color, 0)
+            local pt0 = self:randomPointOnEdgeAtDepth(color, 0)
+
+            if pt0 then
+                env.info(".......... edge depth-0")
+                local offset0 = mist.projectPoint(pt0, SETBACK_DISTANCE, heading)
+                table.insert(farpPoints, offset0)
+            else
+                env.info("!! no viable FARP placement found for "..color)
+            end
+        end
+    else
+        farpPoints = self:farthestPointSample(candidates, #candidates, MIN_FARP_SEPARATION)
+    end
+
+    env.info(".......... "..#candidates.." potential FARP placement points found, narrowed down to "..#farpPoints)
+    for _, pt in pairs(farpPoints) do
+        self:spawnFARP(color, pt)
+    end
+end
+
 function ControlZones:kickoff()
     local zoneInfo = {}
     for name, color in pairs(self.owner) do
@@ -1032,25 +1281,20 @@ function ControlZones:kickoff()
     end
     self.map:drawZones(zoneInfo)
     self.map:drawEdges(self:getAllEdges())
-
     for color, cmd in pairs(self.commanders) do
         self:garrisonZones(self:getCluster(color), color)
 
         local fronts = self:getOrderedFrontlines(color)
+        self:calculateDepthMap(color)
 
-        -- for each front, draw frontline and place FARPs
+        self:placeFARPs(color)
+
+        -- draw frontlines
         for i, front in pairs(fronts) do
-            env.info(color.." "..i)
-            local pts = front.points
-            self.map:drawFrontlineFromPoints(pts, color)
+            self.map:drawFrontline(front.points, color, false, front.isLoop)
 
-            for _, tri in pairs(self:selectTrianglesForFARPs(color, front)) do
-                local center = self:centroidOfZones({tri[1], tri[2], tri[3]})
-                self:placeFARP(color, center)
-            end
-
-            local groupList = cmd:initiate(front)
-            self:populateZones(groupList, color)
+            local reserves = self:spawnFrontlineForces(front, color)
+            cmd:addReserves(reserves)
         end
     end
 

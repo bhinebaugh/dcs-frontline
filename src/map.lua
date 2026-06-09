@@ -84,28 +84,7 @@ function Map:drawEdges(edges)
     end
 end
 
-function Map:drawFrontline(edges, color)
-    --first erase any existing lines
-    if self.markers.front[color] then
-        for _, id in pairs(self.markers.front[color]) do
-            trigger.action.removeMark(id)
-        end
-        self.markers.front[color] = {}
-    end
-    --then draw a line for each edge of the current color's front
-    local sides = self:getVisibility(color, "frontlines")
-    for _, side in pairs(sides) do
-        for _, zonePoints in pairs(edges) do
-            local lineId = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId)
-            local lineColor = rgb[color]
-            trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
-            -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
-        end
-    end
-end
-
-function Map:drawFrontlineFromPoints(points, color, erasePrevious)
+function Map:drawFrontline(points, color, erasePrevious, isLoop)
     local OFFSET = 1500
     -- first erase any existing lines
     if erasePrevious and self.markers.front[color] then
@@ -120,21 +99,38 @@ function Map:drawFrontlineFromPoints(points, color, erasePrevious)
     local prevPts = {}
     for _, side in pairs(sides) do
         local firstPass = true
+        local lineColor = rgb[color]
         for _, data in pairs(points) do
             local lineId1 = self:getNewMarker()
             local lineId2 = self:getNewMarker()
             table.insert(self.markers.front[color], lineId1)
             table.insert(self.markers.front[color], lineId2)
-            local lineColor = rgb[color]
             local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
             local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
-            if not firstPass then
+            if firstPass then
+                if not isLoop then
+                    prevPts[1] = mist.projectPoint(point1, OFFSET, data.heading - math.pi/2)
+                    prevPts[2] = mist.projectPoint(point2, OFFSET, data.heading - math.pi/2)
+                    trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                    trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+                end
+            else
                 trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
                 trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
             end
             prevPts[1] = point1
             prevPts[2] = point2
             firstPass = false
+        end
+        if not isLoop then
+            local finalPt1 = mist.projectPoint(prevPts[1], OFFSET, points[#points].heading + math.pi/2)
+            local finalPt2 = mist.projectPoint(prevPts[2], OFFSET, points[#points].heading + math.pi/2)
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            trigger.action.lineToAll(side, lineId1, prevPts[1], finalPt1, lineColor, 1)
+            trigger.action.lineToAll(side, lineId2, prevPts[2], finalPt2, lineColor, 1)
         end
     end
 end
