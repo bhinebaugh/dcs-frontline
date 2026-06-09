@@ -23,8 +23,9 @@ function Doctrine.new(name, commanderName)
 end
 
 -- Main planning method - subclasses must implement
--- @param context PlanningContext table with goal, situation, resources, commander
+-- @param context snapshot table (TacticalContext or ObjectiveContext)
 -- @return decisions table (structure varies by commander type)
+--   Operational doctrines return { orders = { ... }, objectiveComplete = true/nil }.
 function Doctrine:plan(context)
     env.info(self.commanderName .. " " .. self.name .. " executing phase " .. tostring(self.currentPhaseName))
     return self.phases[self.currentPhaseName](self, context)

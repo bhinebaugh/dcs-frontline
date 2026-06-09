@@ -3,7 +3,6 @@ local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
-local PlanningContext = require("planning-context")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
@@ -158,9 +157,8 @@ function GroupCommander:orient()
 
     self.threatAssessment = self:assessThreats()
 
-    -- Derive order context and group profile
+    -- Derive group profile
     local ownPos = self:getOwnPosition()
-    self.orderContext = PlanningContext.deriveOrderContext(self.orders, ownPos, self.alr)
     self.groupProfile = GroupProfiler.profileGroup(self.groupName, self.initialUnitNames, self.initialAmmoCount, self.fuelRemaining)
 
     -- Update suitability against current order's mission profile
@@ -169,6 +167,76 @@ function GroupCommander:orient()
     else
         self.suitability = nil
     end
+end
+
+--- @class TacticalContext
+--- @field groupName string
+--- @field ownPosition table
+--- @field totalUnits number
+--- @field initialAmmoCount number
+--- @field threatAssessment table
+--- @field statusReport table
+--- @field suitability number|nil
+--- @field hasActiveOrders boolean
+--- @field orderType string|nil
+--- @field orderPosition table|nil
+--- @field orderProximity number|nil
+--- @field orderAlr string|nil
+--- @field distanceToOrdered number|nil
+--- @field withinObjective boolean|nil
+--- @field retreatThreshold number|nil
+--- @field orderIsExpired boolean|nil
+--- @field orderHasDeadline boolean|nil
+--- @return TacticalContext|nil
+function GroupCommander:buildDecisionContext()
+    local ownPosition = self:getOwnPosition()
+    if not ownPosition then return nil end
+
+    local hasActiveOrders = self.orders ~= nil and self.orders:isActive()
+
+    local orderType, orderPosition, orderProximity, orderAlr
+    local distanceToOrdered, withinObjective, retreatThreshold
+    local orderIsExpired, orderHasDeadline
+
+    if hasActiveOrders then
+        orderType     = self.orders.type
+        orderPosition = self.orders.position
+        orderProximity   = self.orders.proximity or 500
+        orderAlr      = self.orders.alr or alr.LOW
+
+        distanceToOrdered = SpatialAgent.distance2D(ownPosition, orderPosition)
+        withinObjective   = distanceToOrdered <= orderProximity
+
+        retreatThreshold = 0.4
+        if orderAlr == alr.LOW then
+            retreatThreshold = 0.8
+        elseif orderAlr == alr.HIGH then
+            retreatThreshold = 0.2
+        end
+
+        orderHasDeadline = self.orders.expirationTime ~= nil
+        orderIsExpired   = self.orders:isExpired() or false
+    end
+
+    return {
+        groupName        = self.groupName,
+        ownPosition      = ownPosition,
+        totalUnits       = #self.initialUnitNames,
+        initialAmmoCount = self.initialAmmoCount,
+        threatAssessment = self.threatAssessment,
+        statusReport     = self:getStatusReport(),
+        suitability      = self.suitability,
+        hasActiveOrders  = hasActiveOrders or false,
+        orderType        = orderType,
+        orderPosition    = orderPosition,
+        orderProximity   = orderProximity,
+        orderAlr         = orderAlr,
+        distanceToOrdered = distanceToOrdered,
+        withinObjective  = withinObjective,
+        retreatThreshold = retreatThreshold,
+        orderIsExpired   = orderIsExpired,
+        orderHasDeadline = orderHasDeadline,
+    }
 end
 
 function GroupCommander:decide()
@@ -198,8 +266,8 @@ function GroupCommander:decide()
         return
     end
 
-    -- Get tactical planning context
-    local context = PlanningContext.buildTacticalContext(self)
+    -- Build decision context snapshot
+    local context = self:buildDecisionContext()
     if not context then
         env.info("ERROR: Could not build tactical context for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
@@ -259,6 +327,8 @@ function GroupCommander:act()
                 self:issueMoveOrder(self.destination)
                 self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
             end
+        else
+            self:stopMovement()
         end
     else
         self:stopMovement()

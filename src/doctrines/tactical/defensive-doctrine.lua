@@ -26,23 +26,21 @@ function DefensiveDoctrine.new(commanderName)
     self:registerPhase("Hold", DefensiveDoctrine.holdPhase)
     self:registerPhase("Retreat", DefensiveDoctrine.retreatPhase)
     self:registerPhase("Advance", DefensiveDoctrine.advancePhase)
-    
+
     return self
 end
 
 function DefensiveDoctrine:considerRetreat(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
 
     local retreatAssessment = 0.0
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 0.5
     end
 
@@ -58,7 +56,7 @@ function DefensiveDoctrine:considerRetreat(context)
     end
 
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
-    local suitability = context.situation.suitability
+    local suitability = context.suitability
     if suitability and suitability < 0.3 then
         retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
     end
@@ -67,11 +65,8 @@ function DefensiveDoctrine:considerRetreat(context)
 end
 
 function DefensiveDoctrine:considerAdvance(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
+    local status = context.statusReport
 
     local advanceAssessment = 0.0
 
@@ -85,14 +80,14 @@ function DefensiveDoctrine:considerAdvance(context)
     end
 
     -- attrition rate
-    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, context.totalUnits)
     advanceAssessment = advanceAssessment - attritionRate
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         advanceAssessment = 0.0
     end
-    
+
     return advanceAssessment
 end
 
@@ -110,11 +105,8 @@ function DefensiveDoctrine:holdPhase(context)
 end
 
 function DefensiveDoctrine:retreatPhase(context)
-    local commander = context.commander
-    local situation = context.situation
-
-    local threat = situation.threatAssessment
-    local ownPosition = commander:getOwnPosition()
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
 
     -- Use directly observed threats if available (more stable)
     local retreatDest = nil
@@ -133,11 +125,8 @@ function DefensiveDoctrine:retreatPhase(context)
 end
 
 function DefensiveDoctrine:advancePhase(context)
-    local commander = context.commander
-    local situation = context.situation
-
-    local threat = situation.threatAssessment
-    local ownPosition = commander:getOwnPosition()
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
 
     local holdThreshold = 0.5
     local retreatThreshold = 0.3

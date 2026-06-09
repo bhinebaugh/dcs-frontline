@@ -4,7 +4,6 @@ local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
 local Order = require("order")
 local OrderCoordinator = require("order-coordinator")
-local PlanningContext = require("planning-context")
 local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
 local SpatialAgent = require("spatial-agent")
 local ThreatTracker = require("threat-tracker")
@@ -19,6 +18,32 @@ setmetatable(OperationalCommander, {__index = OODACommander})
 OperationalCommander.__index = OperationalCommander
 
 local oodaInterval = 30.0 -- seconds
+
+local function isOrderChanged(lastOrder, newOrder, commanderStatus)
+    if not lastOrder then
+        return true
+    end
+    if commanderStatus and commanderStatus.orderStatus then
+        if commanderStatus.orderStatus == orderStatus.COMPLETED or
+           commanderStatus.orderStatus == orderStatus.ABORTED then
+            return true
+        end
+    end
+    if lastOrder.type ~= newOrder.type then
+        return true
+    end
+    if not lastOrder.position then
+        return true
+    end
+    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
+       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
+        return true
+    end
+    if lastOrder.radius ~= newOrder.radius then
+        return true
+    end
+    return false
+end
 
 function OperationalCommander.new(config)
     -- Initialize parent class (sets up OODA loop scheduling)
@@ -39,6 +64,8 @@ function OperationalCommander.new(config)
     self.assaultRadius = config.assaultRadius or 3000
     self.assaultStagingDistance = config.assaultStagingDistance or 10000
     self.maxReconGroups = config.maxReconGroups or 1
+
+    self.doctrine = nil
 
     return self
 end
@@ -109,20 +136,19 @@ end
 function OperationalCommander:decide()
     self.plannedOrders = {}
     self.plannedThisCycle = {}  -- Track which commanders have orders planned this cycle
-    
+
+    if not self.doctrine then
+        self.doctrine = ReconRallyAssaultPlan.new(self.name, {
+            maxReconGroups         = self.maxReconGroups,
+            reconRadius            = self.reconRadius,
+            assaultRadius          = self.assaultRadius,
+            assaultStagingDistance = self.assaultStagingDistance,
+        })
+        env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan doctrine")
+    end
+
     for _, objective in ipairs(self.orderCoordinator.objectives) do
         if objective.status == "Active" then
-            -- Assign default Doctrine if none exists
-            if not objective.doctrine then
-                objective.doctrine = ReconRallyAssaultPlan.new(self.name, {
-                    maxReconGroups         = self.maxReconGroups,
-                    reconRadius            = self.reconRadius,
-                    assaultRadius          = self.assaultRadius,
-                    assaultStagingDistance = self.assaultStagingDistance,
-                })
-                env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan to objective")
-            end
-
             self:planObjectiveWithDoctrine(objective)
         end
     end
@@ -151,7 +177,7 @@ function OperationalCommander:act()
         local lastOrder = self.lastIssuedOrders[commander.groupName]
         local commanderStatus = commander:getStatus()
 
-        if PlanningContext.isOrderChanged(lastOrder, order, commanderStatus) then
+        if isOrderChanged(lastOrder, order, commanderStatus) then
             -- Send nearby ally strength intel (within support range)
             local allyIntel = self:assessNearbyAllyStrength(order.position, 5000, commander.groupName)
             if allyIntel then
@@ -243,21 +269,74 @@ function OperationalCommander:cleanupDestroyedCommanders()
 end
 
 
--- Plan objective orders using Doctrine strategy
+--- @class ObjectiveContext
+--- @field objectivePosition table
+--- @field objectiveRadius number
+--- @field objectiveDeadline number|nil
+--- @field statusCounts table
+--- @field threatProfile table
+--- @field threatCenter table|nil
+--- @field threats table
+--- @field threatCount number
+--- @field availableCommanderCount number
+--- @return ObjectiveContext
+function OperationalCommander:buildObjectiveContext(objective)
+    local GroupProfiler = require("group-profiler")
+
+    local threatsNear = self:getThreatsNearPosition(objective.position, self.reconRadius)
+    local threatCount = 0
+    local threatUnits = {}
+    for unitName, _ in pairs(threatsNear) do
+        threatCount = threatCount + 1
+        local unit = Unit.getByName(unitName)
+        if unit and unit:isExist() then
+            table.insert(threatUnits, unit)
+        end
+    end
+
+    local threatProfile = GroupProfiler.profileUnits(threatUnits)
+    local threatCenter = nil
+    if threatCount > 0 then
+        threatCenter = SpatialAgent.calculateCenterOfObjects(threatsNear)
+    end
+
+    local statusCounts = objective:getOrderStatusCounts()
+
+    local availableCount = 0
+    for _, cmd in ipairs(self.groupCommanders) do
+        local s = cmd:getStatus()
+        if not s.orderStatus or
+           s.orderStatus == constants.orderStatus.COMPLETED or
+           s.orderStatus == constants.orderStatus.ABORTED then
+            availableCount = availableCount + 1
+        end
+    end
+
+    return {
+        objectivePosition       = objective.position,
+        objectiveRadius         = objective.radius or 2000,
+        objectiveDeadline       = objective.deadline,
+        statusCounts            = statusCounts,
+        threatProfile           = threatProfile,
+        threatCenter            = threatCenter,
+        threats                 = threatsNear,
+        threatCount             = threatCount,
+        availableCommanderCount = availableCount,
+    }
+end
+
+-- Plan objective orders using Doctrine strategy.
+-- Doctrines signal completion by returning { objectiveComplete = true, ... }.
 function OperationalCommander:planObjectiveWithDoctrine(objective)
-    local context = PlanningContext.deriveObjectivePlanningContext(objective, self)
-    if not context then
-        env.info("ERROR: Could not derive planning context for objective " .. (objective.name or "unknown"))
-        return
+    local context = self:buildObjectiveContext(objective)
+    local result = self.doctrine:plan(context)
+    if not result then return end
+
+    if result.objectiveComplete then
+        objective:markAchieved()
     end
 
-    local orderTemplates = objective.doctrine:plan(context)
-
-    if not orderTemplates or #orderTemplates == 0 then
-        return
-    end
-
-    for _, template in ipairs(orderTemplates) do
+    for _, template in ipairs(result.orders or {}) do
         self:assignOrderTemplate(template, objective)
     end
 end
@@ -297,7 +376,7 @@ function OperationalCommander:assignOrderTemplate(template, objective)
 
     local encirclingPositions
     if template.targetPosition then
-        encirclingPositions = SpatialAgent.calculateEncirclingPositions(template.targetPosition, template.radius, commanderPositions, template.stagingArc)
+        encirclingPositions = SpatialAgent.calculateEncirclingPositions(template.targetPosition, template.stagingRadius, commanderPositions, template.stagingArc)
     end
 
     for i, result in ipairs(selected) do
@@ -310,7 +389,7 @@ function OperationalCommander:assignOrderTemplate(template, objective)
             local order = Order.new({
                 type           = template.type,
                 position       = orderPosition,
-                radius         = template.radius,
+                proximity      = template.proximity,
                 alr            = template.alr,
                 missionProfile = template.missionProfile,
                 objective      = objective,
