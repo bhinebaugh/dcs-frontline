@@ -59,7 +59,8 @@ function ReconDoctrine:advancePhase(context)
         self:changePhase("Observe")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = nil,
+            orderAction = "start",
         }
     end
 
