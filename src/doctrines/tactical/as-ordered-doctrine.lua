@@ -131,7 +131,8 @@ function AsOrderedDoctrine:advancePhase(context)
         self:changePhase("Abort")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = nil,
+            orderAction = "abort",
         }
     end
 
@@ -139,7 +140,8 @@ function AsOrderedDoctrine:advancePhase(context)
         self:changePhase("Engage")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = destination
+            destination = destination,
+            orderAction = "start",
         }
     end
 
@@ -148,6 +150,7 @@ function AsOrderedDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
+            orderAction = "start",
         }
     end
 
