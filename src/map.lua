@@ -40,6 +40,32 @@ function Map:removeMarks(markIds)
     end
 end
 
+function Map:placeMarker(text, color, pt)
+    if not settings.draw.zones then return end
+    local sides = self:getVisibility(color, "zones")
+    local labels = {}
+    for _, side in pairs(sides) do
+        -- local markerId = self:getNewMarker()
+        -- trigger.action.circleToAll(side, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+        local labelId = self:getNewMarker()
+        table.insert(labels, labelId)
+        trigger.action.textToAll(side, labelId, pt, {0.7,0,0.7,1}, {0,0,0,0.2}, 15, true, text)
+    end
+    return labels
+end
+
+function Map:drawPolygon(points)
+    return mist.marker.add({
+        pos = points,
+        -- name = "",
+        markType = "freeform", --7
+        markForCoa = -1, --?
+        color = {1,1,0,0.5},
+        fillColor = {1,1,0,0.2},
+        lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
+    })
+end
+
 function Map:drawZone(name, color, pt)
     if not settings.draw.zones then return end
     if not self.markers.zones[name] then self.markers.zones[name] = {} end

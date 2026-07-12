@@ -56,6 +56,7 @@ function GroupCommander.new(groupName, config)
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
     self.destroyed = false  -- Tracks if group no longer exists
+    self.visualizer = config.visualizer
     
     -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     self.fuelRemaining = 1.0  -- Start at 100%
@@ -148,7 +149,7 @@ function GroupCommander:observe()
     local memoryCount = self.threatTracker:count()
     local expectedCount = #self.threatTracker:expectedThreats(currentPos, detectionRadius)
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
-    env.info(self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
+    env.info("* " .. self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
 end
 
 function GroupCommander:orient()
@@ -333,6 +334,10 @@ function GroupCommander:act()
     else
         self:stopMovement()
     end
+
+    if self.visualizer then
+        self.visualizer:syncGroupOrder(self, self.color)
+    end
 end
 
 function GroupCommander:analyzeOwnForce()
@@ -439,7 +444,7 @@ function GroupCommander.removeDestroyed()
             table.insert(surviving, instance)
         else
             removed = removed + 1
-            env.info(string.format("*** GroupCommander: Removing destroyed group %s from memory",
+            env.info(string.format("* GroupCommander: Removing destroyed group %s from memory",
                 instance.groupName or "unknown"))
         end
     end
@@ -549,7 +554,7 @@ function GroupCommander:issueMoveOrder(point)
     
     -- Convert x/z to lat/lon for logging
     local lat, lon = coord.LOtoLL({x = point.x, y = 0, z = point.z})
-    env.info(self.groupName .. " DECIDE: Move to " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
+    env.info("* " .. self.groupName .. " DECIDE: Move to " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
     
     -- Verify group exists
     local group = Group.getByName(self.groupName)

@@ -59,6 +59,7 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
+    self.visualizer = config.visualizer
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
@@ -165,11 +166,20 @@ end
 function OperationalCommander:act()
     -- Update ally intel for all active groups
     self:updateAllyIntelForAllGroups()
-    
-    if not self.plannedOrders or #self.plannedOrders == 0 then
-        return
+
+    if self.plannedOrders and #self.plannedOrders > 0 then
+        self:issuePlannedOrders()
     end
 
+    -- Keep each active objective's map mark in sync with its current status
+    if self.visualizer then
+        for _, objective in ipairs(self.orderCoordinator.objectives) do
+            self.visualizer:syncObjective(objective, self.color)
+        end
+    end
+end
+
+function OperationalCommander:issuePlannedOrders()
     local issuedCount = 0
     for _, plan in ipairs(self.plannedOrders) do
         local commander = plan.commander
@@ -226,7 +236,11 @@ function OperationalCommander:cleanupDestroyedCommanders()
     -- Prune destroyed commanders from this opscom's managed list
     local surviving = {}
     for _, gc in ipairs(self.groupCommanders) do
-        if not gc.destroyed then
+        if gc.destroyed then
+            if self.visualizer then
+                self.visualizer:release("group:" .. gc.groupName)
+            end
+        else
             table.insert(surviving, gc)
         end
     end

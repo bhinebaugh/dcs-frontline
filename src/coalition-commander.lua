@@ -9,6 +9,7 @@ local Objective = require("objective")
 -- local Order = require("order")
 -- local OrderCoordinator = require("order-coordinator")
 -- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
+local CommanderVisualizer = require("commander-visualizer")
 local SpatialAgent = require("spatial-agent")
 -- local ThreatTracker = require("threat-tracker")
 
@@ -46,6 +47,7 @@ function CoalitionCommander.new(parent, config)
         self.groupsByTask[j] = {}
     end
     self.opscoms = {}
+    self.visualizer = CommanderVisualizer.new(self.map.map)
     self.operations = {
         active = {},
         history = {},
@@ -62,6 +64,7 @@ function CoalitionCommander:addReserves(groups)
     for _, groupName in pairs(groups) do
         local gc = GroupCommander.new(groupName, {
             color = self.color,
+            visualizer = self.visualizer,
         })
         table.insert(self.reserves, gc)
     end
@@ -80,9 +83,10 @@ function CoalitionCommander:initiate(front)
     
             local gc = GroupCommander.new(groupName, {
                 color = self.color,
+                visualizer = self.visualizer,
             })
             table.insert(self.reserves, gc)
-    
+
             local groupData = {
                 groupName = groupName,
                 template = group
@@ -104,13 +108,15 @@ function CoalitionCommander:observe()
     -- Prune destroyed groups from reserves
     local surviving = {}
     for _, gc in ipairs(self.reserves) do
-        if not gc.destroyed then
+        if gc.destroyed then
+            self.visualizer:release("group:" .. gc.groupName)
+        else
             table.insert(surviving, gc)
         end
     end
     self.reserves = surviving
 
-    env.info(string.format("___ %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | opscoms=%d",
+    env.info(string.format("****** %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | opscoms=%d",
         self.color,
         #self.map:getCluster("blue"),
         #self.map:getCluster("red"),
@@ -119,6 +125,8 @@ function CoalitionCommander:observe()
 end
 
 function CoalitionCommander:orient()
+    -- TODO compare current state to previous to extract trends (force strength, territorial control, etc)
+    -- Consider observed threats and stalled operations / requests for reinforcements
     -- Identify opscoms whose objective is complete or failed
     self.opscoms_to_disband = {}
     local activeCount = 0
@@ -131,7 +139,8 @@ function CoalitionCommander:orient()
         end
     end
 
-    -- If no active opscoms will remain after disbanding, and reserves are available, find a target
+    -- If no active opscoms will remain after disbanding, and reserves are available, find a new target
+    -- TODO Select target based on knowledge of enemy strength or outcome of past operations
     self.pending_target = nil
     if activeCount == 0 and #self.reserves > 0 then
         local ownZones = self.map:getCluster(self.color)
@@ -151,6 +160,7 @@ end
 
 function CoalitionCommander:decide()
     -- Select groups from reserves by proximity to the pending target
+    -- TODO Balance proximity and suitability for type of operation
     self.pending_groups = {}
     if self.pending_target then
         local maxGroups = 3
@@ -176,13 +186,13 @@ function CoalitionCommander:act()
     table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
     for _, i in ipairs(self.opscoms_to_disband) do
         local opscom = self.opscoms[i]
-        self.map.map:removeMarks(opscom.markers)
+        self.visualizer:release("opscom:" .. tostring(opscom))
         local survivors = opscom:disband()
         for _, gc in ipairs(survivors) do
             table.insert(self.reserves, gc)
         end
         table.remove(self.opscoms, i)
-        env.info(string.format("___ %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
+        env.info(string.format("****** %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
             self.color, #survivors))
     end
 
@@ -201,6 +211,7 @@ function CoalitionCommander:act()
         local opscom = OperationalCommander.new({
             color = self.color,
             groupCommanders = self.pending_groups,
+            visualizer = self.visualizer,
         })
         opscom.orderCoordinator.objectives = {
             Objective.new({
@@ -210,20 +221,16 @@ function CoalitionCommander:act()
             })
         }
         table.insert(self.opscoms, opscom)
-        env.info(string.format("___ %s StratCom ACT: created opscom → %s with %d groups",
+        env.info(string.format("****** %s StratCom ACT: created opscom → targeting %s with %d groups",
             self.color, self.pending_target.zoneName, #self.pending_groups))
-
-        -- Draw arrows on map from each tasked group to the target point
-        local markers = {}
-        for _, gc in ipairs(self.pending_groups) do
-            local originPoint = gc:getOwnPosition()
-            local groupMarkers = self.map.map:drawDirective(originPoint, self.pending_target.position, self.color)
-            for _, mk in pairs(groupMarkers) do
-                table.insert(markers, mk)
-            end
-        end
-        opscom.markers = markers
+        -- draw polygon around units and directive arrow at creation
+        self.visualizer:syncOpscom(opscom, self.color)
     end
+
+    -- Keep each active opscom's outline/directive marks in sync with current tasking
+    -- for _, opscom in ipairs(self.opscoms) do
+    --     self.visualizer:syncOpscom(opscom, self.color)
+    -- end
 end
 
 

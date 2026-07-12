@@ -1,0 +1,192 @@
+local constants = require("constants")
+local settings = require("settings")
+local rgb = constants.rgb
+local normalizeAngle = require("helpers").normalizeAngle --Load helper functions
+local angularDistance = require("helpers").angularDistance --Load helper functions
+
+local taskTypeNames = {}
+for name, value in pairs(constants.taskTypes) do
+    taskTypeNames[value] = name
+end
+
+-- Reconciles commander state (orders, dispositions, objectives, opscom tasking)
+-- onto persistent map marks. Owns a registry of {signature, markIds} keyed by a
+-- stable string per drawable thing, so unchanged state is a no-op and changed
+-- state erases the old marks before drawing new ones.
+local CommanderVisualizer = {}
+CommanderVisualizer.__index = CommanderVisualizer
+
+function CommanderVisualizer.new(map)
+    local self = setmetatable({}, CommanderVisualizer)
+    self.map = map
+    self.registry = {}
+    return self
+end
+
+-- Draw/update the marks for `key` only if `signature` differs from what's
+-- currently registered. `drawFn` is called (with no args) only when a redraw
+-- is needed, and must return a list of mark ids.
+function CommanderVisualizer:upsert(key, signature, drawFn)
+    local entry = self.registry[key]
+    if entry and entry.signature == signature then
+        return
+    end
+    if entry then
+        self.map:removeMarks(entry.markIds)
+    end
+    local markIds = drawFn() or {}
+    self.registry[key] = { signature = signature, markIds = markIds }
+end
+
+-- Erase any marks registered for `key`, if present.
+function CommanderVisualizer:release(key)
+    local entry = self.registry[key]
+    if not entry then return end
+    self.map:removeMarks(entry.markIds)
+    self.registry[key] = nil
+end
+
+-- Draw/update a label at a group's position showing its current order type
+-- and disposition, or release the label if the group has no active order.
+function CommanderVisualizer:syncGroupOrder(gc, color)
+    local key = "group:" .. gc.groupName
+
+    if not gc.orders then
+        self:release(key)
+        return
+    end
+
+    local position = gc:getOwnPosition()
+    if not position then
+        self:release(key)
+        return
+    end
+
+    local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
+    local text = gc.groupName .. "\n" .. orderTypeName .. " | " .. (gc.disposition or "?")
+    local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
+    local signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, roundedPos}, "|")
+
+    self:upsert(key, signature, function()
+        if not settings.draw.groupOrders then return {} end
+        local markIds = {}
+        local sides = self.map:getVisibility(color, "groupOrders")
+        for _, side in pairs(sides) do
+            local labelId = self.map:getNewMarker()
+            table.insert(markIds, labelId)
+            trigger.action.textToAll(side, labelId, position, {1,1,1,0.8}, {0,0,0,0.3}, 12, true, text)
+        end
+        return markIds
+    end)
+end
+
+-- Draw/update a circle + label at an objective's position showing its task
+-- type and status.
+function CommanderVisualizer:syncObjective(objective, color)
+    local key = "objective:" .. tostring(objective)
+
+    if objective:isComplete() then
+        self:release(key)
+        return
+    end
+
+    local typeName = taskTypeNames[objective.type] or tostring(objective.type)
+    local signature = table.concat({typeName, objective.status, objective.radius}, "|")
+
+    self:upsert(key, signature, function()
+        if not settings.draw.objectives then return {} end
+        local markIds = {}
+        local sides = self.map:getVisibility(color, "objectives")
+        for _, side in pairs(sides) do
+            local circleId = self.map:getNewMarker()
+            table.insert(markIds, circleId)
+            trigger.action.circleToAll(side, circleId, objective.position, objective.radius, rgb[color], rgb[color], 1)
+            local labelId = self.map:getNewMarker()
+            table.insert(markIds, labelId)
+            trigger.action.textToAll(side, labelId, objective.position, {1,1,1,1}, {0,0,0,0.3}, 13, true,
+                typeName .. " (" .. objective.status .. ")")
+        end
+        return markIds
+    end)
+end
+
+-- Draw/update the outline of tasked groups and directive arrows from each
+-- group to the opscom's objective.
+function CommanderVisualizer:syncOpscom(opscom, color)
+    local key = "opscom:" .. tostring(opscom)
+
+    local objective = opscom.orderCoordinator.objectives[1]
+    if not objective then
+        self:release(key)
+        return
+    end
+
+    local groupNames = {}
+    local points = {}
+    local polygon = {}
+    -- Calculate centroid of allied positions
+    local alliedCenterX = 0
+    local alliedCenterZ = 0
+    local center = { x = 0, y = 0, z = 0 }
+    local validCount = 0
+    for _, gc in ipairs(opscom.groupCommanders) do
+        local position = gc:getOwnPosition()
+        if position then
+            table.insert(groupNames, gc.groupName)
+            table.insert(points, position)
+            alliedCenterX = alliedCenterX + position.x
+            alliedCenterZ = alliedCenterZ + position.z
+            validCount = validCount + 1
+        end
+    end
+    table.sort(groupNames)
+
+    center.x = alliedCenterX / validCount
+    center.z = alliedCenterZ / validCount
+    -- project points from center to form enclosing polygon
+    -- for each point project 2 points away from center +/- 45deg
+    for i, data in pairs(points) do
+        -- get heading center to data
+        local heading = mist.utils.getHeadingPoints(center, data)
+        local projectedPoint1 = mist.projectPoint(data, 800, heading + math.pi/4)
+        local projectedPoint2 = mist.projectPoint(data, 800, heading - math.pi/4)
+        table.insert(polygon, projectedPoint1)
+        table.insert(polygon, projectedPoint2)
+    end
+    -- table.insert(polygon, lastPoint)
+    -- sort points
+    local initialHeading = 0
+    table.sort(polygon, function(a, b)
+        local headingA = normalizeAngle(mist.utils.getHeadingPoints(center, a))
+        local headingB = normalizeAngle(mist.utils.getHeadingPoints(center, b))
+        local arcA = angularDistance(initialHeading, headingA)
+        local arcB = angularDistance(initialHeading, headingB)
+        return arcA < arcB
+    end)
+
+    local signature = table.concat(groupNames, ",") .. "|" .. objective.status
+
+    self:upsert(key, signature, function()
+        if #polygon == 0 then return {} end
+        local markIds = {}
+        -- for _, gc in ipairs(opscom.groupCommanders) do
+        -- single arrow for whole operation
+            local origin = center --gc:getOwnPosition()
+            if origin then
+                local arrowIds = self.map:drawDirective(origin, objective.position, color)
+                if arrowIds then
+                    for _, mk in pairs(arrowIds) do
+                        table.insert(markIds, mk)
+                    end
+                end
+            end
+        -- end
+        local polygonId = self.map:drawPolygon(polygon)
+        if polygonId then
+            table.insert(markIds, polygonId)
+        end
+        return markIds
+    end)
+end
+
+return CommanderVisualizer
