@@ -63,9 +63,9 @@ function GroupCommander.new(groupName, config)
     self.lastPosition = nil
     self.lastObserveTime = timer.getTime()
     
-    -- Active Doctrine (persists across OODA cycles until order type changes)
+    -- Active Doctrine (persists across OODA cycles until a new order is assigned)
     self.doctrine = nil
-    self.doctrineType = nil
+    self.doctrineOrder = nil
     
     -- Register this instance
     table.insert(GroupCommander.instances, self)
@@ -241,7 +241,11 @@ function GroupCommander:buildDecisionContext()
 end
 
 function GroupCommander:decide()
-    if self.orders and self.orders.status == orderStatus.ASSIGNED then
+    -- Build a fresh doctrine only when a genuinely new order has been assigned
+    -- (identity check, not status) so in-progress phase state isn't discarded
+    -- while a doctrine is still working an order that hasn't called orderAction "start" yet.
+    if self.orders and self.orders ~= self.doctrineOrder then
+        self.doctrineOrder = self.orders
         if self.orders.type == taskTypes.PATROL then
             self.doctrine = PatrolDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.RECON then
