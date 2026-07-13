@@ -3,6 +3,8 @@ local garrisonTemplates = require("constants").garrisonTemplates
 local groundTemplates = require("constants").groundTemplates
 local Map = require("map")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
+local normalizeAngle = require("helpers").normalizeAngle --Load helper functions
+local angularDistance = require("helpers").angularDistance --Load helper functions
 
 local ControlZones = {}
 ControlZones.__index = ControlZones
@@ -30,7 +32,7 @@ function ControlZones.new(namedZones, groundTemplates)
         --put keys into allZones
     end
     self.maxima = nil
-    self.groupCounter = 1
+    self.groupCounter = 0
     self.commanders = {}
     -- self.maxima = {
     --     westmost = nil,
@@ -47,8 +49,11 @@ function ControlZones.new(namedZones, groundTemplates)
 end
 
 function ControlZones:getNewGroupId()
+    --char(65) = A, char(90) = Z
+    local alpha = string.char(65 + (self.groupCounter % 26))
+    local id = string.rep(alpha, 1 + self.groupCounter / 26)
     self.groupCounter = self.groupCounter + 1
-    return self.groupCounter
+    return id
 end
 
 function ControlZones:addCommander(side, c)
@@ -557,24 +562,6 @@ function ControlZones:precalculateConnections()
     end
 
     return self.edges
-end
-
--- Normalize angle to [0, 2π)
-local function normalizeAngle(angle)
-    local TWO_PI = 2 * math.pi
-    angle = angle % TWO_PI
-    if angle < 0 then
-        angle = angle + TWO_PI
-    end
-    return angle
-end
-local function angularDistance(from, to)
-    local TWO_PI = 2 * math.pi
-    local diff = (to - from) % TWO_PI
-    if diff < 0 then
-        diff = diff + TWO_PI
-    end
-    return diff
 end
 
 function ControlZones:getHeading(z1, z2)
@@ -1190,7 +1177,7 @@ function ControlZones:spawnFrontlineForces(front, color)
     for i, zoneName in ipairs(front.zones) do
         local heading = self:orientToClosestEnemy(zoneName)
         for _ = 1, math.random(MAX_GROUPS_PER_ZONE) do
-            local groupName = zoneName.."-"..self:getNewGroupId()
+            local groupName = color.."-"..zoneName.."-"..self:getNewGroupId()
             self:spawnGroupInZone(groupName, zoneName, color, templates[math.random(#templates)], heading)
             table.insert(reserves, groupName)
         end
@@ -1198,7 +1185,7 @@ function ControlZones:spawnFrontlineForces(front, color)
         if i > 1 then
             local edge = self:getEdge(zoneName, front.zones[i-1])
             if edge.distance.straight > MAX_FRONT_GAP then
-                local groupName = "midway-"..self:getNewGroupId()
+                local groupName = color.."-".."midway-"..self:getNewGroupId()
                 env.info("Adding group "..groupName.." between zones "..zoneName..front.zones[i-1])
                 self:spawnGroupAtPoint(groupName, mist.utils.makeVec3(self:randomPointOnEdge(edge, 0.7)), color, templates[math.random(#templates)], avgHeading)
                 table.insert(reserves, groupName)
