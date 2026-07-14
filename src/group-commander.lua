@@ -211,9 +211,9 @@ function GroupCommander:buildDecisionContext()
 
         retreatThreshold = 0.4
         if orderAlr == alr.LOW then
-            retreatThreshold = 0.8
-        elseif orderAlr == alr.HIGH then
             retreatThreshold = 0.2
+        elseif orderAlr == alr.HIGH then
+            retreatThreshold = 0.8
         end
 
         orderHasDeadline = self.orders.expirationTime ~= nil

@@ -124,7 +124,7 @@ function AsOrderedDoctrine:advancePhase(context)
     local destination = context.orderPosition
 
     local engageThreshold = 0.4
-    local abortThreshold = 0.8
+    local abortThreshold = context.retreatThreshold or 0.8
     local defendThreshold = 0.2
 
     if self:considerAbort(context) >= abortThreshold then
@@ -167,7 +167,7 @@ function AsOrderedDoctrine:engagePhase(context)
     local threat = context.threatAssessment
 
     local engageThreshold = 0.3
-    local abortThreshold = 0.8
+    local abortThreshold = context.retreatThreshold or 0.8
 
     if self:considerAbort(context) >= abortThreshold then
         self:changePhase("Abort")
