@@ -6,6 +6,7 @@ local OODACommander = require("ooda-commander")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
+local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
 local SpatialAgent = require("spatial-agent")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
@@ -250,6 +251,8 @@ function GroupCommander:decide()
             self.doctrine = PatrolDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.RECON then
             self.doctrine = ReconDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.RALLY then
+            self.doctrine = RallyDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
@@ -592,6 +595,7 @@ function GroupCommander:issueMoveOrder(point)
     -- Default to ignoring roads since DCS pathfinding is often problematic
     local ignoreRoads = true
     
+    -- TODO use 'crosscountry' boolean in precalculated control zone edge table to help decide
     -- Only use roads for long-distance movements (>15km) when not in combat
     if distance and distance > 15000 and self.disposition ~= dispositionTypes.RETREAT then
         ignoreRoads = false

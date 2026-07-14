@@ -63,7 +63,7 @@ function OperationalCommander.new(config)
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
-    self.assaultStagingDistance = config.assaultStagingDistance or 10000
+    self.assaultStagingDistance = config.assaultStagingDistance or 7000
     self.maxReconGroups = config.maxReconGroups or 1
 
     self.doctrine = nil
