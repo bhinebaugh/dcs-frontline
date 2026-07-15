@@ -389,15 +389,29 @@ function OperationalCommander:assignOrderTemplate(template, objective)
     end
 
     local encirclingPositions
+    local stagingAssignments
     if template.targetPosition then
         encirclingPositions = SpatialAgent.calculateEncirclingPositions(template.targetPosition, template.stagingRadius, commanderPositions, template.stagingArc)
+
+        -- RALLY orders get a per-commander staging position fanned around the target.
+        -- Assign by proximity (rather than list order) so commanders take the nearest
+        -- open staging slot instead of trekking past one another to a farther one.
+        local stagingItems = {}
+        for _, result in ipairs(selected) do
+            table.insert(stagingItems, { position = result.commander:getStatus().position, result = result })
+        end
+        local assigned = SpatialAgent.assignByProximity(stagingItems, encirclingPositions)
+
+        stagingAssignments = {}
+        for _, assignment in ipairs(assigned) do
+            stagingAssignments[assignment.item.result.commander.groupName] = assignment.position
+        end
     end
 
-    for i, result in ipairs(selected) do
+    for _, result in ipairs(selected) do
         local commander = result.commander
 
-        -- RALLY orders get a per-commander staging position fanned around the target
-        local orderPosition = encirclingPositions and encirclingPositions[i] or template.position
+        local orderPosition = (stagingAssignments and stagingAssignments[commander.groupName]) or template.position
 
         if not self.plannedThisCycle[commander.groupName] then
             local order = Order.new({
