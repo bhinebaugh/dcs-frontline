@@ -159,7 +159,9 @@ function ReconRallyAssaultPlan:assaultPhase(context)
     end
 
     if totalThisPhase == 0 then
-        local assaultPosition = threatCenter or context.objectivePosition
+        -- Stay focused on assaulting a position rather than units spotted on the group's periphery
+        -- local assaultPosition = threatCenter or context.objectivePosition
+        local assaultPosition = context.objectivePosition
 
         -- Build missionProfile from threat capability (need to match or exceed it)
         local missionProfile = {

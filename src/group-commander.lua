@@ -4,6 +4,7 @@ local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
+local AssaultDoctrine = require("doctrines.tactical.assault-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
@@ -253,6 +254,8 @@ function GroupCommander:decide()
             self.doctrine = ReconDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.RALLY then
             self.doctrine = RallyDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.ASSAULT then
+            self.doctrine = AssaultDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
