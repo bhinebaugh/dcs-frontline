@@ -53,7 +53,7 @@ function ReconRallyAssaultPlan:reconPhase(context)
 
     -- Recon orders resolved — check if objective itself is already clear
     if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
-        if context.threatCount == 0 then
+        if context.nearObjectiveThreatCount == 0 then
             self:changePhase("Defend", statusCounts)
         else
             self:changePhase("Rally", statusCounts)

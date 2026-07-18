@@ -65,6 +65,12 @@ function OperationalCommander.new(config)
     self.assaultRadius = config.assaultRadius or 3000
     self.assaultStagingDistance = config.assaultStagingDistance or 7000
     self.maxReconGroups = config.maxReconGroups or 1
+    -- self.threatTracker is fed by merging group snapshots (already-fresh
+    -- data) but never ages on its own, so a threat that stops being
+    -- reported (killed, retreated, lost LOS) lingers at its last known
+    -- position forever. Filter reads by recency instead of relying on
+    -- status, since there's no single opscom position to age relative to.
+    self.threatMemoryWindow = config.threatMemoryWindow or 120
 
     self.doctrine = nil
 
@@ -292,6 +298,7 @@ end
 --- @field threatCenter table|nil
 --- @field threats table
 --- @field threatCount number
+--- @field nearObjectiveThreatCount number
 --- @field availableCommanderCount number
 --- @return ObjectiveContext
 function OperationalCommander:buildObjectiveContext(objective)
@@ -312,6 +319,16 @@ function OperationalCommander:buildObjectiveContext(objective)
     local threatCenter = nil
     if threatCount > 0 then
         threatCenter = SpatialAgent.calculateCenterOfObjects(threatsNear)
+    end
+
+    -- Scoped tighter than threatCount: used to judge whether the objective
+    -- itself is clear (e.g. before declaring Defend), as opposed to
+    -- threatCount/threatCenter/threatProfile which deliberately look out to
+    -- reconRadius for staging/planning purposes.
+    local nearObjectiveThreats = self:getThreatsNearPosition(objective.position, self.assaultRadius)
+    local nearObjectiveThreatCount = 0
+    for _ in pairs(nearObjectiveThreats) do
+        nearObjectiveThreatCount = nearObjectiveThreatCount + 1
     end
 
     local statusCounts = objective:getOrderStatusCounts()
@@ -335,6 +352,7 @@ function OperationalCommander:buildObjectiveContext(objective)
         threatCenter            = threatCenter,
         threats                 = threatsNear,
         threatCount             = threatCount,
+        nearObjectiveThreatCount = nearObjectiveThreatCount,
         availableCommanderCount = availableCount,
     }
 end
@@ -545,8 +563,10 @@ end
 function OperationalCommander:getThreatsNearPosition(position, radius)
     local nearbyThreats = {}
     local allThreats = self.threatTracker:getThreats()
+    local currentTime = timer.getTime()
     for unitName, threat in pairs(allThreats) do
-        if SpatialAgent.isWithinRadius(threat.position, position, radius) then
+        local isStale = not threat.lastSighting or (currentTime - threat.lastSighting) > self.threatMemoryWindow
+        if not isStale and SpatialAgent.isWithinRadius(threat.position, position, radius) then
             nearbyThreats[unitName] = threat
         end
     end
