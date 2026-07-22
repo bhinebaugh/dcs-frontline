@@ -243,6 +243,17 @@ function GroupCommander:buildDecisionContext()
 end
 
 function GroupCommander:decide()
+    -- If an order resolved (completed/aborted) last tick via act(),
+    -- doctrine instance may still be awaiting reassignment by the operational layer.
+    -- In this case hold in place rather than planning against a finished order's stale context
+    -- (e.g. orderPosition is no longer populated).
+    if self.orders and self.orders:isFinished() then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = self:getOwnPosition()
+        self.pendingOrderAction = nil
+        return
+    end
+
     -- Build a fresh doctrine only when a genuinely new order has been assigned
     -- (identity check, not status) so in-progress phase state isn't discarded
     -- while a doctrine is still working an order that hasn't called orderAction "start" yet.
@@ -256,11 +267,15 @@ function GroupCommander:decide()
             self.doctrine = RallyDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.ASSAULT then
             self.doctrine = AssaultDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.DEFEND then
+            self.doctrine = DefensiveDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
     end
 
+    -- TODO decide if it makes sense to reenable this compared to first block above
+    -- // it would be one way of tying up residual orders after opscom disbands
     -- if self.orders and self.orders:isFinished() then
     --     self.orders = nil
     --     self.doctrine = DefensiveDoctrine.new(self.groupName)
