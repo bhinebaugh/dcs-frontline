@@ -144,7 +144,7 @@ function AssaultDoctrine:abortPhase(context)
 
     if threat.center then
         local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(threat.center, direction, 1000)
+        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
     else
         self:changePhase("Hold")
     end
