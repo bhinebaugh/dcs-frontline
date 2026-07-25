@@ -66,7 +66,8 @@ function GroupCommander.new(groupName, config)
     self.lastObserveTime = timer.getTime()
     
     -- Active Doctrine (persists across OODA cycles until a new order is assigned)
-    self.doctrine = nil
+    -- Default to groups defending their current position until tasked to an opscom
+    self.doctrine = DefensiveDoctrine.new(self.groupName)
     self.doctrineOrder = nil
     
     -- Register this instance

@@ -22,6 +22,7 @@ DefensiveDoctrine.__index = DefensiveDoctrine
 function DefensiveDoctrine.new(commanderName)
     local self = Doctrine.new("Defensive", commanderName)
     setmetatable(self, DefensiveDoctrine)
+    self.basePosition = nil
 
     self:registerPhase("Hold", DefensiveDoctrine.holdPhase)
     self:registerPhase("Retreat", DefensiveDoctrine.retreatPhase)
@@ -36,6 +37,17 @@ function DefensiveDoctrine:considerRetreat(context)
     local totalUnits = context.totalUnits
 
     local retreatAssessment = 0.0
+
+    local ownPosition = context.ownPosition
+    if not self.basePosition then
+        self.basePosition = context.ownPosition
+    end
+    local basePosition = context.orderPosition or self.basePosition
+    local excursion = SpatialAgent.distance2D(basePosition, ownPosition)
+    local defenseRadius = context.defenseRadius or 4000
+
+    -- as distance from base approaches max allowed, increase retreat pressure
+    retreatAssessment = retreatAssessment + excursion / defenseRadius
 
     -- ammunition
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
@@ -69,6 +81,17 @@ function DefensiveDoctrine:considerAdvance(context)
     local status = context.statusReport
 
     local advanceAssessment = 0.0
+
+    local ownPosition = context.ownPosition
+    if not self.basePosition then
+        self.basePosition = context.ownPosition
+    end
+    local basePosition = context.orderPosition or self.basePosition
+    local excursion = SpatialAgent.distance2D(basePosition, ownPosition)
+    local defenseRadius = context.defenseRadius or 4000
+
+    -- decrease advance likelihood as group gets farther from base position
+    advanceAssessment = advanceAssessment - excursion / defenseRadius
 
     -- threat favorability
     if threat.count > 0 then
@@ -111,6 +134,8 @@ function DefensiveDoctrine:retreatPhase(context)
     -- Use directly observed threats if available (more stable)
     local retreatDest = nil
 
+    -- TODO reconsider retreat if threat favorability improves, not just if threat disappears
+    -- TODO consider aborting doctrine if already retreated and threat is still highly unfavorable
     if threat.center then
         local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
         retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
