@@ -66,14 +66,19 @@ function ThreatTracker:updateExpectedThreats(observedThreats, observerPosition, 
         observedNames[unitData.name] = true
     end
     
-    -- Check for expected threats within detection radius that were not observed
+    -- Check for expected threats that were not observed. If we're close enough
+    -- to have seen it but did not, its last known position is in doubt (UNCONFIRMED).
+    -- If we're too far to check, there's no evidence against it (SUSPECTED).
     for unitName, threat in pairs(self.threats) do
         local notObserved = not observedNames[unitName]
-        local inExpectedRadius = SpatialAgent.isWithinRadius(threat.position, observerPosition, detectionRadius)
         local isExpected = threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST
-        if notObserved and inExpectedRadius and isExpected then
-            env.info(self.observerName .. " ThreatTracker: Expected threat not observed - " .. unitName .. " (SUSPECTED)")
-            threat.status = threatStatus.UNCONFIRMED
+        if notObserved and isExpected then
+            local inExpectedRadius = SpatialAgent.isWithinRadius(threat.position, observerPosition, detectionRadius)
+            if inExpectedRadius then
+                threat.status = threatStatus.UNCONFIRMED
+            else
+                threat.status = threatStatus.SUSPECTED
+            end
         end
     end
 end
