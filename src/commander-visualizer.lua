@@ -63,9 +63,12 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
     end
 
     local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-    local text = gc.groupName .. "\n" .. orderTypeName .. " | " .. (gc.disposition or "?")
+    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    local threatText = "" .. gc.threatAssessment.count .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10
+    -- local text = gc.groupName .. "\n" .. groupDoctrineName .. "\n" .. orderTypeName
+    local text = gc.groupName .. "\n" .. groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]\n" .. threatText
     local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
-    local signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, roundedPos}, "|")
+    local signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatText, roundedPos}, "|")
 
     self:upsert(key, signature, function()
         if not settings.draw.groupOrders then return {} end
@@ -74,15 +77,48 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         for _, side in pairs(sides) do
             local labelId = self.map:getNewMarker()
             table.insert(markIds, labelId)
-            trigger.action.textToAll(side, labelId, position, {1,1,1,0.8}, {0,0,0,0.3}, 12, true, text)
+            trigger.action.textToAll(side, labelId, mist.projectPoint(position, 100, math.pi), {1,1,1,0.8}, {0,0,0,0.3}, 12, true, text)
         end
         return markIds
     end)
 end
 
+function CommanderVisualizer:initMovementMapper(color)
+    -- create key that will collect mark ids for all group movement arrows for current objective
+    local key = color .. "_movement"
+
+    -- initial entry is empty
+    if not self.registry[key] then
+        self.registry[key] = { signature = "_", markIds = {} }
+    end
+end
+
+-- Draw and persist arrows showing each time a group changes its intended destination 
+function CommanderVisualizer:appendGroupMove(gc, color)
+    local key = color .. "_movement"
+    local entry = self.registry[key]
+    if not entry or not gc.orders then
+        -- self:release(key)
+        return
+    end
+
+    local position = gc:getOwnPosition()
+    if not position then
+        -- self:release(key)
+        return
+    end
+
+    local arrowIds = self.map:drawArrow(position, gc.destination, color)
+    if arrowIds then
+        for _, mk in pairs(arrowIds) do
+            table.insert(self.registry[key].markIds, mk)
+        end
+    end
+end
+
 -- Draw/update a circle + label at an objective's position showing its task
 -- type and status.
-function CommanderVisualizer:syncObjective(objective, color)
+function CommanderVisualizer:syncObjective(objective, doctrine, color)
     local key = "objective:" .. tostring(objective)
 
     if objective:isComplete() then
@@ -91,7 +127,13 @@ function CommanderVisualizer:syncObjective(objective, color)
     end
 
     local typeName = taskTypeNames[objective.type] or tostring(objective.type)
-    local signature = table.concat({typeName, objective.status, objective.radius}, "|")
+    local orderCounts = {}
+    for k, v in pairs(objective:getOrderStatusCounts()) do
+        orderCounts[k] = tostring(v)
+    end
+    local objectiveOrders = "Assg:" .. orderCounts.assigned .. " Act:" .. orderCounts.inProgress .. " Dn:" .. orderCounts.completed .. " X:" .. orderCounts.aborted
+    local text = doctrine.name .. ":" ..  doctrine.currentPhaseName .. "\n" .. typeName .. " (" .. objective.status .. ") [" .. objectiveOrders .. "]"
+    local signature = table.concat({typeName, objective.status, objective.radius, doctrine.name, doctrine.currentPhaseName, objectiveOrders}, "|")
 
     self:upsert(key, signature, function()
         if not settings.draw.objectives then return {} end
@@ -100,11 +142,10 @@ function CommanderVisualizer:syncObjective(objective, color)
         for _, side in pairs(sides) do
             local circleId = self.map:getNewMarker()
             table.insert(markIds, circleId)
-            trigger.action.circleToAll(side, circleId, objective.position, objective.radius, rgb[color], rgb[color], 1)
+            trigger.action.circleToAll(side, circleId, objective.position, objective.radius+300, rgb[color], {0,0,0,0}, 3)
             local labelId = self.map:getNewMarker()
             table.insert(markIds, labelId)
-            trigger.action.textToAll(side, labelId, objective.position, {1,1,1,1}, {0,0,0,0.3}, 13, true,
-                typeName .. " (" .. objective.status .. ")")
+            trigger.action.textToAll(side, labelId, mist.projectPoint(objective.position, 850, math.pi/2), {1,1,1,1}, {0,0,0,0.3}, 13, true, text)
         end
         return markIds
     end)
@@ -113,7 +154,7 @@ end
 -- Draw/update the outline of tasked groups and directive arrows from each
 -- group to the opscom's objective.
 function CommanderVisualizer:syncOpscom(opscom, color)
-    local key = "opscom:" .. tostring(opscom)
+    local key = "opscom:" .. opscom.name
 
     local objective = opscom.orderCoordinator.objectives[1]
     if not objective then

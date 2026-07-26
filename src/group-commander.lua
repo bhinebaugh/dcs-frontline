@@ -353,6 +353,9 @@ function GroupCommander:act()
             math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
                 self:issueMoveOrder(self.destination)
                 self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
+                if self.visualizer then
+                    self.visualizer:appendGroupMove(self, self.color)
+                end
             end
         else
             self:stopMovement()

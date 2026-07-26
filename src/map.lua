@@ -55,7 +55,7 @@ function Map:placeMarker(text, color, pt)
 end
 
 function Map:drawPolygon(points)
-    return mist.marker.add({
+    local mk = mist.marker.add({
         pos = points,
         -- name = "",
         markType = "freeform", --7
@@ -64,6 +64,7 @@ function Map:drawPolygon(points)
         fillColor = {1,1,0,0.2},
         lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
     })
+    return mk.markId --mist helper returns whole table; we want ID only
 end
 
 function Map:drawZone(name, color, pt)
@@ -177,6 +178,21 @@ function Map:drawDirective(originPoint, targetPoint, color)
         local lineStart = mist.projectPoint(originPoint, distance+200, heading)
         local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
         trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
+        table.insert(Ids, nextId)
+    end
+    return Ids
+end
+function Map:drawArrow(originPoint, targetPoint, color)
+    if not settings.draw.directives then return end
+    local Ids = {}
+    local sides = self:getVisibility(color, "directives")
+    for _, side in pairs(sides) do
+        local nextId = self:getNewMarker()
+        -- lineColor = {0.7,0.7,0.7,0.15}
+        -- local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.08}
+        local lineColor = {(0.7 + rgb[color][1])/2, (0.7 + rgb[color][2])/2, (0.7 + rgb[color][3])/2, 0.15}
+        local fillColor = lineColor
+        trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
         table.insert(Ids, nextId)
     end
     return Ids

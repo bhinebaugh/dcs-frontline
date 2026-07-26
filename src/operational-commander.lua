@@ -60,6 +60,7 @@ function OperationalCommander.new(config)
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
     self.visualizer = config.visualizer
+    self.visualizer:initMovementMapper(config.color)
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
@@ -180,7 +181,7 @@ function OperationalCommander:act()
     -- Keep each active objective's map mark in sync with its current status
     if self.visualizer then
         for _, objective in ipairs(self.orderCoordinator.objectives) do
-            self.visualizer:syncObjective(objective, self.color)
+            self.visualizer:syncObjective(objective, self.doctrine, self.color)
         end
     end
 end
@@ -365,6 +366,7 @@ function OperationalCommander:planObjectiveWithDoctrine(objective)
     if not result then return end
 
     if result.objectiveComplete then
+        env.info("*** " .. self.color .. " Ops: OBJECTIVE COMPLETE --------------------")
         objective:markAchieved()
     end
 

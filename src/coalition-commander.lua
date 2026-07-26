@@ -186,9 +186,12 @@ function CoalitionCommander:act()
     table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
     for _, i in ipairs(self.opscoms_to_disband) do
         local opscom = self.opscoms[i]
-        self.visualizer:release("opscom:" .. tostring(opscom))
+        self.visualizer:release("opscom:" .. opscom.name)
+        self.visualizer:release(self.color .. "_movement")
         local survivors = opscom:disband()
         for _, gc in ipairs(survivors) do
+            -- This could be a good point to check residual gc doctrine and orders,
+            -- to see if they are still appropriate or should be removed
             table.insert(self.reserves, gc)
         end
         table.remove(self.opscoms, i)
