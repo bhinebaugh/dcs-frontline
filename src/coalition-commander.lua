@@ -159,6 +159,23 @@ function CoalitionCommander:orient()
 end
 
 function CoalitionCommander:decide()
+    -- Disband completed opscoms (iterate in reverse to safely remove by index)
+    table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
+    for _, i in ipairs(self.opscoms_to_disband) do
+        local opscom = self.opscoms[i]
+        self.visualizer:release("opscom:" .. opscom.name)
+        self.visualizer:release(self.color .. "_movement")
+        local survivors = opscom:disband()
+        for _, gc in ipairs(survivors) do
+            -- This could be a good point to check residual gc doctrine and orders,
+            -- to see if they are still appropriate or should be removed
+            table.insert(self.reserves, gc)
+        end
+        table.remove(self.opscoms, i)
+        env.info(string.format("****** %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
+            self.color, #survivors))
+    end
+
     -- Select groups from reserves by proximity to the pending target
     -- TODO Balance proximity and suitability for type of operation
     self.pending_groups = {}
@@ -182,23 +199,6 @@ function CoalitionCommander:decide()
 end
 
 function CoalitionCommander:act()
-    -- Disband completed opscoms (iterate in reverse to safely remove by index)
-    table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
-    for _, i in ipairs(self.opscoms_to_disband) do
-        local opscom = self.opscoms[i]
-        self.visualizer:release("opscom:" .. opscom.name)
-        self.visualizer:release(self.color .. "_movement")
-        local survivors = opscom:disband()
-        for _, gc in ipairs(survivors) do
-            -- This could be a good point to check residual gc doctrine and orders,
-            -- to see if they are still appropriate or should be removed
-            table.insert(self.reserves, gc)
-        end
-        table.remove(self.opscoms, i)
-        env.info(string.format("****** %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
-            self.color, #survivors))
-    end
-
     -- Create a new opscom if a target and groups are ready
     if self.pending_target and #self.pending_groups > 0 then
         -- Remove assigned groups from reserves
