@@ -39,7 +39,7 @@ local function isOrderChanged(lastOrder, newOrder, commanderStatus)
        math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
         return true
     end
-    if lastOrder.radius ~= newOrder.radius then
+    if lastOrder.proximity ~= newOrder.proximity then
         return true
     end
     return false
@@ -209,7 +209,7 @@ function OperationalCommander:issuePlannedOrders()
             self.lastIssuedOrders[commander.groupName] = {
                 alr = order.alr,
                 position = {x = order.position.x, z = order.position.z},
-                radius = order.radius,
+                proximity = order.proximity,
                 type = order.type,
                 issuedAt = timer.getTime(),
             }
