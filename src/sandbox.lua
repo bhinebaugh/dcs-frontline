@@ -6,88 +6,92 @@ TaskTypes = Constants.taskTypes
 CoalitionCommander = require("coalition-commander")
 ControlZones = require("control-zones")
 GroupCommander = require("group-commander")
+Map = require("map")
 Order = require("order")
 PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
-local blueDefendPosition = coord.LLtoLO(
+BlueDefendPosition = coord.LLtoLO(
     46 + 29/60 + 18/3600,
     38 + 08/60 + 05/3600
 )
 
 -- Known safe rally point for Blue forces
-local bluePatrolPosition = coord.LLtoLO(
+BluePatrolPosition = coord.LLtoLO(
     46 + 28/60 + 26/3600,
     38 + 19/60 + 12/3600
 )
 
 -- Initial objective for Bravo is to reposition to the
 -- Kvemo-Khoshka village at these coordinates:
-local redPatrolPosition = coord.LLtoLO(
+RedPatrolPosition = coord.LLtoLO(
     46 + 33/60 + 23/3600,
     38 + 27/60 + 25/3600
 )
 
 -- Known safe rally point for Red forces
-local redDefendPosition = coord.LLtoLO(
+RedDefendPosition = coord.LLtoLO(
     46 + 32/60 + 58/3600,
     38 + 39/60 + 09/3600
 )
 
-local alpha = ControlZones:spawnGroupAtPoint(
-    "Alpha",
-    blueDefendPosition,
-    "blue",
-    GroundTemplates.blue[2],
-    90
-)
-AlphaCommander = GroupCommander.new("Alpha", alpha)
-
-local arnold = ControlZones:spawnGroupAtPoint(
-    "Arnold",
-    redPatrolPosition,
-    "red",
-    GroundTemplates.red[1],
-    270
-)
-ArnoldCommander = GroupCommander.new("Arnold", arnold)
-
-local benson = ControlZones:spawnGroupAtPoint(
-    "Benson",
-    redDefendPosition,
-    "red",
-    GroundTemplates.red[4],
-    270
-)
-BensonCommander = GroupCommander.new("Benson", benson)
-
 CZ = ControlZones.new(nil, GroundTemplates)
+CZ.map = Map.new()
+
 CcBlue = CoalitionCommander.new(CZ, {color = "blue", groundTemplates = GroundTemplates.blue})
 CcRed = CoalitionCommander.new(CZ, {color = "red", groundTemplates = GroundTemplates.red})
 CZ:addCommander("blue", CcBlue)
 CZ:addCommander("red", CcRed)
 
-local alphaDefenseOrder = Order.new({
-    type = TaskTypes.ASSAULT,
-    position = bluePatrolPosition,
-    alr = AcceptableLevelsOfRisk.MEDIUM
-})
-AlphaCommander:issueOrder(alphaDefenseOrder)
+ControlZones:spawnGroupAtPoint(
+    "Alpha",
+    BlueDefendPosition,
+    "blue",
+    GroundTemplates.blue[2],
+    90
+)
 
-local arnoldDefenseOrder = Order.new({
-    type = TaskTypes.ASSAULT,
-    position = bluePatrolPosition,
-    alr = AcceptableLevelsOfRisk.LOW
-})
-ArnoldCommander:issueOrder(arnoldDefenseOrder)
+ControlZones:spawnGroupAtPoint(
+    "Arnold",
+    RedPatrolPosition,
+    "red",
+    GroundTemplates.red[1],
+    270
+)
+
+ControlZones:spawnGroupAtPoint(
+    "Benson",
+    RedDefendPosition,
+    "red",
+    GroundTemplates.red[4],
+    270
+)
+
+CcBlue:addReserves({"Alpha"})
+CcRed:addReserves({"Arnold", "Benson"})
+AlphaCommander = GroupCommander.getInstance("Alpha")
+ArnoldCommander = GroupCommander.getInstance("Arnold")
+BensonCommander = GroupCommander.getInstance("Benson")
+
+AlphaCommander:issueOrder(Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.MEDIUM
+}))
+
+ArnoldCommander:issueOrder(Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.MEDIUM
+}))
 
 ArnoldDefenseOrder = Order.new({
     type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
     alr = AcceptableLevelsOfRisk.LOW
 })
-
--- BensonCommander:issueOrder(bensonDefenseOrder)
+-- ArnoldCommander:issueOrder(ArnoldDefenseOrder)
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge

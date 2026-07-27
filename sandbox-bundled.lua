@@ -50,88 +50,92 @@ TaskTypes = Constants.taskTypes
 CoalitionCommander = require("coalition-commander")
 ControlZones = require("control-zones")
 GroupCommander = require("group-commander")
+Map = require("map")
 Order = require("order")
 PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
-local blueDefendPosition = coord.LLtoLO(
+BlueDefendPosition = coord.LLtoLO(
     46 + 29/60 + 18/3600,
     38 + 08/60 + 05/3600
 )
 
 -- Known safe rally point for Blue forces
-local bluePatrolPosition = coord.LLtoLO(
+BluePatrolPosition = coord.LLtoLO(
     46 + 28/60 + 26/3600,
     38 + 19/60 + 12/3600
 )
 
 -- Initial objective for Bravo is to reposition to the
 -- Kvemo-Khoshka village at these coordinates:
-local redPatrolPosition = coord.LLtoLO(
+RedPatrolPosition = coord.LLtoLO(
     46 + 33/60 + 23/3600,
     38 + 27/60 + 25/3600
 )
 
 -- Known safe rally point for Red forces
-local redDefendPosition = coord.LLtoLO(
+RedDefendPosition = coord.LLtoLO(
     46 + 32/60 + 58/3600,
     38 + 39/60 + 09/3600
 )
 
-local alpha = ControlZones:spawnGroupAtPoint(
-    "Alpha",
-    blueDefendPosition,
-    "blue",
-    GroundTemplates.blue[2],
-    90
-)
-AlphaCommander = GroupCommander.new("Alpha", alpha)
-
-local arnold = ControlZones:spawnGroupAtPoint(
-    "Arnold",
-    redPatrolPosition,
-    "red",
-    GroundTemplates.red[1],
-    270
-)
-ArnoldCommander = GroupCommander.new("Arnold", arnold)
-
-local benson = ControlZones:spawnGroupAtPoint(
-    "Benson",
-    redDefendPosition,
-    "red",
-    GroundTemplates.red[4],
-    270
-)
-BensonCommander = GroupCommander.new("Benson", benson)
-
 CZ = ControlZones.new(nil, GroundTemplates)
+CZ.map = Map.new()
+
 CcBlue = CoalitionCommander.new(CZ, {color = "blue", groundTemplates = GroundTemplates.blue})
 CcRed = CoalitionCommander.new(CZ, {color = "red", groundTemplates = GroundTemplates.red})
 CZ:addCommander("blue", CcBlue)
 CZ:addCommander("red", CcRed)
 
-local alphaDefenseOrder = Order.new({
-    type = TaskTypes.ASSAULT,
-    position = bluePatrolPosition,
-    alr = AcceptableLevelsOfRisk.MEDIUM
-})
-AlphaCommander:issueOrder(alphaDefenseOrder)
+ControlZones:spawnGroupAtPoint(
+    "Alpha",
+    BlueDefendPosition,
+    "blue",
+    GroundTemplates.blue[2],
+    90
+)
 
-local arnoldDefenseOrder = Order.new({
-    type = TaskTypes.ASSAULT,
-    position = bluePatrolPosition,
-    alr = AcceptableLevelsOfRisk.LOW
-})
-ArnoldCommander:issueOrder(arnoldDefenseOrder)
+ControlZones:spawnGroupAtPoint(
+    "Arnold",
+    RedPatrolPosition,
+    "red",
+    GroundTemplates.red[1],
+    270
+)
+
+ControlZones:spawnGroupAtPoint(
+    "Benson",
+    RedDefendPosition,
+    "red",
+    GroundTemplates.red[4],
+    270
+)
+
+CcBlue:addReserves({"Alpha"})
+CcRed:addReserves({"Arnold", "Benson"})
+AlphaCommander = GroupCommander.getInstance("Alpha")
+ArnoldCommander = GroupCommander.getInstance("Arnold")
+BensonCommander = GroupCommander.getInstance("Benson")
+
+AlphaCommander:issueOrder(Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.MEDIUM
+}))
+
+ArnoldCommander:issueOrder(Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.MEDIUM
+}))
 
 ArnoldDefenseOrder = Order.new({
     type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
     alr = AcceptableLevelsOfRisk.LOW
 })
-
--- BensonCommander:issueOrder(bensonDefenseOrder)
+-- ArnoldCommander:issueOrder(ArnoldDefenseOrder)
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge
@@ -892,7 +896,7 @@ function Order.new(config)
     
     -- Optional fields with defaults
     self.alr = config.alr or constants.acceptableLevelsOfRisk.MEDIUM
-    self.radius = config.radius or 500
+    self.proximity = config.proximity or 500
     self.deadline = config.deadline       -- nil or timer.getTime() + duration
     self.pushTime = config.pushTime       -- nil or timer.getTime() + calculated rally duration
     self.missionProfile = config.missionProfile or nil
@@ -969,6 +973,230 @@ end
 
 return Order
 
+end)
+__bundle_register("map", function(require, _LOADED, __bundle_register, __bundle_modules)
+local rgb = require("constants").rgb
+local settings = require("settings")
+local Map = {}
+Map.__index = Map
+
+function Map.new()
+    local self = setmetatable({}, Map)
+    self.markerCounter = 5000
+    self.markers = {
+        front = {
+            red = {},
+            blue = {}
+        },
+        zones = {},
+        zoneLabels = {},
+        edges = {},
+    }
+    return self
+end
+
+function Map:getNewMarker()
+    self.markerCounter = self.markerCounter + 1
+    return self.markerCounter
+end
+
+function Map:getVisibility(color, feature)
+    -- Return value will include '0' or '-1' to ensure that map marks are always
+    -- drawn for neutrals (game commander and spectators), regardless of settings
+    if settings.displayToAll[feature] then
+        return {-1}
+    else
+        return {0, color == "red" and 1 or 2}
+    end
+end
+
+function Map:removeMarks(markIds)
+    if not markIds then return end
+    for _, id in pairs(markIds) do
+        trigger.action.removeMark(id)
+    end
+end
+
+function Map:placeMarker(text, color, pt)
+    if not settings.draw.zones then return end
+    local sides = self:getVisibility(color, "zones")
+    local labels = {}
+    for _, side in pairs(sides) do
+        -- local markerId = self:getNewMarker()
+        -- trigger.action.circleToAll(side, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+        local labelId = self:getNewMarker()
+        table.insert(labels, labelId)
+        trigger.action.textToAll(side, labelId, pt, {0.7,0,0.7,1}, {0,0,0,0.2}, 15, true, text)
+    end
+    return labels
+end
+
+function Map:drawPolygon(points)
+    local mk = mist.marker.add({
+        pos = points,
+        -- name = "",
+        markType = "freeform", --7
+        markForCoa = -1, --?
+        color = {1,1,0,0.5},
+        fillColor = {1,1,0,0.2},
+        lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
+    })
+    return mk.markId --mist helper returns whole table; we want ID only
+end
+
+function Map:drawZone(name, color, pt)
+    if not settings.draw.zones then return end
+    if not self.markers.zones[name] then self.markers.zones[name] = {} end
+    local sides = self:getVisibility(color, "zones")
+    for _, side in pairs(sides) do
+        local zoneId = self:getNewMarker()
+        table.insert(self.markers.zones[name], zoneId)
+        trigger.action.circleToAll(side, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+        local labelId = self:getNewMarker()
+        trigger.action.textToAll(side, labelId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, name)
+    end
+end
+
+function Map:redrawZone(name, color, point)
+    if not settings.draw.zones then return end
+    if settings.displayToAll.zones then -- Change fill color of existing marker
+        for _, id in pairs(self.markers.zones[name]) do
+            trigger.action.setMarkupColorFill(id, rgb[color])
+        end
+    else -- Erase markers so new ones can be drawn with appropriate visibility
+        for _, id in pairs(self.markers.zones[name]) do
+            trigger.action.removeMark(id)
+        end
+        self.markers.zones[name] = {}
+        self:drawZone(name, color, point)
+    end
+end
+
+function Map:drawZones(zones)
+    if not settings.draw.zones then return end
+    for name, info in pairs(zones) do
+        self:drawZone(name, info.color, info.point)
+    end
+end
+
+function Map:drawEdges(edges)
+    if not settings.draw.edges then return end
+    for _, edge in pairs(edges) do
+        local lineId = self:getNewMarker()
+        table.insert(self.markers.edges, lineId)
+        trigger.action.lineToAll(-1, lineId, edge.p1, edge.p2, {1,1,0.2,0.1}, 5)
+    end
+end
+
+function Map:drawFrontline(points, color, erasePrevious, isLoop)
+    local OFFSET = 1500
+    -- first erase any existing lines
+    if erasePrevious and self.markers.front[color] then
+        for _, id in pairs(self.markers.front[color]) do
+            trigger.action.removeMark(id)
+        end
+        self.markers.front[color] = {}
+    end
+
+    --then draw a line for each edge of the current color's front
+    local sides = self:getVisibility(color, "frontlines")
+    local prevPts = {}
+    for _, side in pairs(sides) do
+        local firstPass = true
+        local lineColor = rgb[color]
+        for _, data in pairs(points) do
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
+            local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
+            if firstPass then
+                if not isLoop then
+                    prevPts[1] = mist.projectPoint(point1, OFFSET, data.heading - math.pi/2)
+                    prevPts[2] = mist.projectPoint(point2, OFFSET, data.heading - math.pi/2)
+                    trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                    trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+                end
+            else
+                trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+            end
+            prevPts[1] = point1
+            prevPts[2] = point2
+            firstPass = false
+        end
+        if not isLoop then
+            local finalPt1 = mist.projectPoint(prevPts[1], OFFSET, points[#points].heading + math.pi/2)
+            local finalPt2 = mist.projectPoint(prevPts[2], OFFSET, points[#points].heading + math.pi/2)
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            trigger.action.lineToAll(side, lineId1, prevPts[1], finalPt1, lineColor, 1)
+            trigger.action.lineToAll(side, lineId2, prevPts[2], finalPt2, lineColor, 1)
+        end
+    end
+end
+
+function Map:drawDirective(originPoint, targetPoint, color)
+    if not settings.draw.directives then return end
+    local Ids = {}
+    local sides = self:getVisibility(color, "directives")
+    for _, side in pairs(sides) do
+        local nextId = self:getNewMarker()
+        local lineColor = {1,1,0.2,0.2}
+        -- lineColor[4] = 0.2
+        lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.2}
+        local fillColor = lineColor
+        local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
+        local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
+        local distance = 1000
+        local lineStart = mist.projectPoint(originPoint, distance+200, heading)
+        local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
+        trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
+        table.insert(Ids, nextId)
+    end
+    return Ids
+end
+function Map:drawArrow(originPoint, targetPoint, color)
+    if not settings.draw.directives then return end
+    local Ids = {}
+    local sides = self:getVisibility(color, "directives")
+    for _, side in pairs(sides) do
+        local nextId = self:getNewMarker()
+        -- lineColor = {0.7,0.7,0.7,0.15}
+        -- local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.08}
+        local lineColor = {(0.7 + rgb[color][1])/2, (0.7 + rgb[color][2])/2, (0.7 + rgb[color][3])/2, 0.15}
+        local fillColor = lineColor
+        trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
+        table.insert(Ids, nextId)
+    end
+    return Ids
+end
+
+return Map
+end)
+__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
+local settings = {
+    draw = {
+        edges = true,
+        zones = true,
+        frontlines = true,
+        directives = true,
+        groupOrders = true,
+        objectives = true,
+    },
+    displayToAll = {
+        zones = true,
+        frontlines = true,
+        directives = true,
+        groupOrders = false,
+        objectives = false,
+    }
+}
+
+return settings
 end)
 __bundle_register("group-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
@@ -1047,6 +1275,15 @@ function GroupCommander.new(groupName, config)
     table.insert(GroupCommander.instances, self)
     
     return self
+end
+
+function GroupCommander.getInstance(groupName)
+    for _, instance in ipairs(GroupCommander.instances) do
+        if instance.groupName == groupName then
+            return instance
+        end
+    end
+    return nil
 end
 
 function GroupCommander.getInstances(coalition)
@@ -1191,12 +1428,13 @@ function GroupCommander:buildDecisionContext()
             retreatThreshold = 0.8
         end
 
-        orderHasDeadline = self.orders.expirationTime ~= nil
+        orderHasDeadline = self.orders.deadline ~= nil
         orderIsExpired   = self.orders:isExpired() or false
     end
 
     return {
         groupName        = self.groupName,
+        ownAlr           = self.alr,
         ownPosition      = ownPosition,
         totalUnits       = #self.initialUnitNames,
         initialAmmoCount = self.initialAmmoCount,
@@ -3604,6 +3842,8 @@ __bundle_register("doctrines.tactical.defensive-doctrine", function(require, _LO
 -- This is a conservative defensive strategy for units not actively committed to objectives.
 
 local constants = require("constants")
+local acceptableLevelsOfRisk = constants.acceptableLevelsOfRisk
+
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local Doctrine = require("doctrine")
 local SpatialAgent = require("spatial-agent")
@@ -3614,11 +3854,30 @@ local DefensiveDoctrine = {}
 setmetatable(DefensiveDoctrine, {__index = Doctrine})
 DefensiveDoctrine.__index = DefensiveDoctrine
 
+local alrThreshold = {
+    [acceptableLevelsOfRisk.LOW] = {
+        advance = 1.0,
+        hold = 0.5,
+        retreat = 0.3,
+    },
+    [acceptableLevelsOfRisk.MEDIUM] = {
+        advance = 0.8,
+        hold = 0.6,
+        retreat = 0.5,
+    },
+    [acceptableLevelsOfRisk.HIGH] = {
+        advance = 0.6,
+        hold = 0.9,
+        retreat = 0.7,
+    }
+}
+
 function DefensiveDoctrine.new(commanderName)
     local self = Doctrine.new("Defensive", commanderName)
     setmetatable(self, DefensiveDoctrine)
     self.basePosition = nil
 
+    self:registerPhase("Position", DefensiveDoctrine.positionPhase)
     self:registerPhase("Hold", DefensiveDoctrine.holdPhase)
     self:registerPhase("Retreat", DefensiveDoctrine.retreatPhase)
     self:registerPhase("Advance", DefensiveDoctrine.advancePhase)
@@ -3642,7 +3901,9 @@ function DefensiveDoctrine:considerRetreat(context)
     local defenseRadius = context.defenseRadius or 4000
 
     -- as distance from base approaches max allowed, increase retreat pressure
-    retreatAssessment = retreatAssessment + excursion / defenseRadius
+    if self.currentPhaseName == "Advance" then
+        retreatAssessment = retreatAssessment + excursion / defenseRadius
+    end
 
     -- ammunition
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
@@ -3656,10 +3917,12 @@ function DefensiveDoctrine:considerRetreat(context)
     retreatAssessment = retreatAssessment + attritionRate
 
     -- threat favorability
-    if threat.count > 0 and threat.favorability < 1.0 then
-        retreatAssessment = retreatAssessment + (1 - threat.favorability)
-    else
-        retreatAssessment = retreatAssessment - (1 / threat.favorability)
+    if threat.count > 0 then
+        if threat.favorability < 1.0 then
+            retreatAssessment = retreatAssessment + (1 - threat.favorability) * 2
+        else
+            retreatAssessment = retreatAssessment - (1 / threat.favorability)
+        end
     end
 
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
@@ -3686,15 +3949,13 @@ function DefensiveDoctrine:considerAdvance(context)
     local defenseRadius = context.defenseRadius or 4000
 
     -- decrease advance likelihood as group gets farther from base position
-    advanceAssessment = advanceAssessment - excursion / defenseRadius
+    if self.currentPhaseName == "Advance" then
+        advanceAssessment = advanceAssessment - excursion / defenseRadius
+    end
 
     -- threat favorability
     if threat.count > 0 then
-        if threat.favorability < 1.0 then
-            advanceAssessment = advanceAssessment + threat.favorability
-        else
-            advanceAssessment = advanceAssessment + threat.favorability / 2
-        end
+        advanceAssessment = advanceAssessment + threat.favorability / 2
     end
 
     -- attrition rate
@@ -3709,17 +3970,53 @@ function DefensiveDoctrine:considerAdvance(context)
     return advanceAssessment
 end
 
-function DefensiveDoctrine:holdPhase(context)
-    local retreatThreshold = 1.0
-    local advanceThreshold = 0.7
+function DefensiveDoctrine:positionPhase(context)
+    local alr = context.orderAlr or context.ownAlr
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
+    local distanceToDestination = SpatialAgent.distance2D(ownPosition, context.orderPosition or self.basePosition)
 
-    if self:considerRetreat(context) >= retreatThreshold then
+    local holdThreshold = alrThreshold[alr].hold
+    local retreatThreshold = alrThreshold[alr].retreat
+    local retreatAssessment = self:considerRetreat(context)
+    local advanceAssessment = self:considerAdvance(context)
+
+    if threat.count > 0 then
+        if retreatAssessment >= retreatThreshold then
+            self:changePhase("Retreat")
+        elseif retreatAssessment >= holdThreshold then
+            self:changePhase("Hold")
+        end
+    end
+
+    if distanceToDestination <= 500 then
+        self:changePhase("Hold")
+    end
+
+    return {
+        disposition = dispositionTypes.ADVANCE,
+        destination = context.orderPosition or self.basePosition
+    }
+end
+
+function DefensiveDoctrine:holdPhase(context)
+    local alr = context.orderAlr or context.ownAlr
+    local retreatThreshold = alrThreshold[alr].retreat
+    local advanceThreshold = alrThreshold[alr].advance
+
+    local retreatAssessment = self:considerRetreat(context)
+    local advanceAssessment = self:considerAdvance(context)
+
+    if retreatAssessment >= retreatThreshold then
         self:changePhase("Retreat")
-    elseif self:considerAdvance(context) >= advanceThreshold then
+    elseif advanceAssessment >= advanceThreshold then
         self:changePhase("Advance")
     end
 
-    return {disposition = dispositionTypes.HOLD, destination = nil}
+    return {
+        disposition = dispositionTypes.HOLD,
+        destination = nil
+    }
 end
 
 function DefensiveDoctrine:retreatPhase(context)
@@ -3745,11 +4042,12 @@ function DefensiveDoctrine:retreatPhase(context)
 end
 
 function DefensiveDoctrine:advancePhase(context)
+    local alr = context.orderAlr or context.ownAlr
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    local holdThreshold = 0.5
-    local retreatThreshold = 0.3
+    local holdThreshold = alrThreshold[alr].hold
+    local retreatThreshold = alrThreshold[alr].retreat
     local retreatAssessment = self:considerRetreat(context)
     local standoffDistance = 500
 
@@ -4905,7 +5203,7 @@ function ControlZones:spawnGroupAtPoint(groupName, point, color, template, headi
     local newGroup = mist.dynAdd({ -- mist.dynAddStatic()
         groupName = groupName,
         units = unitSet,
-        country = color == "blue" and "USA" or "Russia",
+        country = color == "blue" and "USA" or "USSR",
         category = "vehicle",
     })
 
@@ -5101,230 +5399,6 @@ return {
     angularDistance = angularDistance
 }
 
-end)
-__bundle_register("map", function(require, _LOADED, __bundle_register, __bundle_modules)
-local rgb = require("constants").rgb
-local settings = require("settings")
-local Map = {}
-Map.__index = Map
-
-function Map.new()
-    local self = setmetatable({}, Map)
-    self.markerCounter = 5000
-    self.markers = {
-        front = {
-            red = {},
-            blue = {}
-        },
-        zones = {},
-        zoneLabels = {},
-        edges = {},
-    }
-    return self
-end
-
-function Map:getNewMarker()
-    self.markerCounter = self.markerCounter + 1
-    return self.markerCounter
-end
-
-function Map:getVisibility(color, feature)
-    -- Return value will include '0' or '-1' to ensure that map marks are always
-    -- drawn for neutrals (game commander and spectators), regardless of settings
-    if settings.displayToAll[feature] then
-        return {-1}
-    else
-        return {0, color == "red" and 1 or 2}
-    end
-end
-
-function Map:removeMarks(markIds)
-    if not markIds then return end
-    for _, id in pairs(markIds) do
-        trigger.action.removeMark(id)
-    end
-end
-
-function Map:placeMarker(text, color, pt)
-    if not settings.draw.zones then return end
-    local sides = self:getVisibility(color, "zones")
-    local labels = {}
-    for _, side in pairs(sides) do
-        -- local markerId = self:getNewMarker()
-        -- trigger.action.circleToAll(side, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
-        local labelId = self:getNewMarker()
-        table.insert(labels, labelId)
-        trigger.action.textToAll(side, labelId, pt, {0.7,0,0.7,1}, {0,0,0,0.2}, 15, true, text)
-    end
-    return labels
-end
-
-function Map:drawPolygon(points)
-    local mk = mist.marker.add({
-        pos = points,
-        -- name = "",
-        markType = "freeform", --7
-        markForCoa = -1, --?
-        color = {1,1,0,0.5},
-        fillColor = {1,1,0,0.2},
-        lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
-    })
-    return mk.markId --mist helper returns whole table; we want ID only
-end
-
-function Map:drawZone(name, color, pt)
-    if not settings.draw.zones then return end
-    if not self.markers.zones[name] then self.markers.zones[name] = {} end
-    local sides = self:getVisibility(color, "zones")
-    for _, side in pairs(sides) do
-        local zoneId = self:getNewMarker()
-        table.insert(self.markers.zones[name], zoneId)
-        trigger.action.circleToAll(side, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
-        local labelId = self:getNewMarker()
-        trigger.action.textToAll(side, labelId, pt, {1,1,0,0.5}, {0,0,0,0}, 13, true, name)
-    end
-end
-
-function Map:redrawZone(name, color, point)
-    if not settings.draw.zones then return end
-    if settings.displayToAll.zones then -- Change fill color of existing marker
-        for _, id in pairs(self.markers.zones[name]) do
-            trigger.action.setMarkupColorFill(id, rgb[color])
-        end
-    else -- Erase markers so new ones can be drawn with appropriate visibility
-        for _, id in pairs(self.markers.zones[name]) do
-            trigger.action.removeMark(id)
-        end
-        self.markers.zones[name] = {}
-        self:drawZone(name, color, point)
-    end
-end
-
-function Map:drawZones(zones)
-    if not settings.draw.zones then return end
-    for name, info in pairs(zones) do
-        self:drawZone(name, info.color, info.point)
-    end
-end
-
-function Map:drawEdges(edges)
-    if not settings.draw.edges then return end
-    for _, edge in pairs(edges) do
-        local lineId = self:getNewMarker()
-        table.insert(self.markers.edges, lineId)
-        trigger.action.lineToAll(-1, lineId, edge.p1, edge.p2, {1,1,0.2,0.1}, 5)
-    end
-end
-
-function Map:drawFrontline(points, color, erasePrevious, isLoop)
-    local OFFSET = 1500
-    -- first erase any existing lines
-    if erasePrevious and self.markers.front[color] then
-        for _, id in pairs(self.markers.front[color]) do
-            trigger.action.removeMark(id)
-        end
-        self.markers.front[color] = {}
-    end
-
-    --then draw a line for each edge of the current color's front
-    local sides = self:getVisibility(color, "frontlines")
-    local prevPts = {}
-    for _, side in pairs(sides) do
-        local firstPass = true
-        local lineColor = rgb[color]
-        for _, data in pairs(points) do
-            local lineId1 = self:getNewMarker()
-            local lineId2 = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId1)
-            table.insert(self.markers.front[color], lineId2)
-            local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
-            local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
-            if firstPass then
-                if not isLoop then
-                    prevPts[1] = mist.projectPoint(point1, OFFSET, data.heading - math.pi/2)
-                    prevPts[2] = mist.projectPoint(point2, OFFSET, data.heading - math.pi/2)
-                    trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
-                    trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
-                end
-            else
-                trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
-                trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
-            end
-            prevPts[1] = point1
-            prevPts[2] = point2
-            firstPass = false
-        end
-        if not isLoop then
-            local finalPt1 = mist.projectPoint(prevPts[1], OFFSET, points[#points].heading + math.pi/2)
-            local finalPt2 = mist.projectPoint(prevPts[2], OFFSET, points[#points].heading + math.pi/2)
-            local lineId1 = self:getNewMarker()
-            local lineId2 = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId1)
-            table.insert(self.markers.front[color], lineId2)
-            trigger.action.lineToAll(side, lineId1, prevPts[1], finalPt1, lineColor, 1)
-            trigger.action.lineToAll(side, lineId2, prevPts[2], finalPt2, lineColor, 1)
-        end
-    end
-end
-
-function Map:drawDirective(originPoint, targetPoint, color)
-    if not settings.draw.directives then return end
-    local Ids = {}
-    local sides = self:getVisibility(color, "directives")
-    for _, side in pairs(sides) do
-        local nextId = self:getNewMarker()
-        local lineColor = {1,1,0.2,0.2}
-        -- lineColor[4] = 0.2
-        lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.2}
-        local fillColor = lineColor
-        local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
-        local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-        local distance = 1000
-        local lineStart = mist.projectPoint(originPoint, distance+200, heading)
-        local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
-        trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
-        table.insert(Ids, nextId)
-    end
-    return Ids
-end
-function Map:drawArrow(originPoint, targetPoint, color)
-    if not settings.draw.directives then return end
-    local Ids = {}
-    local sides = self:getVisibility(color, "directives")
-    for _, side in pairs(sides) do
-        local nextId = self:getNewMarker()
-        -- lineColor = {0.7,0.7,0.7,0.15}
-        -- local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.08}
-        local lineColor = {(0.7 + rgb[color][1])/2, (0.7 + rgb[color][2])/2, (0.7 + rgb[color][3])/2, 0.15}
-        local fillColor = lineColor
-        trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
-        table.insert(Ids, nextId)
-    end
-    return Ids
-end
-
-return Map
-end)
-__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
-local settings = {
-    draw = {
-        edges = true,
-        zones = true,
-        frontlines = true,
-        directives = true,
-        groupOrders = true,
-        objectives = true,
-    },
-    displayToAll = {
-        zones = true,
-        frontlines = true,
-        directives = true,
-        groupOrders = false,
-        objectives = false,
-    }
-}
-
-return settings
 end)
 __bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- aka Strategic Commander
@@ -6013,7 +6087,7 @@ local function isOrderChanged(lastOrder, newOrder, commanderStatus)
        math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
         return true
     end
-    if lastOrder.radius ~= newOrder.radius then
+    if lastOrder.proximity ~= newOrder.proximity then
         return true
     end
     return false
@@ -6183,7 +6257,7 @@ function OperationalCommander:issuePlannedOrders()
             self.lastIssuedOrders[commander.groupName] = {
                 alr = order.alr,
                 position = {x = order.position.x, z = order.position.z},
-                radius = order.radius,
+                proximity = order.proximity,
                 type = order.type,
                 issuedAt = timer.getTime(),
             }

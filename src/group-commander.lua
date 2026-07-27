@@ -76,6 +76,15 @@ function GroupCommander.new(groupName, config)
     return self
 end
 
+function GroupCommander.getInstance(groupName)
+    for _, instance in ipairs(GroupCommander.instances) do
+        if instance.groupName == groupName then
+            return instance
+        end
+    end
+    return nil
+end
+
 function GroupCommander.getInstances(coalition)
     if not coalition then
         return GroupCommander.instances
@@ -218,12 +227,13 @@ function GroupCommander:buildDecisionContext()
             retreatThreshold = 0.8
         end
 
-        orderHasDeadline = self.orders.expirationTime ~= nil
+        orderHasDeadline = self.orders.deadline ~= nil
         orderIsExpired   = self.orders:isExpired() or false
     end
 
     return {
         groupName        = self.groupName,
+        ownAlr           = self.alr,
         ownPosition      = ownPosition,
         totalUnits       = #self.initialUnitNames,
         initialAmmoCount = self.initialAmmoCount,

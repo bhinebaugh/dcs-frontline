@@ -9,6 +9,8 @@
 -- This is a conservative defensive strategy for units not actively committed to objectives.
 
 local constants = require("constants")
+local acceptableLevelsOfRisk = constants.acceptableLevelsOfRisk
+
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local Doctrine = require("doctrine")
 local SpatialAgent = require("spatial-agent")
@@ -19,11 +21,30 @@ local DefensiveDoctrine = {}
 setmetatable(DefensiveDoctrine, {__index = Doctrine})
 DefensiveDoctrine.__index = DefensiveDoctrine
 
+local alrThreshold = {
+    [acceptableLevelsOfRisk.LOW] = {
+        advance = 1.0,
+        hold = 0.5,
+        retreat = 0.3,
+    },
+    [acceptableLevelsOfRisk.MEDIUM] = {
+        advance = 0.8,
+        hold = 0.6,
+        retreat = 0.5,
+    },
+    [acceptableLevelsOfRisk.HIGH] = {
+        advance = 0.6,
+        hold = 0.9,
+        retreat = 0.7,
+    }
+}
+
 function DefensiveDoctrine.new(commanderName)
     local self = Doctrine.new("Defensive", commanderName)
     setmetatable(self, DefensiveDoctrine)
     self.basePosition = nil
 
+    self:registerPhase("Position", DefensiveDoctrine.positionPhase)
     self:registerPhase("Hold", DefensiveDoctrine.holdPhase)
     self:registerPhase("Retreat", DefensiveDoctrine.retreatPhase)
     self:registerPhase("Advance", DefensiveDoctrine.advancePhase)
@@ -47,7 +68,9 @@ function DefensiveDoctrine:considerRetreat(context)
     local defenseRadius = context.defenseRadius or 4000
 
     -- as distance from base approaches max allowed, increase retreat pressure
-    retreatAssessment = retreatAssessment + excursion / defenseRadius
+    if self.currentPhaseName == "Advance" then
+        retreatAssessment = retreatAssessment + excursion / defenseRadius
+    end
 
     -- ammunition
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
@@ -61,10 +84,12 @@ function DefensiveDoctrine:considerRetreat(context)
     retreatAssessment = retreatAssessment + attritionRate
 
     -- threat favorability
-    if threat.count > 0 and threat.favorability < 1.0 then
-        retreatAssessment = retreatAssessment + (1 - threat.favorability)
-    else
-        retreatAssessment = retreatAssessment - (1 / threat.favorability)
+    if threat.count > 0 then
+        if threat.favorability < 1.0 then
+            retreatAssessment = retreatAssessment + (1 - threat.favorability) * 2
+        else
+            retreatAssessment = retreatAssessment - (1 / threat.favorability)
+        end
     end
 
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
@@ -91,15 +116,13 @@ function DefensiveDoctrine:considerAdvance(context)
     local defenseRadius = context.defenseRadius or 4000
 
     -- decrease advance likelihood as group gets farther from base position
-    advanceAssessment = advanceAssessment - excursion / defenseRadius
+    if self.currentPhaseName == "Advance" then
+        advanceAssessment = advanceAssessment - excursion / defenseRadius
+    end
 
     -- threat favorability
     if threat.count > 0 then
-        if threat.favorability < 1.0 then
-            advanceAssessment = advanceAssessment + threat.favorability
-        else
-            advanceAssessment = advanceAssessment + threat.favorability / 2
-        end
+        advanceAssessment = advanceAssessment + threat.favorability / 2
     end
 
     -- attrition rate
@@ -114,17 +137,53 @@ function DefensiveDoctrine:considerAdvance(context)
     return advanceAssessment
 end
 
-function DefensiveDoctrine:holdPhase(context)
-    local retreatThreshold = 1.0
-    local advanceThreshold = 0.7
+function DefensiveDoctrine:positionPhase(context)
+    local alr = context.orderAlr or context.ownAlr
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
+    local distanceToDestination = SpatialAgent.distance2D(ownPosition, context.orderPosition or self.basePosition)
 
-    if self:considerRetreat(context) >= retreatThreshold then
+    local holdThreshold = alrThreshold[alr].hold
+    local retreatThreshold = alrThreshold[alr].retreat
+    local retreatAssessment = self:considerRetreat(context)
+    local advanceAssessment = self:considerAdvance(context)
+
+    if threat.count > 0 then
+        if retreatAssessment >= retreatThreshold then
+            self:changePhase("Retreat")
+        elseif retreatAssessment >= holdThreshold then
+            self:changePhase("Hold")
+        end
+    end
+
+    if distanceToDestination <= 500 then
+        self:changePhase("Hold")
+    end
+
+    return {
+        disposition = dispositionTypes.ADVANCE,
+        destination = context.orderPosition or self.basePosition
+    }
+end
+
+function DefensiveDoctrine:holdPhase(context)
+    local alr = context.orderAlr or context.ownAlr
+    local retreatThreshold = alrThreshold[alr].retreat
+    local advanceThreshold = alrThreshold[alr].advance
+
+    local retreatAssessment = self:considerRetreat(context)
+    local advanceAssessment = self:considerAdvance(context)
+
+    if retreatAssessment >= retreatThreshold then
         self:changePhase("Retreat")
-    elseif self:considerAdvance(context) >= advanceThreshold then
+    elseif advanceAssessment >= advanceThreshold then
         self:changePhase("Advance")
     end
 
-    return {disposition = dispositionTypes.HOLD, destination = nil}
+    return {
+        disposition = dispositionTypes.HOLD,
+        destination = nil
+    }
 end
 
 function DefensiveDoctrine:retreatPhase(context)
@@ -150,11 +209,12 @@ function DefensiveDoctrine:retreatPhase(context)
 end
 
 function DefensiveDoctrine:advancePhase(context)
+    local alr = context.orderAlr or context.ownAlr
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    local holdThreshold = 0.5
-    local retreatThreshold = 0.3
+    local holdThreshold = alrThreshold[alr].hold
+    local retreatThreshold = alrThreshold[alr].retreat
     local retreatAssessment = self:considerRetreat(context)
     local standoffDistance = 500
 
