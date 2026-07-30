@@ -99,6 +99,10 @@ function GroupCommander.getInstances(coalition)
     return filtered
 end
 
+function GroupCommander:clearOrders()
+    self.orders = nil
+end
+
 function GroupCommander:observe()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then

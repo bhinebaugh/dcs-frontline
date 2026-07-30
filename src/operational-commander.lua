@@ -74,6 +74,10 @@ function OperationalCommander.new(config)
     self.threatMemoryWindow = config.threatMemoryWindow or 120
 
     self.doctrine = nil
+    -- clear out any residual orders to ensure all groups are available for new tasking
+    for _, gc in ipairs(self.groupCommanders) do
+        gc:clearOrders()
+    end
 
     return self
 end
