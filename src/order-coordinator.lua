@@ -36,11 +36,12 @@ end
 function OrderCoordinator:syncOrderStatuses(commanders)
     for _, commander in pairs(commanders) do
         local status = commander:getStatus()
+        local commanderOrder = commander.orders
 
         -- Update all orders assigned to this commander
         for _, objective in ipairs(self.objectives) do
             for _, order in ipairs(objective.orders) do
-                if order.assignedTo == commander.groupName then
+                if order == commanderOrder then
                     if status.orderStatus and status.orderStatus ~= order.status then
                         order.status = status.orderStatus
                         objective.updatedAt = timer.getTime()

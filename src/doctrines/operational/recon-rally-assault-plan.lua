@@ -139,6 +139,7 @@ function ReconRallyAssaultPlan:rallyPhase(context)
 end
 
 function ReconRallyAssaultPlan:assaultPhase(context)
+    local objectiveRadius = context.objectiveRadius
     local statusCounts  = context.statusCounts
     local threatProfile = context.threatProfile
     local threatCenter  = context.threatCenter
@@ -181,7 +182,7 @@ function ReconRallyAssaultPlan:assaultPhase(context)
                 {
                     type           = taskTypes.ASSAULT,
                     position       = assaultPosition,
-                    radius         = self.config.assaultRadius,
+                    proximity      = objectiveRadius or self.config.assaultRadius,
                     alr            = alr.HIGH,
                     count          = context.availableCommanderCount,
                     deadline       = context.objectiveDeadline or (timer.getTime() + 1800),

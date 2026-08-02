@@ -42,132 +42,453 @@ local __bundle_require, __bundle_loaded, __bundle_register, __bundle_modules = (
 	return require, loaded, register, modules
 end)(require)
 __bundle_register("__root", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local groundTemplates = constants.groundTemplates
-local taskTypes = constants.taskTypes
+-- requires MIST to be loaded first
+-- DO SCRIPT FILE: mist.lua
+--[[ This is handy for development, so that you don't need to delete and re-add the individual scripts in the ME when you make a change.  These will not be packaged with the .miz, so you shouldn't use this script loader for packaging .miz files for other machines/users.  You'll want to add each script individually with a DO SCRIPT FILE ]]--
+-- DO SCRIPT: assert(loadfile("C:\\Users\\username\\...\\bundled.lua"))()
 
-local ControlZones = require("control-zones")
-local GroupCommander = require("group-commander")
-local Order = require("order")
-local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
+require("table") --Load modified standard libraries
 
--- Initial objective for Alpha is to defend the bridge
--- near the coordinates:
-local blueDefendPosition = coord.LLtoLO(
-    45 + 32/ 60 + 30.16/3600,
-    38 + 43/60 + 31.31/3600
-)
+local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
+local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
 
--- Known safe rally point for Blue forces
-local bluePatrolPosition = coord.LLtoLO(
-    45 + 30/60 + 46.66/3600,
-    39 + 22/60 + 42.39/3600
-)
+local constants = require("constants") --Load constants
 
--- Initial objective for Bravo is to reposition to the
--- Kvemo-Khoshka village at these coordinates:
-local redPatrolPosition = coord.LLtoLO(
-    45 + 40/60 + 26.28/3600,
-    39 + 28/60 + 52.16/3600
-)
+cz = ControlZones.new(nil, constants.groundTemplates)
 
--- Known safe rally point for Red forces
-local redDefendPosition = coord.LLtoLO(
-    45 + 23/60 + 43.22/3600,
-    39 + 50/60 + 9.02/3600
-)
+cz:setup()
+cz:constructDelaunayIndex()
+cz:precalculateConnections()
 
-local alpha = ControlZones.spawnGroupAtPoint(
-    "Alpha",
-    blueDefendPosition,
-    "blue",
-    groundTemplates.blue[1],
-    90
-)
+cz:assignCompassMaxima()
 
-local arnold = ControlZones.spawnGroupAtPoint(
-    "Arnold",
-    redPatrolPosition,
-    "red",
-    groundTemplates.red[1],
-    270
-)
-local benson = ControlZones.spawnGroupAtPoint(
-    "Benson",
-    redDefendPosition,
-    "red",
-    groundTemplates.red[1],
-    270
-)
-
--- ## General scenario setup
--- 1. Bravo encounters Alpha overlooking the bridge
---   - Should spot them when near Kvemo-Roka villag
---   - at a fork in the road
--- 2. Bravo retreats up either branch of the fork
--- 3. Alpha pursues, but loses sight due to terrain
--- 4. Alpha breaks off pursuit and returns to defend the bridge
--- 5. Bravo reports enemy position to strategic command
--- 6. Strategic command dispatches reinforcements to assist Bravo
--- 7. Bravo attempts to continue to Kvemo-Khoshka village after the threat is removed
+ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
+ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
+cz:addCommander("blue", ccBlue)
+cz:addCommander("red", ccRed)
+cz:kickoff()
 
 end)
-__bundle_register("doctrines.tactical.patrol-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local dispositionTypes = constants.dispositionTypes
-local Doctrine = require("doctrine")
+__bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
+local acceptableLevelsOfRisk = {
+    LOW = "Low", -- Accept favorable engagements only; withdraw to preserve forces
+    MEDIUM = "Medium", -- Accept neutral/favorable engagements; withdraw to avoid heavy losses
+    HIGH = "High", -- Accept major losses to achieve objectives
+}
+
+local dispositionTypes = {
+    ADVANCE = "Advance",
+    ASSAULT = "Assault",
+    DEFEND = "Defend",
+    EVADE = "Evade",
+    HOLD = "Hold Position",
+    RETREAT = "Retreat",
+}
+
+local formationTypes = {
+    OFF_ROAD = "Off Road", -- moving off-road in Column formation 
+    ON_ROAD = "On Road", -- moving on road in Column formation 
+    RANK = "Rank", -- moving off road in Row formation 
+    CONE = "Cone", -- moving in Wedge formation 
+    VEE = "Vee", -- moving in Vee formation 
+    DIAMOND = "Diamond", -- moving in Diamond formation 
+    ECHELONL = "EchelonL", -- moving in Echelon Left formation 
+    ECHELONR = "EchelonR", -- moving in Echelon Right formation  
+}
+local garrisonTemplates = { --static objects
+    red = {"Ural-375"}, --category "Unarmed" {"KAMAZ Truck", "KAMAZ Truck"}, -- {"Ural-375", "Ural-375", "GAZ-66"},
+    blue = {"M 818"}, --category "Unarmed" --{"M 818", "M 818"},
+}
+local groundTemplates = { --frontline, rear, farp
+    red = {
+        -- {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
+        -- {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
+        -- {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
+        -- {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
+        {"BRDM-2", "BRDM-2", "BRDM-2"},
+        {"BTR-80", "BTR-80", "BTR-80", "BTR-80"},
+        {"BMP-2", "BMP-2", "BTR-80", "BTR-80"},
+        {"T-72B", "T-72B", "BTR-60"}
+    },
+    blue = {
+        -- {"Hummer", "M 818", "M 818", "M 818"},
+        -- {"M-113", "Hummer", "M 818", "M 818"},
+        {"M1045 HMMWV TOW",  "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
+        {"M-113", "M-113", "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
+        {"M-2 Bradley", "M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament"},
+        {"M-1 Abrams", "M-1 Abrams", "M-113"}
+    }
+}
+
+local taskTypes = {
+    DEFEND = 1,
+    REINFORCE = 2,
+    RECON = 3,
+    ASSAULT = 4,
+    RALLY = 5,
+    INDIRECT = 6,
+    AA = 7,
+    REPOSITION = 8,
+    PATROL = 9,
+}
+
+local threatStatus = {
+    OBSERVED = "Observed",      -- Currently in LOS
+    SUSPECTED = "Suspected",    -- Not currently visible but believed present
+    UNCONFIRMED = "Unconfirmed", -- Position checked, not found
+    LOST = "Lost",              -- Unconfirmed for >5 minutes, presumed gone
+    ELIMINATED = "Eliminated"   -- Confirmed destroyed (BDA)
+}
+
+local statusTypes = {
+    HOLD = 1,
+    EN_ROUTE = 2,
+}
+
+local orderStatus = {
+    ASSIGNED = "Assigned",       -- Order received, not yet acted upon
+    IN_PROGRESS = "In Progress", -- Actively executing order
+    COMPLETED = "Completed",     -- Successfully completed or deadline reached
+    ABORTED = "Aborted",        -- Mission no longer possible or canceled
+}
+
+local oodaStates = {
+    OBSERVE = "Observe",
+    ORIENT = "Orient",
+    DECIDE = "Decide",
+    ACT = "Act",
+}
+
+local rgb = {
+    blue = {0,0.1,0.8,0.5},
+    red = {0.5,0,0.1,0.5},
+    neutral = {0.1,0.1,0.1,0.5},
+}
+
+local rulesOfEngagement = {
+    WEAPON_FREE = 0, -- Engage targets at will
+    RETURN_FIRE = 3, -- Engage only if fired upon
+    WEAPON_HOLD = 4, -- Hold fire, do not engage
+}
+
+-- Unit classification and threat ratings
+-- Each unit type has threat values against infantry, armor, and air
+local unitClassification = {
+    -- Infantry units (foot soldiers)
+    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
+    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
+    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
+    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 3}},
+    
+    -- Soft-skinned vehicles (unarmored trucks, transport)
+    ["Hummer"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
+    
+    -- Scout vehicles (armed soft-skinned)
+    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    ["M1045 HMMWV TOW"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 7, ["heavy-armor"] = 6, support = 4}},
+    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    ["Tigr_233036"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
+    
+    -- Light armor (APCs, IFVs)
+    ["M-113"] = {category = "light-armor", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
+    ["BMD-1"] = {category = "light-armor", threats = {infantry = 5, ["light-armor"] = 4, ["heavy-armor"] = 2, support = 3}},
+    ["M-2 Bradley"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
+    ["BMP-2"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 2, support = 4}},
+    ["BMP-3"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
+    ["BTR-60"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    ["BTR-80"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
+    
+    -- Heavy armor (MBTs)
+    ["M-1 Abrams"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 8, support = 7}},
+    ["T-72B"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7, support = 7}},
+    ["T-80U"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7.5, support = 7}},
+    
+    -- Support units (AA systems)
+    ["Avenger"] = {category = "support", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
+    ["Vulcan"] = {category = "support", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 2}},
+    ["Strela-10M3"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
+    ["Strela-1 9P31"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
+    
+    -- Support units (Artillery)
+    ["M-109"] = {category = "support", threats = {infantry = 8, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 5}},
+    ["2S9 Nona"] = {category = "support", threats = {infantry = 7, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
+}
+
+return {
+    acceptableLevelsOfRisk = acceptableLevelsOfRisk,
+    dispositionTypes = dispositionTypes,
+    formationTypes = formationTypes,
+    garrisonTemplates = garrisonTemplates,
+    groundTemplates = groundTemplates,
+    orderStatus = orderStatus,
+    rulesOfEngagement = rulesOfEngagement,
+    oodaStates = oodaStates,
+    rgb = rgb,
+    taskTypes = taskTypes,
+    threatStatus = threatStatus,
+    statusTypes = statusTypes,
+    unitClassification = unitClassification
+}
+
+end)
+__bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- aka Strategic Commander
+
+-- local constants = require("constants")
+local GroupCommander = require("group-commander")
+-- local GroupProfiler = require("group-profiler")
+local OperationalCommander = require("operational-commander")
+local OODACommander = require("ooda-commander")
+local Objective = require("objective")
+-- local Order = require("order")
+-- local OrderCoordinator = require("order-coordinator")
+-- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
+local CommanderVisualizer = require("commander-visualizer")
 local SpatialAgent = require("spatial-agent")
-local PatrolDoctrine = {}
-setmetatable(PatrolDoctrine, {__index = Doctrine})
-PatrolDoctrine.__index = PatrolDoctrine
+-- local ThreatTracker = require("threat-tracker")
 
--- Factory method for creating new Doctrine instances
-function PatrolDoctrine.new(commanderName)
-    local self = Doctrine.new("Patrol", commanderName)
-    setmetatable(self, PatrolDoctrine)
+-- local alr = constants.acceptableLevelsOfRisk
+-- local orderStatus = constants.orderStatus
+-- local taskTypes = constants.taskTypes
+-- local dispositionTypes = constants.dispositionTypes
 
-    self:registerPhase("OutboundLeg", PatrolDoctrine.outboundPhase)
-    self:registerPhase("InboundLeg", PatrolDoctrine.inboundPhase)
+local taskTypes = require("constants").taskTypes
+local statusTypes = require("constants").statusTypes
 
+local CoalitionCommander = {}
+setmetatable(CoalitionCommander, {__index = OODACommander})
+CoalitionCommander.__index = CoalitionCommander
+
+local oodaInterval = 45.0 -- seconds
+
+function CoalitionCommander.new(parent, config)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, CoalitionCommander)
+    self.map = parent
+    self.coalition = config.color
+    self.color = config.color
+    self.opponent = config.color == "blue" and "red" or "blue"
+    self.templates = config.groundTemplates
+    self.groupId = 1
+    self.groups = {} -- e.g. name location task
+    self.reserves = {}
+    self.groupsByZone = {}
+    for _, name in pairs(self.map.allZones) do
+        self.groupsByZone[name] = {}
+    end
+    self.groupsByTask = {}
+    for i, j in pairs(taskTypes) do
+        self.groupsByTask[j] = {}
+    end
+    self.opscoms = {}
+    self.visualizer = CommanderVisualizer.new(self.map.map)
+    self.operations = {
+        active = {},
+        history = {},
+        group = nil,
+        status = nil,
+    }
+    -- attitude/aggressiveness = offensive, defensive, cautious, etc
     return self
 end
 
-function PatrolDoctrine:outboundPhase(context)
-    if not self.state.StartingPoint then
-        self.state.StartingPoint = context.ownPosition
-    end
 
-    if not self.state.Destination then
-        self.state.Destination = context.orderPosition or self.state.StartingPoint
-    end
-
-    local distanceToDestination = self.state.Destination and SpatialAgent.distance2D(context.ownPosition, self.state.Destination)
-    env.info(context.groupName .. " is " .. tostring(distanceToDestination) .. " meters from patrol destination")
-    local isAtDestination = distanceToDestination and distanceToDestination < 50
-
-    if isAtDestination then
-        env.info(context.groupName .. " has reached patrol destination, switching to InboundLeg")
-        self:changePhase("InboundLeg")
-        return {disposition = dispositionTypes.HOLD, destination = nil}
-    else
-        return {disposition = dispositionTypes.ADVANCE, destination = self.state.Destination, orderAction = "start"}
+function CoalitionCommander:addReserves(groups)
+    -- self.reserves = groups
+    for _, groupName in pairs(groups) do
+        local gc = GroupCommander.new(groupName, {
+            color = self.color,
+            visualizer = self.visualizer,
+        })
+        table.insert(self.reserves, gc)
     end
 end
 
-function PatrolDoctrine:inboundPhase(context)
-    local isAtStart = self.state.StartingPoint and SpatialAgent.distance2D(context.ownPosition, self.state.StartingPoint) < 50
+-- DEPRECATED
+-- A preliminary phase to allow commander to choose group templates for all front zones
+-- (random for now, TODO apply some strategy to placement of different types)
+function CoalitionCommander:initiate(front)
+    local reinforcements = {}
+    for _, zoneName in pairs(front.zones) do
+        for i = 1, math.random(2) do
+            local r = math.random(#self.templates)
+            local group = self.templates[r]
+            local groupName = zoneName.."-"..self:getNewGroupId()
+    
+            local gc = GroupCommander.new(groupName, {
+                color = self.color,
+                visualizer = self.visualizer,
+            })
+            table.insert(self.reserves, gc)
 
-    if isAtStart then
-        env.info(context.groupName .. " has returned to starting point, switching to OutboundLeg")
-        self:changePhase("OutboundLeg")
-        return {disposition = dispositionTypes.HOLD, destination = nil}
-    else
-        return {disposition = dispositionTypes.ADVANCE, destination = self.state.StartingPoint}
+            local groupData = {
+                groupName = groupName,
+                template = group
+            }
+            table.insert(reinforcements[zoneName], groupData)
+        end
+    end
+
+    return reinforcements
+end
+
+-- NOTE: Doctrine usage example:
+-- To assign a specific strategy to an objective, create the Doctrine and assign it:
+--   local objective = Objective.new({...})
+--   objective.doctrine = ReconRallyAssaultPlan.new(commanderName, config)
+-- The OperationalCommander will use the Doctrine in its DECIDE phase.
+-- If no Doctrine is assigned, it defaults to ReconRallyAssaultPlan.
+function CoalitionCommander:observe()
+    -- Prune destroyed groups from reserves
+    local surviving = {}
+    for _, gc in ipairs(self.reserves) do
+        if gc.destroyed then
+            self.visualizer:release("group:" .. gc.groupName)
+        else
+            table.insert(surviving, gc)
+        end
+    end
+    self.reserves = surviving
+
+    env.info(string.format("****** %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | opscoms=%d",
+        self.color,
+        #self.map:getCluster("blue"),
+        #self.map:getCluster("red"),
+        #self.reserves,
+        #self.opscoms))
+end
+
+function CoalitionCommander:orient()
+    -- TODO compare current state to previous to extract trends (force strength, territorial control, etc)
+    -- Consider observed threats and stalled operations / requests for reinforcements
+    -- Identify opscoms whose objective is complete or failed
+    self.opscoms_to_disband = {}
+    local activeCount = 0
+    for i, opscom in ipairs(self.opscoms) do
+        local objective = opscom.orderCoordinator.objectives[1]
+        if objective and objective:isComplete() then
+            table.insert(self.opscoms_to_disband, i)
+        else
+            activeCount = activeCount + 1
+        end
+    end
+
+    -- If no active opscoms will remain after disbanding, and reserves are available, find a new target
+    -- TODO Select target based on knowledge of enemy strength or outcome of past operations
+    self.pending_target = nil
+    if activeCount == 0 and #self.reserves > 0 then
+        local ownZones = self.map:getCluster(self.color)
+        for _, zoneName in ipairs(ownZones) do
+            local enemyNeighbors = self.map:getNeighbors(zoneName, self.opponent, true)
+            if enemyNeighbors and #enemyNeighbors > 0 then
+                local target = enemyNeighbors[math.random(#enemyNeighbors)]
+                self.pending_target = {
+                    zoneName = target,
+                    position = self.map:getZone(target).point,
+                }
+                break
+            end
+        end
     end
 end
 
+function CoalitionCommander:decide()
+    -- Disband completed opscoms (iterate in reverse to safely remove by index)
+    table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
+    for _, i in ipairs(self.opscoms_to_disband) do
+        local opscom = self.opscoms[i]
+        self.visualizer:release("opscom:" .. opscom.name)
+        self.visualizer:release(self.color .. "_movement")
+        local survivors = opscom:disband()
+        for _, gc in ipairs(survivors) do
+            -- This could be a good point to check residual gc doctrine and orders,
+            -- to see if they are still appropriate or should be removed
+            table.insert(self.reserves, gc)
+        end
+        table.remove(self.opscoms, i)
+        env.info(string.format("****** %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
+            self.color, #survivors))
+    end
 
-return PatrolDoctrine
+    -- Select groups from reserves by proximity to the pending target
+    -- TODO Balance proximity and suitability for type of operation
+    self.pending_groups = {}
+    if self.pending_target then
+        local maxGroups = 3
+        local candidates = {}
+        for _, gc in ipairs(self.reserves) do
+            local status = gc:getStatus()
+            if status.position then
+                table.insert(candidates, {
+                    gc = gc,
+                    dist = SpatialAgent.distance2D(status.position, self.pending_target.position),
+                })
+            end
+        end
+        table.sort(candidates, function(a, b) return a.dist < b.dist end)
+        for i = 1, math.min(maxGroups, #candidates) do
+            table.insert(self.pending_groups, candidates[i].gc)
+        end
+    end
+end
+
+function CoalitionCommander:act()
+    -- Create a new opscom if a target and groups are ready
+    if self.pending_target and #self.pending_groups > 0 then
+        -- Remove assigned groups from reserves
+        for _, gc in ipairs(self.pending_groups) do
+            for i, reserveGc in ipairs(self.reserves) do
+                if reserveGc == gc then
+                    table.remove(self.reserves, i)
+                    break
+                end
+            end
+        end
+
+        local opscom = OperationalCommander.new({
+            color = self.color,
+            groupCommanders = self.pending_groups,
+            visualizer = self.visualizer,
+        })
+        opscom.orderCoordinator.objectives = {
+            Objective.new({
+                type = taskTypes.ASSAULT,
+                position = self.pending_target.position,
+                radius = 500,
+            })
+        }
+        table.insert(self.opscoms, opscom)
+        env.info(string.format("****** %s StratCom ACT: created opscom → targeting %s with %d groups",
+            self.color, self.pending_target.zoneName, #self.pending_groups))
+        -- draw polygon around units and directive arrow at creation
+        self.visualizer:syncOpscom(opscom, self.color)
+    end
+
+    -- Keep each active opscom's outline/directive marks in sync with current tasking
+    -- for _, opscom in ipairs(self.opscoms) do
+    --     self.visualizer:syncOpscom(opscom, self.color)
+    -- end
+end
+
+
+-- ============================================================================
+-- HELPER METHODS
+-- ============================================================================
+
+function CoalitionCommander:getNewGroupId()
+    self.groupId = self.groupId + 1
+    return self.groupId
+end
+
+return CoalitionCommander
 
 end)
 __bundle_register("spatial-agent", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -604,6 +925,1863 @@ end
 return SpatialAgent
 
 end)
+__bundle_register("commander-visualizer", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local settings = require("settings")
+local rgb = constants.rgb
+local normalizeAngle = require("helpers").normalizeAngle --Load helper functions
+local angularDistance = require("helpers").angularDistance --Load helper functions
+
+local taskTypeNames = {}
+for name, value in pairs(constants.taskTypes) do
+    taskTypeNames[value] = name
+end
+
+-- Reconciles commander state (orders, dispositions, objectives, opscom tasking)
+-- onto persistent map marks. Owns a registry of {signature, markIds} keyed by a
+-- stable string per drawable thing, so unchanged state is a no-op and changed
+-- state erases the old marks before drawing new ones.
+local CommanderVisualizer = {}
+CommanderVisualizer.__index = CommanderVisualizer
+
+function CommanderVisualizer.new(map)
+    local self = setmetatable({}, CommanderVisualizer)
+    self.map = map
+    self.registry = {}
+    return self
+end
+
+-- Draw/update the marks for `key` only if `signature` differs from what's
+-- currently registered. `drawFn` is called (with no args) only when a redraw
+-- is needed, and must return a list of mark ids.
+function CommanderVisualizer:upsert(key, signature, drawFn)
+    local entry = self.registry[key]
+    if entry and entry.signature == signature then
+        return
+    end
+    if entry then
+        self.map:removeMarks(entry.markIds)
+    end
+    local markIds = drawFn() or {}
+    self.registry[key] = { signature = signature, markIds = markIds }
+end
+
+-- Erase any marks registered for `key`, if present.
+function CommanderVisualizer:release(key)
+    local entry = self.registry[key]
+    if not entry then return end
+    self.map:removeMarks(entry.markIds)
+    self.registry[key] = nil
+end
+
+-- Draw/update a label at a group's position showing its current order type
+-- and disposition, or release the label if the group has no active order.
+function CommanderVisualizer:syncGroupOrder(gc, color)
+    local key = "group:" .. gc.groupName
+
+    if not gc.orders then
+        self:release(key)
+        return
+    end
+
+    local position = gc:getOwnPosition()
+    if not position then
+        self:release(key)
+        return
+    end
+
+    local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
+    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    local threatText = "" .. gc.threatAssessment.count .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10
+    -- local text = gc.groupName .. "\n" .. groupDoctrineName .. "\n" .. orderTypeName
+    local text = gc.groupName .. "\n" .. groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]\n" .. threatText
+    local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
+    local signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatText, roundedPos}, "|")
+
+    self:upsert(key, signature, function()
+        if not settings.draw.groupOrders then return {} end
+        local markIds = {}
+        local sides = self.map:getVisibility(color, "groupOrders")
+        for _, side in pairs(sides) do
+            local labelId = self.map:getNewMarker()
+            table.insert(markIds, labelId)
+            trigger.action.textToAll(side, labelId, mist.projectPoint(position, 100, math.pi), {1,1,1,0.8}, {0,0,0,0.3}, 12, true, text)
+        end
+        return markIds
+    end)
+end
+
+function CommanderVisualizer:initMovementMapper(color)
+    -- create key that will collect mark ids for all group movement arrows for current objective
+    local key = color .. "_movement"
+
+    -- initial entry is empty
+    if not self.registry[key] then
+        self.registry[key] = { signature = "_", markIds = {} }
+    end
+end
+
+-- Draw and persist arrows showing each time a group changes its intended destination 
+function CommanderVisualizer:appendGroupMove(gc, color)
+    local key = color .. "_movement"
+    local entry = self.registry[key]
+    if not entry or not gc.orders then
+        -- self:release(key)
+        return
+    end
+
+    local position = gc:getOwnPosition()
+    if not position then
+        -- self:release(key)
+        return
+    end
+
+    local arrowIds = self.map:drawArrow(position, gc.destination, color)
+    if arrowIds then
+        for _, mk in pairs(arrowIds) do
+            table.insert(self.registry[key].markIds, mk)
+        end
+    end
+end
+
+-- Draw/update a circle + label at an objective's position showing its task
+-- type and status.
+function CommanderVisualizer:syncObjective(objective, doctrine, color)
+    local key = "objective:" .. tostring(objective)
+
+    if objective:isComplete() then
+        self:release(key)
+        return
+    end
+
+    local typeName = taskTypeNames[objective.type] or tostring(objective.type)
+    local orderCounts = {}
+    for k, v in pairs(objective:getOrderStatusCounts()) do
+        orderCounts[k] = tostring(v)
+    end
+    local objectiveOrders = "Assg:" .. orderCounts.assigned .. " Act:" .. orderCounts.inProgress .. " Dn:" .. orderCounts.completed .. " X:" .. orderCounts.aborted
+    local text = doctrine.name .. ":" ..  doctrine.currentPhaseName .. "\n" .. typeName .. " (" .. objective.status .. ") [" .. objectiveOrders .. "]"
+    local signature = table.concat({typeName, objective.status, objective.radius, doctrine.name, doctrine.currentPhaseName, objectiveOrders}, "|")
+
+    self:upsert(key, signature, function()
+        if not settings.draw.objectives then return {} end
+        local markIds = {}
+        local sides = self.map:getVisibility(color, "objectives")
+        for _, side in pairs(sides) do
+            local circleId = self.map:getNewMarker()
+            table.insert(markIds, circleId)
+            trigger.action.circleToAll(side, circleId, objective.position, objective.radius+300, rgb[color], {0,0,0,0}, 3)
+            local labelId = self.map:getNewMarker()
+            table.insert(markIds, labelId)
+            trigger.action.textToAll(side, labelId, mist.projectPoint(objective.position, 850, math.pi/2), {1,1,1,1}, {0,0,0,0.3}, 13, true, text)
+        end
+        return markIds
+    end)
+end
+
+-- Draw/update the outline of tasked groups and directive arrows from each
+-- group to the opscom's objective.
+function CommanderVisualizer:syncOpscom(opscom, color)
+    local key = "opscom:" .. opscom.name
+
+    local objective = opscom.orderCoordinator.objectives[1]
+    if not objective then
+        self:release(key)
+        return
+    end
+
+    local groupNames = {}
+    local points = {}
+    local polygon = {}
+    -- Calculate centroid of allied positions
+    local alliedCenterX = 0
+    local alliedCenterZ = 0
+    local center = { x = 0, y = 0, z = 0 }
+    local validCount = 0
+    for _, gc in ipairs(opscom.groupCommanders) do
+        local position = gc:getOwnPosition()
+        if position then
+            table.insert(groupNames, gc.groupName)
+            table.insert(points, position)
+            alliedCenterX = alliedCenterX + position.x
+            alliedCenterZ = alliedCenterZ + position.z
+            validCount = validCount + 1
+        end
+    end
+    table.sort(groupNames)
+
+    center.x = alliedCenterX / validCount
+    center.z = alliedCenterZ / validCount
+    -- project points from center to form enclosing polygon
+    -- for each point project 2 points away from center +/- 45deg
+    for i, data in pairs(points) do
+        -- get heading center to data
+        local heading = mist.utils.getHeadingPoints(center, data)
+        local projectedPoint1 = mist.projectPoint(data, 800, heading + math.pi/4)
+        local projectedPoint2 = mist.projectPoint(data, 800, heading - math.pi/4)
+        table.insert(polygon, projectedPoint1)
+        table.insert(polygon, projectedPoint2)
+    end
+    -- table.insert(polygon, lastPoint)
+    -- sort points
+    local initialHeading = 0
+    table.sort(polygon, function(a, b)
+        local headingA = normalizeAngle(mist.utils.getHeadingPoints(center, a))
+        local headingB = normalizeAngle(mist.utils.getHeadingPoints(center, b))
+        local arcA = angularDistance(initialHeading, headingA)
+        local arcB = angularDistance(initialHeading, headingB)
+        return arcA < arcB
+    end)
+
+    local signature = table.concat(groupNames, ",") .. "|" .. objective.status
+
+    self:upsert(key, signature, function()
+        if #polygon == 0 then return {} end
+        local markIds = {}
+        -- for _, gc in ipairs(opscom.groupCommanders) do
+        -- single arrow for whole operation
+            local origin = center --gc:getOwnPosition()
+            if origin then
+                local arrowIds = self.map:drawDirective(origin, objective.position, color)
+                if arrowIds then
+                    for _, mk in pairs(arrowIds) do
+                        table.insert(markIds, mk)
+                    end
+                end
+            end
+        -- end
+        local polygonId = self.map:drawPolygon(polygon)
+        if polygonId then
+            table.insert(markIds, polygonId)
+        end
+        return markIds
+    end)
+end
+
+return CommanderVisualizer
+
+end)
+__bundle_register("helpers", function(require, _LOADED, __bundle_register, __bundle_modules)
+local function isCounterClockwise(p1, p2, p3)
+    -- swapped to account for DCS coordinate weirdness
+    return (p2.y - p1.y) * (p3.x - p1.x) - (p2.x - p1.x) * (p3.y - p1.y) > 0
+    -- standard (x,y) as (N/S,E/W) version:
+    -- return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x) > 0
+end
+
+-- Normalize angle to [0, 2π)
+local function normalizeAngle(angle)
+    local TWO_PI = 2 * math.pi
+    angle = angle % TWO_PI
+    if angle < 0 then
+        angle = angle + TWO_PI
+    end
+    return angle
+end
+local function angularDistance(from, to)
+    local TWO_PI = 2 * math.pi
+    local diff = (to - from) % TWO_PI
+    if diff < 0 then
+        diff = diff + TWO_PI
+    end
+    return diff
+end
+
+return {
+    isCounterClockwise = isCounterClockwise,
+    normalizeAngle = normalizeAngle,
+    angularDistance = angularDistance
+}
+
+end)
+__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
+local settings = {
+    draw = {
+        edges = true,
+        zones = true,
+        frontlines = true,
+        directives = true,
+        groupOrders = true,
+        objectives = true,
+    },
+    displayToAll = {
+        zones = true,
+        frontlines = true,
+        directives = true,
+        groupOrders = false,
+        objectives = false,
+    }
+}
+
+return settings
+end)
+__bundle_register("objective", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local taskTypes = constants.taskTypes
+
+-- Objective class for strategic-level goals
+-- Each objective may have multiple orders assigned to different groups
+-- Tracks overall objective status and completion criteria
+
+local Objective = {}
+Objective.__index = Objective
+
+-- Objective status values
+local ObjectiveStatus = {
+    ACTIVE = "Active",       -- Objective is being pursued
+    ACHIEVED = "Achieved",   -- Objective successfully completed
+    FAILED = "Failed",       -- Objective could not be completed
+    CANCELED = "Canceled",   -- Objective was canceled by strategic commander
+}
+
+function Objective.new(config)
+    local self = setmetatable({}, Objective)
+    
+    -- Required fields
+    self.type = config.type           -- taskTypes constant (DEFEND, RALLY, etc.)
+    self.position = config.position   -- {x, z}
+    
+    -- Optional fields with defaults
+    self.radius = config.radius or 500
+    self.deadline = config.deadline   -- nil or timer.getTime() + duration
+    
+    -- Status tracking
+    self.status = ObjectiveStatus.ACTIVE
+    self.createdAt = timer.getTime()
+    self.updatedAt = timer.getTime()
+    self.achievedAt = nil
+    self.failedAt = nil
+    
+    -- Associated orders
+    self.orders = {}  -- array of Order objects
+    
+    return self
+end
+
+-- Add an order to this objective
+function Objective:addOrder(order)
+    table.insert(self.orders, order)
+    -- Ensure bidirectional reference
+    order.objective = self
+    self.updatedAt = timer.getTime()
+end
+
+-- Remove an order from this objective
+function Objective:removeOrder(order)
+    for i, existingOrder in ipairs(self.orders) do
+        if existingOrder == order then
+            table.remove(self.orders, i)
+            self.updatedAt = timer.getTime()
+            return true
+        end
+    end
+    return false
+end
+
+-- Get counts of orders by status
+function Objective:getOrderStatusCounts()
+    local counts = {
+        assigned = 0,
+        inProgress = 0,
+        completed = 0,
+        aborted = 0,
+        total = #self.orders
+    }
+    
+    local orderStatus = constants.orderStatus
+    for _, order in ipairs(self.orders) do
+        if order.status == orderStatus.ASSIGNED then
+            counts.assigned = counts.assigned + 1
+        elseif order.status == orderStatus.IN_PROGRESS then
+            counts.inProgress = counts.inProgress + 1
+        elseif order.status == orderStatus.COMPLETED then
+            counts.completed = counts.completed + 1
+        elseif order.status == orderStatus.ABORTED then
+            counts.aborted = counts.aborted + 1
+        end
+    end
+    
+    return counts
+end
+
+-- Get all active orders (not completed or aborted)
+function Objective:getActiveOrders()
+    local active = {}
+    for _, order in ipairs(self.orders) do
+        if order:isActive() then
+            table.insert(active, order)
+        end
+    end
+    return active
+end
+
+-- Get all finished orders (completed or aborted)
+function Objective:getFinishedOrders()
+    local finished = {}
+    for _, order in ipairs(self.orders) do
+        if order:isFinished() then
+            table.insert(finished, order)
+        end
+    end
+    return finished
+end
+
+-- Mark objective as achieved
+function Objective:markAchieved()
+    self.status = ObjectiveStatus.ACHIEVED
+    self.achievedAt = timer.getTime()
+    self.updatedAt = timer.getTime()
+end
+
+-- Mark objective as failed
+function Objective:markFailed(reason)
+    self.status = ObjectiveStatus.FAILED
+    self.failedAt = timer.getTime()
+    self.failReason = reason
+    self.updatedAt = timer.getTime()
+end
+
+-- Returns true if the objective is no longer being actively pursued
+function Objective:isComplete()
+    return self.status ~= ObjectiveStatus.ACTIVE
+end
+
+-- Mark objective as canceled
+function Objective:markCanceled()
+    self.status = ObjectiveStatus.CANCELED
+    self.updatedAt = timer.getTime()
+end
+
+-- Get a summary of objective state for reporting
+function Objective:getSummary()
+    local statusCounts = self:getOrderStatusCounts()
+    
+    return {
+        type = self.type,
+        status = self.status,
+        position = self.position,
+        radius = self.radius,
+        createdAt = self.createdAt,
+        orderCounts = statusCounts,
+        timeSinceCreated = timer.getTime() - self.createdAt,
+    }
+end
+
+Objective.Status = ObjectiveStatus
+
+return Objective
+
+end)
+__bundle_register("ooda-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local oodaStates = constants.oodaStates
+
+local OODACommander = {}
+OODACommander.__index = OODACommander
+
+function OODACommander.new(config)
+    local self = setmetatable({}, OODACommander)
+
+    local oodaInterval = config.interval or 10
+
+    self.oodaState = oodaStates.OBSERVE
+    self.oodaOffset = math.random() * oodaInterval
+    self.destroyed = false  -- Flag to stop scheduling
+
+    -- Store schedule ID so we can cancel it later
+    self.scheduleId = mist.scheduleFunction(
+        OODACommander.oodaTick,
+        {self},
+        timer.getTime() + self.oodaOffset,
+        oodaInterval
+    )
+    return self
+end
+
+function OODACommander:oodaTick()
+    if self.oodaState == oodaStates.OBSERVE then
+        self:observe()
+        self.oodaState = oodaStates.ORIENT
+    elseif self.oodaState == oodaStates.ORIENT then
+        self:orient()
+        self.oodaState = oodaStates.DECIDE
+    elseif self.oodaState == oodaStates.DECIDE then
+        self:decide()
+        self.oodaState = oodaStates.ACT
+    elseif self.oodaState == oodaStates.ACT then
+        self:act()
+        self.oodaState = oodaStates.OBSERVE
+    end
+    
+    -- After any phase, check if destroyed and cancel schedule
+    if self.destroyed then
+        self:cancelSchedule()
+    end
+end
+
+function OODACommander:observe()
+    error("OODACommander subclass must implement observe()")
+end
+
+function OODACommander:orient()
+    error("OODACommander subclass must implement orient()")
+end
+
+function OODACommander:decide()
+    error("OODACommander subclass must implement decide()")
+end
+
+function OODACommander:act()
+    error("OODACommander subclass must implement act()")
+end
+
+-- Cancel the scheduled OODA loop
+function OODACommander:cancelSchedule()
+    if self.scheduleId then
+        mist.removeFunction(self.scheduleId)
+        self.scheduleId = nil
+    end
+end
+
+return OODACommander
+
+end)
+__bundle_register("operational-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local GroupCommander = require("group-commander")
+local GroupProfiler = require("group-profiler")
+local OODACommander = require("ooda-commander")
+local Order = require("order")
+local OrderCoordinator = require("order-coordinator")
+local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
+local SpatialAgent = require("spatial-agent")
+local ThreatTracker = require("threat-tracker")
+
+local alr = constants.acceptableLevelsOfRisk
+local orderStatus = constants.orderStatus
+local taskTypes = constants.taskTypes
+local dispositionTypes = constants.dispositionTypes
+
+local OperationalCommander = {}
+setmetatable(OperationalCommander, {__index = OODACommander})
+OperationalCommander.__index = OperationalCommander
+
+local oodaInterval = 30.0 -- seconds
+
+local function isOrderChanged(lastOrder, newOrder, commanderStatus)
+    if not lastOrder then
+        return true
+    end
+    if commanderStatus and commanderStatus.orderStatus then
+        if commanderStatus.orderStatus == orderStatus.COMPLETED or
+           commanderStatus.orderStatus == orderStatus.ABORTED then
+            return true
+        end
+    end
+    if lastOrder.type ~= newOrder.type then
+        return true
+    end
+    if not lastOrder.position then
+        return true
+    end
+    if math.abs(lastOrder.position.x - newOrder.position.x) > 100 or
+       math.abs(lastOrder.position.z - newOrder.position.z) > 100 then
+        return true
+    end
+    if lastOrder.proximity ~= newOrder.proximity then
+        return true
+    end
+    return false
+end
+
+function OperationalCommander.new(config)
+    -- Initialize parent class (sets up OODA loop scheduling)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, OperationalCommander)
+
+    -- OperationalCommander-specific initialization
+    self.color = config.color or "white"
+    self.name = config.color .. "Ops"
+    self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
+    self.orderCoordinator = OrderCoordinator.new(self.color)
+    self.lastIssuedOrders = {}
+    self.plannedOrders = {}
+    self.objectivesNeedingOrders = {}
+    self.groupCommanders = config.groupCommanders or {}
+    self.visualizer = config.visualizer
+    self.visualizer:initMovementMapper(config.color)
+
+    self.reconRadius = config.reconRadius or 8000
+    self.assaultRadius = config.assaultRadius or 3000
+    self.assaultStagingDistance = config.assaultStagingDistance or 7000
+    self.maxReconGroups = config.maxReconGroups or 1
+    -- self.threatTracker is fed by merging group snapshots (already-fresh
+    -- data) but never ages on its own, so a threat that stops being
+    -- reported (killed, retreated, lost LOS) lingers at its last known
+    -- position forever. Filter reads by recency instead of relying on
+    -- status, since there's no single opscom position to age relative to.
+    self.threatMemoryWindow = config.threatMemoryWindow or 120
+
+    self.doctrine = nil
+    -- clear out any residual orders to ensure all groups are available for new tasking
+    for _, gc in ipairs(self.groupCommanders) do
+        gc:clearOrders()
+    end
+
+    return self
+end
+
+function OperationalCommander:disband()
+    self:cancelSchedule()
+    local survivors = {}
+    for _, gc in ipairs(self.groupCommanders) do
+        if not gc.destroyed then
+            table.insert(survivors, gc)
+        end
+    end
+    env.info("*** " .. self.color .. " Ops: disbanded, returning " .. #survivors .. " groups to reserves")
+    return survivors
+end
+
+function OperationalCommander:addGroupCommander(gc)
+    table.insert(self.groupCommanders, gc)
+end
+
+function OperationalCommander:observe()
+    self:aggregateThreatsFromGroups()
+
+    -- Log consolidated OBSERVE summary
+    local groupCommanders = self.groupCommanders
+    local activeGroups = 0
+    for _ in pairs(groupCommanders) do
+        activeGroups = activeGroups + 1
+    end
+    local totalThreats = self.threatTracker:count()
+    env.info("*** " .. self.color .. " Ops OBSERVE: " .. activeGroups .. " groups, " .. totalThreats .. " threats tracked")
+end
+
+function OperationalCommander:orient()
+    -- Clean up destroyed commanders first, before any assessment
+    self:cleanupDestroyedCommanders()
+    
+    -- Sync order statuses from commanders back to order graph
+    self.orderCoordinator:syncOrderStatuses(self.groupCommanders)
+    
+    -- Assess objective progress
+    self.objectivesNeedingOrders = {}
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
+        self:assessObjectiveProgress(objective)
+    end
+    
+    -- Log consolidated ORIENT summary
+    local totalOrders = 0
+    local activeOrders = 0
+    local completedOrders = 0
+    local abortedOrders = 0
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
+        if objective.status == "Active" then
+            local counts = objective:getOrderStatusCounts()
+            totalOrders = totalOrders + counts.total
+            activeOrders = activeOrders + counts.assigned + counts.inProgress
+            completedOrders = completedOrders + counts.completed
+            abortedOrders = abortedOrders + counts.aborted
+        end
+    end
+    if totalOrders > 0 then
+        env.info("*** " .. self.color .. " Ops ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
+    end
+end
+
+
+
+function OperationalCommander:decide()
+    self.plannedOrders = {}
+    self.plannedThisCycle = {}  -- Track which commanders have orders planned this cycle
+
+    if not self.doctrine then
+        self.doctrine = ReconRallyAssaultPlan.new(self.name, {
+            maxReconGroups         = self.maxReconGroups,
+            reconRadius            = self.reconRadius,
+            assaultRadius          = self.assaultRadius,
+            assaultStagingDistance = self.assaultStagingDistance,
+        })
+        env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan doctrine")
+    end
+
+    for _, objective in ipairs(self.orderCoordinator.objectives) do
+        if objective.status == "Active" then
+            self:planObjectiveWithDoctrine(objective)
+        end
+    end
+    
+    -- Log consolidated DECIDE summary
+    if #self.plannedOrders > 0 then
+        env.info("*** " .. self.color .. " Ops DECIDE: Planning " .. #self.plannedOrders .. " orders")
+    else
+        env.info("*** " .. self.color .. " Ops DECIDE: No new orders planned")
+    end
+end
+
+
+function OperationalCommander:act()
+    -- Update ally intel for all active groups
+    self:updateAllyIntelForAllGroups()
+
+    if self.plannedOrders and #self.plannedOrders > 0 then
+        self:issuePlannedOrders()
+    end
+
+    -- Keep each active objective's map mark in sync with its current status
+    if self.visualizer then
+        for _, objective in ipairs(self.orderCoordinator.objectives) do
+            self.visualizer:syncObjective(objective, self.doctrine, self.color)
+        end
+    end
+end
+
+function OperationalCommander:issuePlannedOrders()
+    local issuedCount = 0
+    for _, plan in ipairs(self.plannedOrders) do
+        local commander = plan.commander
+        local order = plan.order
+        local lastOrder = self.lastIssuedOrders[commander.groupName]
+        local commanderStatus = commander:getStatus()
+
+        if isOrderChanged(lastOrder, order, commanderStatus) then
+            -- Send nearby ally strength intel (within support range)
+            local allyIntel = self:assessNearbyAllyStrength(order.position, 5000, commander.groupName)
+            if allyIntel then
+                commander:updateAllyIntel(allyIntel)
+            end
+
+            if order.objective then
+                order.objective:addOrder(order)
+            end
+
+            commander:issueOrder(order)
+            self.lastIssuedOrders[commander.groupName] = {
+                alr = order.alr,
+                position = {x = order.position.x, z = order.position.z},
+                proximity = order.proximity,
+                type = order.type,
+                issuedAt = timer.getTime(),
+            }
+            issuedCount = issuedCount + 1
+            
+            -- Log each order issued
+            local orderTypeName = order.type == taskTypes.RALLY and "RALLY" or 
+                                order.type == taskTypes.ASSAULT and "ASSAULT" or 
+                                order.type == taskTypes.RECON and "RECON" or 
+                                order.type == taskTypes.DEFEND and "DEFEND" or 
+                                order.type == taskTypes.REPOSITION and "REPOSITION" or 
+                                tostring(order.type)
+            env.info("*** " .. self.color .. " Ops ACT: " .. orderTypeName .. " → " .. commander.groupName)
+        end
+    end
+    
+    -- Log consolidated ACT summary
+    env.info("*** " .. self.color .. " Ops ACT: Issued " .. issuedCount .. " orders total")
+end
+
+
+-- ============================================================================
+-- HELPER METHODS
+-- ============================================================================
+
+-- Clean up destroyed commanders and orphaned objectives
+function OperationalCommander:cleanupDestroyedCommanders()
+    -- Remove destroyed commanders from the global instances list
+    GroupCommander.removeDestroyed()
+
+    -- Prune destroyed commanders from this opscom's managed list
+    local surviving = {}
+    for _, gc in ipairs(self.groupCommanders) do
+        if gc.destroyed then
+            if self.visualizer then
+                self.visualizer:release("group:" .. gc.groupName)
+            end
+        else
+            table.insert(surviving, gc)
+        end
+    end
+    self.groupCommanders = surviving
+
+    -- If all groups are gone, the objective can no longer be pursued
+    if #self.groupCommanders == 0 then
+        local objective = self.orderCoordinator.objectives[1]
+        if objective and not objective:isComplete() then
+            objective:markFailed("all groups destroyed")
+            env.info("*** " .. self.color .. " Ops: objective failed - all groups destroyed")
+        end
+    end
+
+    -- Abort orders assigned to groups that no longer exist
+    if self.orderCoordinator and self.orderCoordinator.objectives then
+        for _, objective in ipairs(self.orderCoordinator.objectives) do
+            if objective.orders then
+                for _, order in ipairs(objective.orders) do
+                    if order.status ~= constants.orderStatus.ABORTED and
+                       order.status ~= constants.orderStatus.COMPLETED then
+                        local groupStillExists = false
+                        for _, instance in ipairs(self.groupCommanders) do
+                            if instance.groupName == order.assignedTo then
+                                groupStillExists = true
+                                break
+                            end
+                        end
+                        if not groupStillExists then
+                            env.info(string.format("*** %s Ops: Aborting order for %s (group missing)",
+                                self.color, order.assignedTo or "unknown"))
+                            order.status = constants.orderStatus.ABORTED
+                            objective.updatedAt = timer.getTime()
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+
+--- @class ObjectiveContext
+--- @field objectivePosition table
+--- @field objectiveRadius number
+--- @field objectiveDeadline number|nil
+--- @field statusCounts table
+--- @field threatProfile table
+--- @field threatCenter table|nil
+--- @field threats table
+--- @field threatCount number
+--- @field nearObjectiveThreatCount number
+--- @field availableCommanderCount number
+--- @return ObjectiveContext
+function OperationalCommander:buildObjectiveContext(objective)
+    local GroupProfiler = require("group-profiler")
+
+    local threatsNear = self:getThreatsNearPosition(objective.position, self.reconRadius)
+    local threatCount = 0
+    local threatUnits = {}
+    for unitName, _ in pairs(threatsNear) do
+        threatCount = threatCount + 1
+        local unit = Unit.getByName(unitName)
+        if unit and unit:isExist() then
+            table.insert(threatUnits, unit)
+        end
+    end
+
+    local threatProfile = GroupProfiler.profileUnits(threatUnits)
+    local threatCenter = nil
+    if threatCount > 0 then
+        threatCenter = SpatialAgent.calculateCenterOfObjects(threatsNear)
+    end
+
+    -- Scoped tighter than threatCount: used to judge whether the objective
+    -- itself is clear (e.g. before declaring Defend), as opposed to
+    -- threatCount/threatCenter/threatProfile which deliberately look out to
+    -- reconRadius for staging/planning purposes.
+    local nearObjectiveThreats = self:getThreatsNearPosition(objective.position, self.assaultRadius)
+    local nearObjectiveThreatCount = 0
+    for _ in pairs(nearObjectiveThreats) do
+        nearObjectiveThreatCount = nearObjectiveThreatCount + 1
+    end
+
+    local statusCounts = objective:getOrderStatusCounts()
+
+    local availableCount = 0
+    for _, cmd in ipairs(self.groupCommanders) do
+        local s = cmd:getStatus()
+        if not s.orderStatus or
+           s.orderStatus == constants.orderStatus.COMPLETED or
+           s.orderStatus == constants.orderStatus.ABORTED then
+            availableCount = availableCount + 1
+        end
+    end
+
+    return {
+        objectivePosition       = objective.position,
+        objectiveRadius         = objective.radius or 2000,
+        objectiveDeadline       = objective.deadline,
+        statusCounts            = statusCounts,
+        threatProfile           = threatProfile,
+        threatCenter            = threatCenter,
+        threats                 = threatsNear,
+        threatCount             = threatCount,
+        nearObjectiveThreatCount = nearObjectiveThreatCount,
+        availableCommanderCount = availableCount,
+    }
+end
+
+-- Plan objective orders using Doctrine strategy.
+-- Doctrines signal completion by returning { objectiveComplete = true, ... }.
+function OperationalCommander:planObjectiveWithDoctrine(objective)
+    local context = self:buildObjectiveContext(objective)
+    local result = self.doctrine:plan(context)
+    if not result then return end
+
+    if result.objectiveComplete then
+        env.info("*** " .. self.color .. " Ops: OBJECTIVE COMPLETE --------------------")
+        objective:markAchieved()
+    end
+
+    for _, template in ipairs(result.orders or {}) do
+        self:assignOrderTemplate(template, objective)
+    end
+end
+
+-- Evaluate available commanders against a template's missionProfile and issue orders
+function OperationalCommander:assignOrderTemplate(template, objective)
+    local count          = template.count or 1
+    local missionProfile = template.missionProfile
+
+    -- Score available commanders by suitability against the template's missionProfile
+    local suitabilityResults = {}
+    for _, commander in ipairs(self.groupCommanders) do
+        local s = commander:getStatus()
+        if not s.orderStatus or
+           s.orderStatus == orderStatus.COMPLETED or
+           s.orderStatus == orderStatus.ABORTED then
+            local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
+            local dist = (s.position and template.position)
+                and SpatialAgent.distance2D(s.position, template.position) or 0
+            table.insert(suitabilityResults, {
+                commander   = commander,
+                suitability = suitability,
+                distance    = dist,
+            })
+        end
+    end
+
+    local selected = self:selectGroupCommanders(suitabilityResults, { maxCount = count })
+
+    local commanderPositions = {}
+    for _, result in ipairs(selected) do
+        local s = result.commander:getStatus()
+        if s.position then
+            table.insert(commanderPositions, s.position)
+        end
+    end
+
+    local encirclingPositions
+    local stagingAssignments
+    if template.targetPosition then
+        encirclingPositions = SpatialAgent.calculateEncirclingPositions(template.targetPosition, template.stagingRadius, commanderPositions, template.stagingArc)
+
+        -- RALLY orders get a per-commander staging position fanned around the target.
+        -- Assign by proximity (rather than list order) so commanders take the nearest
+        -- open staging slot instead of trekking past one another to a farther one.
+        local stagingItems = {}
+        for _, result in ipairs(selected) do
+            table.insert(stagingItems, { position = result.commander:getStatus().position, result = result })
+        end
+        local assigned = SpatialAgent.assignByProximity(stagingItems, encirclingPositions)
+
+        stagingAssignments = {}
+        for _, assignment in ipairs(assigned) do
+            stagingAssignments[assignment.item.result.commander.groupName] = assignment.position
+        end
+    end
+
+    for _, result in ipairs(selected) do
+        local commander = result.commander
+
+        local orderPosition = (stagingAssignments and stagingAssignments[commander.groupName]) or template.position
+
+        if not self.plannedThisCycle[commander.groupName] then
+            local order = Order.new({
+                type           = template.type,
+                position       = orderPosition,
+                proximity      = template.proximity,
+                alr            = template.alr,
+                missionProfile = template.missionProfile,
+                objective      = objective,
+                deadline       = template.deadline,
+                assignedTo     = commander.groupName,
+            })
+            table.insert(self.plannedOrders, {
+                commander = commander,
+                order     = order,
+            })
+            self.plannedThisCycle[commander.groupName] = true
+        end
+    end
+end
+
+-- Sort candidates by suitability and return up to maxCount
+function OperationalCommander:selectGroupCommanders(suitabilityResults, constraints)
+    local maxCount = constraints and constraints.maxCount or 1
+
+    table.sort(suitabilityResults, function(a, b)
+        if a.suitability ~= b.suitability then
+            return a.suitability > b.suitability
+        end
+        return a.distance < b.distance
+    end)
+
+    local selected = {}
+    for _, result in ipairs(suitabilityResults) do
+        if #selected >= maxCount then break end
+        table.insert(selected, result)
+    end
+
+    return selected
+end
+
+
+function OperationalCommander:getAvailableGroupCommanders()
+    local available = {}
+    for _, commander in ipairs(self.groupCommanders) do
+        local status = commander:getStatus()
+        local currentStatus = status.orderStatus
+        -- Include groups without orders, or with completed/aborted orders
+        if not currentStatus or
+           currentStatus == orderStatus.COMPLETED or
+           currentStatus == orderStatus.ABORTED then
+            table.insert(available, commander)
+        end
+    end
+    return available
+end
+
+function OperationalCommander:countActiveThreats(threats)
+    -- Count only active threats (OBSERVED or SUSPECTED)
+    -- Don't count UNCONFIRMED, LOST, or ELIMINATED threats
+    local constants = require("constants")
+    local threatStatus = constants.threatStatus
+    
+    local count = 0
+    for _, threat in pairs(threats) do
+        if threat.status == threatStatus.OBSERVED or threat.status == threatStatus.SUSPECTED then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+function OperationalCommander:assessObjectiveProgress(objective)
+    if not objective or objective.status ~= "Active" then
+        return
+    end
+
+    local statusCounts = objective:getOrderStatusCounts()
+    local activeCount = statusCounts.assigned + statusCounts.inProgress
+
+    -- Check if orders were aborted (tactical retreat)
+    if statusCounts.aborted > 0 then
+        -- Check if ALL orders are aborted with none in progress
+        if statusCounts.aborted == statusCounts.total then
+            -- All orders aborted - reassess objective
+            -- Groups with aborted orders will be available for reassignment
+            table.insert(self.objectivesNeedingOrders, objective)
+        else
+            -- Some orders aborted, some still active - wait to see how active orders resolve
+        end
+        return
+    end
+
+    -- All orders completed successfully
+    if statusCounts.total > 0 and statusCounts.completed == statusCounts.total then
+        table.insert(self.objectivesNeedingOrders, objective)
+    end
+end
+
+function OperationalCommander:aggregateThreatsFromGroups()
+    for _, commander in ipairs(self.groupCommanders) do
+        local status = commander:getStatus()
+        self.threatTracker:mergeThreatIntel(status.threats)
+    end
+end
+
+function OperationalCommander:getOwnGroupsNearPosition(position, radius)
+    local nearbyOwnForces = {}
+    for _, commander in ipairs(self.groupCommanders) do
+        local status = commander:getStatus()
+        if SpatialAgent.isWithinRadius(status.position, position, radius) then
+            table.insert(nearbyOwnForces, commander)
+        end
+    end
+    return nearbyOwnForces
+end
+
+function OperationalCommander:updateAllyIntelForAllGroups()
+    -- Update ally intel for all active groups so they know about nearby friendlies
+    local supportRadius = 5000  -- 5km support range
+    
+    for _, commander in ipairs(self.groupCommanders) do
+        local status = commander:getStatus()
+        if status.position then
+            local allyIntel = self:assessNearbyAllyStrength(status.position, supportRadius, commander.groupName)
+            commander:updateAllyIntel(allyIntel)
+        end
+    end
+end
+
+function OperationalCommander:getThreatsNearPosition(position, radius)
+    local nearbyThreats = {}
+    local allThreats = self.threatTracker:getThreats()
+    local currentTime = timer.getTime()
+    for unitName, threat in pairs(allThreats) do
+        local isStale = not threat.lastSighting or (currentTime - threat.lastSighting) > self.threatMemoryWindow
+        if not isStale and SpatialAgent.isWithinRadius(threat.position, position, radius) then
+            nearbyThreats[unitName] = threat
+        end
+    end
+    return nearbyThreats
+end
+
+function OperationalCommander:assessNearbyAllyStrength(position, radius, excludeGroupName)
+    local nearbyGroups = self:getOwnGroupsNearPosition(position, radius)
+    local allUnits = {}
+    for _, commander in ipairs(nearbyGroups) do
+        if commander.groupName ~= excludeGroupName then
+            local group = Group.getByName(commander.groupName)
+            if group and group:isExist() then
+                for _, unit in ipairs(group:getUnits()) do
+                    if unit and unit:isExist() then
+                        table.insert(allUnits, unit)
+                    end
+                end
+            end
+        end
+    end
+    if #allUnits == 0 then
+        return nil
+    end
+    return GroupProfiler.profileUnits(allUnits)
+end
+
+return OperationalCommander
+
+end)
+__bundle_register("group-profiler", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- GroupProfiler: Unified force analysis and status profiling
+-- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
+-- Returns GroupProfile tables with capability, composition, unit count, and status.
+--
+-- GroupProfile schema:
+-- {
+--     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
+--     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
+--     unitCount           = N,
+--     -- Status fields (only from profileGroup, nil from profileUnits):
+--     attritionRate       = 0.0-1.0,
+--     ammoRatio           = 0.0-1.0,
+--     fuelRatio           = 0.0-1.0,
+-- }
+
+local constants = require("constants")
+local unitClassification = constants.unitClassification
+
+local GroupProfiler = {}
+
+-- ============================================================================
+-- UNIT CLASSIFICATION
+-- ============================================================================
+
+function GroupProfiler.classifyUnit(unit)
+    if not unit or not unit:isExist() then
+        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    end
+
+    local typeName = unit:getTypeName()
+    if not typeName then
+        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    end
+
+    local classification = unitClassification[typeName]
+    if classification then
+        return classification
+    end
+
+    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
+    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
+end
+
+-- ============================================================================
+-- UNIT COLLECTION HELPERS
+-- ============================================================================
+
+function GroupProfiler.getUnitsFromGroups(groups)
+    local units = {}
+
+    local groupList = {}
+    if type(groups) == "table" and groups.getUnits then
+        groupList = {groups}
+    else
+        groupList = groups
+    end
+
+    for _, group in ipairs(groupList) do
+        if group and group:isExist() then
+            local groupUnits = group:getUnits()
+            for _, unit in ipairs(groupUnits) do
+                if unit and unit:isExist() then
+                    table.insert(units, unit)
+                end
+            end
+        end
+    end
+
+    return units
+end
+
+function GroupProfiler.getUnitsFromGroupNames(groupNames)
+    local groups = {}
+    for _, groupName in ipairs(groupNames) do
+        local group = Group.getByName(groupName)
+        if group and group:isExist() then
+            table.insert(groups, group)
+        end
+    end
+    return GroupProfiler.getUnitsFromGroups(groups)
+end
+
+-- ============================================================================
+-- PROFILE CONSTRUCTION
+-- ============================================================================
+
+-- Build a capability/composition profile from a list of unit references.
+-- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
+function GroupProfiler.profileUnits(units)
+    local profile = {
+        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
+        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        unitCount           = 0,
+    }
+
+    if not units or #units == 0 then
+        return profile
+    end
+
+    for _, unit in ipairs(units) do
+        if unit and unit:isExist() then
+            local classification = GroupProfiler.classifyUnit(unit)
+            local threats = classification.threats
+
+            profile.unitCount = profile.unitCount + 1
+
+            local cat = classification.category
+            if cat == "infantry" then
+                profile.composition.infantry = profile.composition.infantry + 1
+            elseif cat == "light-armor" then
+                profile.composition.lightArmor = profile.composition.lightArmor + 1
+            elseif cat == "heavy-armor" then
+                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
+            elseif cat == "support" then
+                profile.composition.support = profile.composition.support + 1
+            end
+
+            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
+            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
+                                                     + threats["light-armor"]
+                                                     + threats["heavy-armor"]
+            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
+        end
+    end
+
+    return profile
+end
+
+-- Build a full profile for a named DCS group, including status ratios.
+function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
+    local zeroed = {
+        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
+        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        unitCount           = 0,
+        attritionRate       = 1,
+        ammoRatio           = 0,
+        fuelRatio           = 0,
+    }
+
+    local group = Group.getByName(groupName)
+    if not group or not group:isExist() then
+        return zeroed
+    end
+
+    -- Collect alive units
+    local aliveUnits = {}
+    for _, unit in ipairs(group:getUnits()) do
+        if unit and unit:isExist() then
+            table.insert(aliveUnits, unit)
+        end
+    end
+
+    local profile = GroupProfiler.profileUnits(aliveUnits)
+
+    -- Attrition rate
+    local initialCount = (initialUnitNames and #initialUnitNames) or 0
+    if initialCount == 0 then
+        profile.attritionRate = 0
+    else
+        profile.attritionRate = 1 - (profile.unitCount / initialCount)
+    end
+
+    -- Ammo ratio
+    if not initialAmmoCount or initialAmmoCount == 0 then
+        profile.ammoRatio = 1.0  -- unarmed units are always considered "full"
+    else
+        local currentAmmo = 0
+        for _, unit in ipairs(aliveUnits) do
+            local ammoTable = unit:getAmmo()
+            if ammoTable then
+                for _, entry in ipairs(ammoTable) do
+                    if entry.count then
+                        currentAmmo = currentAmmo + entry.count
+                    end
+                end
+            end
+        end
+        profile.ammoRatio = currentAmmo / initialAmmoCount
+    end
+
+    -- Fuel (simulated, passed in directly)
+    profile.fuelRatio = fuelRemaining or 0
+
+    return profile
+end
+
+-- ============================================================================
+-- FORCE COMPARISON
+-- ============================================================================
+
+-- Returns how favorable our position is against the threat.
+-- Higher = better for us. math.huge = no opposition.
+function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
+    local ownCap    = ownProfile.offensiveCapability
+    local theirComp = threatProfile.composition
+
+    local ourPower = ownCap.vsInfantry * theirComp.infantry
+                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
+                   + ownCap.vsAir      * theirComp.support
+
+    local theirCap = threatProfile.offensiveCapability
+    local ownComp  = ownProfile.composition
+
+    local theirPower = theirCap.vsInfantry * ownComp.infantry
+                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
+                     + theirCap.vsAir      * ownComp.support
+
+    if ourPower == 0 and theirPower == 0 then return 0 end
+    if theirPower == 0 and ourPower > 0 then return math.huge end
+    return ourPower / theirPower
+end
+
+return GroupProfiler
+
+end)
+__bundle_register("threat-tracker", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local SpatialAgent = require("spatial-agent")
+local threatStatus = constants.threatStatus
+
+-- Threat tracking helper for managing observed enemy units with timestamps
+-- Threats are stored in a table indexed by unit name
+-- Each threat has multiple sightings from different observers with timestamps
+-- This allows threats to persist and be shared even when temporarily out of sight
+
+local ThreatTracker = {}
+ThreatTracker.__index = ThreatTracker
+
+function ThreatTracker.new(observerName)
+    local self = setmetatable({}, ThreatTracker)
+    self.threats = {}
+    self.observerName = observerName  -- Name of the commander using this tracker
+    return self
+end
+
+-- Update threats with newly observed units
+-- observedUnits: array of {name, position} for units with LOS
+function ThreatTracker:updateThreats(observedUnits)
+    local currentTime = timer.getTime()
+    
+    -- Update or add observed threats
+    for _, unitData in ipairs(observedUnits) do
+        local threat = self.threats[unitData.name]
+        
+        if not threat then
+            -- New threat
+            env.info(self.observerName .. " ThreatTracker: New threat detected - " .. unitData.name .. " (OBSERVED)")
+            self.threats[unitData.name] = {
+                name = unitData.name,
+                position = unitData.position,
+                status = threatStatus.OBSERVED,
+                sightings = {
+                    {
+                        observedBy = self.observerName,
+                        observedAt = currentTime,
+                        position = unitData.position
+                    }
+                },
+                lastSighting = currentTime
+            }
+        else
+            -- Update existing threat
+            local oldStatus = threat.status
+            threat.position = unitData.position
+            threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
+            threat.lastSighting = currentTime
+            
+            -- Add new sighting
+            table.insert(threat.sightings, {
+                observedBy = self.observerName,
+                observedAt = currentTime,
+                position = unitData.position
+            })
+        end
+    end
+end
+
+function ThreatTracker:updateExpectedThreats(observedThreats, observerPosition, detectionRadius)
+    local observedNames = {}
+    
+    for _, unitData in ipairs(observedThreats) do
+        observedNames[unitData.name] = true
+    end
+    
+    -- Check for expected threats that were not observed. If we're close enough
+    -- to have seen it but did not, its last known position is in doubt (UNCONFIRMED).
+    -- If we're too far to check, there's no evidence against it (SUSPECTED).
+    for unitName, threat in pairs(self.threats) do
+        local notObserved = not observedNames[unitName]
+        local isExpected = threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST
+        if notObserved and isExpected then
+            local inExpectedRadius = SpatialAgent.isWithinRadius(threat.position, observerPosition, detectionRadius)
+            if inExpectedRadius then
+                threat.status = threatStatus.UNCONFIRMED
+            else
+                threat.status = threatStatus.SUSPECTED
+            end
+        end
+    end
+end
+
+-- Get the threats table
+-- Returns: table indexed by unit name
+function ThreatTracker:getThreats()
+    return self.threats
+end
+
+-- Get a single threat by name
+-- Returns: threat data or nil
+function ThreatTracker:getThreat(unitName)
+    return self.threats[unitName]
+end
+
+-- Merge threat intel from external source (e.g., strategic commander)
+-- threatIntel: partial threat table with updates to merge
+function ThreatTracker:mergeThreatIntel(threatIntel)
+    for unitName, incomingThreat in pairs(threatIntel) do
+        local existingThreat = self.threats[unitName]
+        
+        if not existingThreat then
+            -- New threat from external intel
+            self.threats[unitName] = incomingThreat
+        else
+            -- Merge with existing threat
+            -- Update position if incoming is more recent
+            if incomingThreat.lastSighting > existingThreat.lastSighting then
+                existingThreat.position = incomingThreat.position
+                existingThreat.lastSighting = incomingThreat.lastSighting
+            end
+            
+            -- Update status (prefer more definitive states)
+            if incomingThreat.status then
+                existingThreat.status = incomingThreat.status
+            end
+            
+            -- Merge sightings
+            if incomingThreat.sightings then
+                for _, sighting in ipairs(incomingThreat.sightings) do
+                    -- Avoid duplicate sightings from same observer at same time
+                    local isDuplicate = false
+                    for _, existingSighting in ipairs(existingThreat.sightings) do
+                        if existingSighting.observedBy == sighting.observedBy and
+                           existingSighting.observedAt == sighting.observedAt then
+                            isDuplicate = true
+                            break
+                        end
+                    end
+                    if not isDuplicate then
+                        table.insert(existingThreat.sightings, sighting)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Mark a threat with a specific status
+-- unitName: name of the threat unit
+-- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, LOST, ELIMINATED)
+function ThreatTracker:markThreatStatus(unitName, status)
+    local threat = self.threats[unitName]
+    if threat then
+        local oldStatus = threat.status
+        threat.status = status
+        if oldStatus ~= status then
+            threat.statusChangedAt = timer.getTime()
+        end
+    end
+end
+
+-- Get threats we would expect to see in an area
+-- position: {x, y, z} position to check
+-- radius: search radius in meters
+-- Returns: array of threat names that are in area but not LOST or ELIMINATED
+function ThreatTracker:expectedThreats(position, radius)
+    local expected = {}
+    
+    for unitName, threat in pairs(self.threats) do
+        if threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST then
+            if SpatialAgent.isWithinRadius(threat.position, position, radius) then
+                table.insert(expected, unitName)
+            end
+        end
+    end
+    
+    return expected
+end
+
+-- Count threats in memory
+-- Returns: number of threats stored
+function ThreatTracker:count()
+    local count = 0
+    for _ in pairs(self.threats) do
+        count = count + 1
+    end
+    return count
+end
+
+-- Age threats and progress their status based on time
+-- UNCONFIRMED for >5 minutes → LOST
+-- LOST or ELIMINATED for >10 minutes → removed
+function ThreatTracker:ageThreats()
+    local currentTime = timer.getTime()
+    local toRemove = {}
+    
+    for unitName, threat in pairs(self.threats) do
+        -- Track when status was last changed
+        if not threat.statusChangedAt then
+            threat.statusChangedAt = threat.lastSighting
+        end
+        
+        local timeInStatus = currentTime - threat.statusChangedAt
+        
+        -- Progress UNCONFIRMED → LOST after 5 minutes
+        if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
+            threat.status = threatStatus.LOST
+            threat.statusChangedAt = currentTime
+        end
+        
+        -- Remove LOST or ELIMINATED threats after 10 minutes
+        if (threat.status == threatStatus.LOST or threat.status == threatStatus.ELIMINATED) and timeInStatus > 600 then
+            table.insert(toRemove, unitName)
+        end
+    end
+    
+    -- Remove threats marked for removal
+    for _, unitName in ipairs(toRemove) do
+        self.threats[unitName] = nil
+    end
+end
+
+function ThreatTracker:getRecentThreats(maxAge)
+    local currentTime = timer.getTime()
+    local recentThreats = {}
+    maxAge = maxAge or 120  -- Default 2 minutes
+    
+    for unitName, threat in pairs(self.threats) do
+        -- Only include threats that are actively relevant
+        local includeInAnalysis = false
+        
+        if threat.status == "Observed" then
+            includeInAnalysis = true
+        elseif threat.status == "Suspected" and threat.lastSighting then
+            -- Include suspected threats if seen within last 60 seconds
+            local timeSinceLastSeen = currentTime - threat.lastSighting
+            if timeSinceLastSeen < maxAge then
+                includeInAnalysis = true
+            end
+        end
+        
+        if includeInAnalysis then
+            recentThreats[unitName] = threat  -- Return threat object indexed by name
+        end
+    end
+    
+    return recentThreats
+end
+
+-- Check if we have any recently observed or suspected threats
+-- Returns: true if there are threats with fresh intel (within maxAge seconds)
+function ThreatTracker:hasRecentThreats(maxAge)
+    local recentThreats = self:getRecentThreats(maxAge)
+    return #recentThreats > 0
+end
+
+-- Get the most recent sighting time across all threats
+-- Returns: timestamp of most recent sighting, or 0 if no threats
+function ThreatTracker:getMostRecentSightingTime()
+    local mostRecent = 0
+    
+    for _, threat in pairs(self.threats) do
+        if threat.lastSighting and threat.lastSighting > mostRecent then
+            mostRecent = threat.lastSighting
+        end
+    end
+    
+    return mostRecent
+end
+
+-- Cull threats that haven't been observed recently (for future use)
+-- maxAge: maximum age in seconds (threats older than this will be removed)
+function ThreatTracker:cullOldThreats(maxAge)
+    local currentTime = timer.getTime()
+    local culledThreats = {}
+    
+    for unitName, threatData in pairs(self.threats) do
+        local age = currentTime - threatData.observedAt
+        if age <= maxAge then
+            culledThreats[unitName] = threatData
+        end
+    end
+    
+    self.threats = culledThreats
+end
+
+return ThreatTracker
+
+end)
+__bundle_register("doctrines.operational.recon-rally-assault-plan", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- ReconRallyAssaultPlan: Classic three-phase offensive strategy
+-- Phase 1 (Recon):   Scout ahead to identify threats
+-- Phase 2 (Rally):   Stage forces at standoff distance for coordinated attack
+-- Phase 3 (Assault): Execute synchronized assault on objective
+-- Phase 4 (Defend):  Hold objective once secured
+--
+-- Returns { orders = { ... }, objectiveComplete = true/nil }.
+-- OperationalCommander handles commander selection and order assignment.
+
+local constants = require("constants")
+local Doctrine = require("doctrine")
+local SpatialAgent = require("spatial-agent")
+
+local orderStatus = constants.orderStatus
+local taskTypes = constants.taskTypes
+local alr = constants.acceptableLevelsOfRisk
+
+local ReconRallyAssaultPlan = {}
+setmetatable(ReconRallyAssaultPlan, {__index = Doctrine})
+ReconRallyAssaultPlan.__index = ReconRallyAssaultPlan
+
+function ReconRallyAssaultPlan.new(commanderName, config)
+    local self = Doctrine.new("ReconRallyAssault", commanderName)
+    setmetatable(self, ReconRallyAssaultPlan)
+
+    self.config = {
+        maxReconGroups         = (config and config.maxReconGroups)         or 1,
+        reconRadius            = (config and config.reconRadius)            or 8000,
+        assaultRadius          = (config and config.assaultRadius)          or 3000,
+        assaultStagingDistance = (config and config.assaultStagingDistance) or 10000,
+    }
+
+    self:registerPhase("Recon",   ReconRallyAssaultPlan.reconPhase)
+    self:registerPhase("Rally",   ReconRallyAssaultPlan.rallyPhase)
+    self:registerPhase("Assault", ReconRallyAssaultPlan.assaultPhase)
+    self:registerPhase("Defend",  ReconRallyAssaultPlan.defendPhase)
+
+    return self
+end
+
+function ReconRallyAssaultPlan:reconPhase(context)
+    local statusCounts = context.statusCounts
+
+    -- Wait for any active orders to resolve
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        return {}
+    end
+
+    -- Phase delta: only count orders issued since this phase started
+    local totalThisPhase     = statusCounts.total     - self.phaseBaseline.total
+    local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
+    local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
+
+    -- Recon orders resolved — check if objective itself is already clear
+    if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
+        if context.nearObjectiveThreatCount == 0 then
+            self:changePhase("Defend", statusCounts)
+        else
+            self:changePhase("Rally", statusCounts)
+        end
+        return {}
+    end
+
+    -- No orders issued yet this phase — dispatch recon
+    if totalThisPhase == 0 then
+        return {
+            orders = {
+                {
+                    type     = taskTypes.RECON,
+                    position = context.objectivePosition,
+                    radius   = self.config.reconRadius,
+                    alr      = alr.LOW,
+                    count    = self.config.maxReconGroups,
+                    missionProfile = {
+                        offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
+                        attritionRate = 0.0,
+                        ammoRatio     = 0.2,
+                    },
+                }
+            }
+        }
+    end
+
+    return {}
+end
+
+function ReconRallyAssaultPlan:rallyPhase(context)
+    local statusCounts  = context.statusCounts
+    local threatProfile = context.threatProfile
+    local threatCenter  = context.threatCenter
+
+    -- Wait for active orders
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        return {}
+    end
+
+    local totalThisPhase     = statusCounts.total     - self.phaseBaseline.total
+    local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
+    local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
+
+    -- Advance to Assault when rally orders resolve
+    if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
+        self:changePhase("Assault", statusCounts)
+        return {}
+    end
+
+    -- No threats to rally against — skip straight to Assault
+    if not threatProfile or threatProfile.unitCount == 0 or not threatCenter then
+        self:changePhase("Assault", statusCounts)
+        return {}
+    end
+
+    if context.availableCommanderCount == 0 then
+        return {}
+    end
+
+    -- Issue rally order template
+    if totalThisPhase == 0 then
+        return {
+            orders = {
+                {
+                    type            = taskTypes.RALLY,
+                    targetPosition  = threatCenter,
+                    proximity       = 500,
+                    stagingArc      = 120,
+                    stagingRadius   = self.config.assaultStagingDistance,
+                    alr             = alr.MEDIUM,
+                    count           = 3,
+                    missionProfile  = {
+                        attritionRate = 0.0,
+                        ammoRatio     = 0.8,
+                    },
+                }
+            }
+        }
+    end
+
+    return {}
+end
+
+function ReconRallyAssaultPlan:assaultPhase(context)
+    local objectiveRadius = context.objectiveRadius
+    local statusCounts  = context.statusCounts
+    local threatProfile = context.threatProfile
+    local threatCenter  = context.threatCenter
+
+    -- Wait for active orders
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        return {}
+    end
+
+    local totalThisPhase     = statusCounts.total     - self.phaseBaseline.total
+    local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
+    local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
+
+    -- Assault orders resolved
+    if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
+        self:changePhase("Recon", statusCounts)
+        return {}
+    end
+
+    if totalThisPhase == 0 then
+        -- Stay focused on assaulting a position rather than units spotted on the group's periphery
+        -- local assaultPosition = threatCenter or context.objectivePosition
+        local assaultPosition = context.objectivePosition
+
+        -- Build missionProfile from threat capability (need to match or exceed it)
+        local missionProfile = {
+            attritionRate = 0.0,
+            ammoRatio     = 0.9,
+        }
+        if threatProfile and threatProfile.unitCount > 0 then
+            missionProfile.offensiveCapability = {
+                vsInfantry = threatProfile.offensiveCapability.vsInfantry,
+                vsArmor    = threatProfile.offensiveCapability.vsArmor,
+                vsAir      = threatProfile.offensiveCapability.vsAir,
+            }
+        end
+
+        return {
+            orders = {
+                {
+                    type           = taskTypes.ASSAULT,
+                    position       = assaultPosition,
+                    proximity      = objectiveRadius or self.config.assaultRadius,
+                    alr            = alr.HIGH,
+                    count          = context.availableCommanderCount,
+                    deadline       = context.objectiveDeadline or (timer.getTime() + 1800),
+                    missionProfile = missionProfile,
+                }
+            }
+        }
+    end
+
+    return {}
+end
+
+function ReconRallyAssaultPlan:defendPhase(context)
+    local threatCenter = context.threatCenter
+
+    -- Bias defend position toward objective, acknowledging threats
+    local defendPosition = context.objectivePosition
+    if threatCenter then
+        defendPosition = {
+            x = (context.objectivePosition.x + threatCenter.x) / 2,
+            z = (context.objectivePosition.z + threatCenter.z) / 2,
+        }
+    end
+
+    return {
+        objectiveComplete = true,
+        orders = {
+            {
+                type           = taskTypes.DEFEND,
+                position       = defendPosition,
+                radius         = context.objectiveRadius,
+                alr            = alr.MEDIUM,
+                count          = context.availableCommanderCount,
+                missionProfile = {
+                    attritionRate = 0.0,
+                    ammoRatio     = 0.5,
+                },
+            }
+        }
+    }
+end
+
+return ReconRallyAssaultPlan
+
+end)
 __bundle_register("doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- Doctrine: Pluggable decision strategy for OODACommanders
 -- Receives context from ORIENT phase, returns decisions for ACT phase
@@ -668,174 +2846,72 @@ end
 return Doctrine
 
 end)
-__bundle_register("constants", function(require, _LOADED, __bundle_register, __bundle_modules)
-local acceptableLevelsOfRisk = {
-    LOW = "Low", -- Accept favorable engagements only; withdraw to preserve forces
-    MEDIUM = "Medium", -- Accept neutral/favorable engagements; withdraw to avoid heavy losses
-    HIGH = "High", -- Accept major losses to achieve objectives
-}
+__bundle_register("order-coordinator", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
 
-local dispositionTypes = {
-    ADVANCE = "Advance",
-    ASSAULT = "Assault",
-    DEFEND = "Defend",
-    EVADE = "Evade",
-    HOLD = "Hold Position",
-    RETREAT = "Retreat",
-}
+local orderStatus = constants.orderStatus
 
-local formationTypes = {
-    OFF_ROAD = "Off Road", -- moving off-road in Column formation 
-    ON_ROAD = "On Road", -- moving on road in Column formation 
-    RANK = "Rank", -- moving off road in Row formation 
-    CONE = "Cone", -- moving in Wedge formation 
-    VEE = "Vee", -- moving in Vee formation 
-    DIAMOND = "Diamond", -- moving in Diamond formation 
-    ECHELONL = "EchelonL", -- moving in Echelon Left formation 
-    ECHELONR = "EchelonR", -- moving in Echelon Right formation  
-}
-local garrisonTemplates = { --static objects
-    red = {"Ural-375"}, --category "Unarmed" {"KAMAZ Truck", "KAMAZ Truck"}, -- {"Ural-375", "Ural-375", "GAZ-66"},
-    blue = {"M 818"}, --category "Unarmed" --{"M 818", "M 818"},
-}
-local groundTemplates = { --frontline, rear, farp
-    red = {
-        -- {"KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck", "KAMAZ Truck"},
-        -- {"MTLB", "Ural-375", "Ural-375", "GAZ-66"},
-        -- {"BTR-80", "KAMAZ Truck", "KAMAZ Truck", "GAZ-66"},
-        -- {"BMP-2", "BTR-80", "MTLB", "GAZ-66"},
-        {"BRDM-2", "BRDM-2", "BRDM-2"},
-        {"BTR-80", "BTR-80", "BTR-80", "BTR-80"},
-        {"BMP-2", "BMP-2", "BTR-80", "BTR-80"},
-        {"T-72B", "T-72B", "BTR-60"}
-    },
-    blue = {
-        -- {"Hummer", "M 818", "M 818", "M 818"},
-        -- {"M-113", "Hummer", "M 818", "M 818"},
-        {"M1045 HMMWV TOW",  "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
-        {"M-113", "M-113", "M1043 HMMWV Armament",  "M1043 HMMWV Armament"},
-        {"M-2 Bradley", "M-2 Bradley", "M1043 HMMWV Armament", "M1043 HMMWV Armament"},
-        {"M-1 Abrams", "M-1 Abrams", "M-113"}
+local OrderCoordinator = {}
+
+-- Create a new OrderCoordinator instance
+-- This coordinator owns the order graph (objectives and their orders)
+function OrderCoordinator.new(coalition)
+    local self = {
+        coalition = coalition,
+        objectives = {},  -- Owns the canonical objective graph
+        ordersByCommander = {}  -- Index: commanderName -> order reference
     }
-}
+    setmetatable(self, {__index = OrderCoordinator})
+    return self
+end
 
-local taskTypes = {
-    DEFEND = 1,
-    REINFORCE = 2,
-    RECON = 3,
-    ASSAULT = 4,
-    RALLY = 5,
-    INDIRECT = 6,
-    AA = 7,
-    REPOSITION = 8,
-    PATROL = 9,
-}
+-- Add an objective to the coordinator
+function OrderCoordinator:addObjective(objective)
+    table.insert(self.objectives, objective)
+end
 
-local threatStatus = {
-    OBSERVED = "Observed",      -- Currently in LOS
-    SUSPECTED = "Suspected",    -- Not currently visible but believed present
-    UNCONFIRMED = "Unconfirmed", -- Position checked, not found
-    LOST = "Lost",              -- Unconfirmed for >5 minutes, presumed gone
-    ELIMINATED = "Eliminated"   -- Confirmed destroyed (BDA)
-}
+-- Get all objectives
+function OrderCoordinator:getObjectives()
+    return self.objectives
+end
 
-local statusTypes = {
-    HOLD = 1,
-    EN_ROUTE = 2,
-}
+-- Get order assigned to a specific commander
+function OrderCoordinator:getCommanderOrder(commanderName)
+    return self.ordersByCommander[commanderName]
+end
 
-local orderStatus = {
-    ASSIGNED = "Assigned",       -- Order received, not yet acted upon
-    IN_PROGRESS = "In Progress", -- Actively executing order
-    COMPLETED = "Completed",     -- Successfully completed or deadline reached
-    ABORTED = "Aborted",        -- Mission no longer possible or canceled
-}
+-- Sync order statuses from commanders back to the order graph
+-- This is a state mutation - should be called at OODA boundaries (ORIENT phase)
+function OrderCoordinator:syncOrderStatuses(commanders)
+    for _, commander in pairs(commanders) do
+        local status = commander:getStatus()
+        local commanderOrder = commander.orders
 
-local oodaStates = {
-    OBSERVE = "Observe",
-    ORIENT = "Orient",
-    DECIDE = "Decide",
-    ACT = "Act",
-}
+        -- Update all orders assigned to this commander
+        for _, objective in ipairs(self.objectives) do
+            for _, order in ipairs(objective.orders) do
+                if order == commanderOrder then
+                    if status.orderStatus and status.orderStatus ~= order.status then
+                        order.status = status.orderStatus
+                        objective.updatedAt = timer.getTime()
+                    end
+                end
+            end
+        end
+    end
+end
 
-local rgb = {
-    blue = {0,0.1,0.8,0.5},
-    red = {0.5,0,0.1,0.5},
-    neutral = {0.1,0.1,0.1,0.5},
-}
+-- Track order assignment to a commander
+function OrderCoordinator:assignOrder(commanderName, order)
+    self.ordersByCommander[commanderName] = order
+end
 
-local rulesOfEngagement = {
-    WEAPON_FREE = 0, -- Engage targets at will
-    RETURN_FIRE = 3, -- Engage only if fired upon
-    WEAPON_HOLD = 4, -- Hold fire, do not engage
-}
+-- Clear assignment when order completes/aborts
+function OrderCoordinator:clearAssignment(commanderName)
+    self.ordersByCommander[commanderName] = nil
+end
 
--- Unit classification and threat ratings
--- Each unit type has threat values against infantry, armor, and air
-local unitClassification = {
-    -- Infantry units (foot soldiers)
-    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
-    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
-    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
-    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 3}},
-    
-    -- Soft-skinned vehicles (unarmored trucks, transport)
-    ["Hummer"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    
-    -- Scout vehicles (armed soft-skinned)
-    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    ["M1045 HMMWV TOW"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 7, ["heavy-armor"] = 6, support = 4}},
-    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    ["Tigr_233036"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
-    
-    -- Light armor (APCs, IFVs)
-    ["M-113"] = {category = "light-armor", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
-    ["BMD-1"] = {category = "light-armor", threats = {infantry = 5, ["light-armor"] = 4, ["heavy-armor"] = 2, support = 3}},
-    ["M-2 Bradley"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
-    ["BMP-2"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 2, support = 4}},
-    ["BMP-3"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
-    ["BTR-60"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    ["BTR-80"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    
-    -- Heavy armor (MBTs)
-    ["M-1 Abrams"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 8, support = 7}},
-    ["T-72B"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7, support = 7}},
-    ["T-80U"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7.5, support = 7}},
-    
-    -- Support units (AA systems)
-    ["Avenger"] = {category = "support", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
-    ["Vulcan"] = {category = "support", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 2}},
-    ["Strela-10M3"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
-    ["Strela-1 9P31"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
-    
-    -- Support units (Artillery)
-    ["M-109"] = {category = "support", threats = {infantry = 8, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 5}},
-    ["2S9 Nona"] = {category = "support", threats = {infantry = 7, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
-}
-
-return {
-    acceptableLevelsOfRisk = acceptableLevelsOfRisk,
-    dispositionTypes = dispositionTypes,
-    formationTypes = formationTypes,
-    garrisonTemplates = garrisonTemplates,
-    groundTemplates = groundTemplates,
-    orderStatus = orderStatus,
-    rulesOfEngagement = rulesOfEngagement,
-    oodaStates = oodaStates,
-    rgb = rgb,
-    taskTypes = taskTypes,
-    threatStatus = threatStatus,
-    statusTypes = statusTypes,
-    unitClassification = unitClassification
-}
+return OrderCoordinator
 
 end)
 __bundle_register("order", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -859,7 +2935,7 @@ function Order.new(config)
     
     -- Optional fields with defaults
     self.alr = config.alr or constants.acceptableLevelsOfRisk.MEDIUM
-    self.radius = config.radius or 500
+    self.proximity = config.proximity or 500
     self.deadline = config.deadline       -- nil or timer.getTime() + duration
     self.pushTime = config.pushTime       -- nil or timer.getTime() + calculated rally duration
     self.missionProfile = config.missionProfile or nil
@@ -1016,6 +3092,15 @@ function GroupCommander.new(groupName, config)
     return self
 end
 
+function GroupCommander.getInstance(groupName)
+    for _, instance in ipairs(GroupCommander.instances) do
+        if instance.groupName == groupName then
+            return instance
+        end
+    end
+    return nil
+end
+
 function GroupCommander.getInstances(coalition)
     if not coalition then
         return GroupCommander.instances
@@ -1028,6 +3113,10 @@ function GroupCommander.getInstances(coalition)
         end
     end
     return filtered
+end
+
+function GroupCommander:clearOrders()
+    self.orders = nil
 end
 
 function GroupCommander:observe()
@@ -1158,12 +3247,13 @@ function GroupCommander:buildDecisionContext()
             retreatThreshold = 0.8
         end
 
-        orderHasDeadline = self.orders.expirationTime ~= nil
+        orderHasDeadline = self.orders.deadline ~= nil
         orderIsExpired   = self.orders:isExpired() or false
     end
 
     return {
         groupName        = self.groupName,
+        ownAlr           = self.alr,
         ownPosition      = ownPosition,
         totalUnits       = #self.initialUnitNames,
         initialAmmoCount = self.initialAmmoCount,
@@ -1665,289 +3755,6 @@ function GroupCommander:stopMovement()
 end
 
 return GroupCommander
-
-end)
-__bundle_register("threat-tracker", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local SpatialAgent = require("spatial-agent")
-local threatStatus = constants.threatStatus
-
--- Threat tracking helper for managing observed enemy units with timestamps
--- Threats are stored in a table indexed by unit name
--- Each threat has multiple sightings from different observers with timestamps
--- This allows threats to persist and be shared even when temporarily out of sight
-
-local ThreatTracker = {}
-ThreatTracker.__index = ThreatTracker
-
-function ThreatTracker.new(observerName)
-    local self = setmetatable({}, ThreatTracker)
-    self.threats = {}
-    self.observerName = observerName  -- Name of the commander using this tracker
-    return self
-end
-
--- Update threats with newly observed units
--- observedUnits: array of {name, position} for units with LOS
-function ThreatTracker:updateThreats(observedUnits)
-    local currentTime = timer.getTime()
-    
-    -- Update or add observed threats
-    for _, unitData in ipairs(observedUnits) do
-        local threat = self.threats[unitData.name]
-        
-        if not threat then
-            -- New threat
-            env.info(self.observerName .. " ThreatTracker: New threat detected - " .. unitData.name .. " (OBSERVED)")
-            self.threats[unitData.name] = {
-                name = unitData.name,
-                position = unitData.position,
-                status = threatStatus.OBSERVED,
-                sightings = {
-                    {
-                        observedBy = self.observerName,
-                        observedAt = currentTime,
-                        position = unitData.position
-                    }
-                },
-                lastSighting = currentTime
-            }
-        else
-            -- Update existing threat
-            local oldStatus = threat.status
-            threat.position = unitData.position
-            threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
-            threat.lastSighting = currentTime
-            
-            -- Add new sighting
-            table.insert(threat.sightings, {
-                observedBy = self.observerName,
-                observedAt = currentTime,
-                position = unitData.position
-            })
-        end
-    end
-end
-
-function ThreatTracker:updateExpectedThreats(observedThreats, observerPosition, detectionRadius)
-    local observedNames = {}
-    
-    for _, unitData in ipairs(observedThreats) do
-        observedNames[unitData.name] = true
-    end
-    
-    -- Check for expected threats that were not observed. If we're close enough
-    -- to have seen it but did not, its last known position is in doubt (UNCONFIRMED).
-    -- If we're too far to check, there's no evidence against it (SUSPECTED).
-    for unitName, threat in pairs(self.threats) do
-        local notObserved = not observedNames[unitName]
-        local isExpected = threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST
-        if notObserved and isExpected then
-            local inExpectedRadius = SpatialAgent.isWithinRadius(threat.position, observerPosition, detectionRadius)
-            if inExpectedRadius then
-                threat.status = threatStatus.UNCONFIRMED
-            else
-                threat.status = threatStatus.SUSPECTED
-            end
-        end
-    end
-end
-
--- Get the threats table
--- Returns: table indexed by unit name
-function ThreatTracker:getThreats()
-    return self.threats
-end
-
--- Get a single threat by name
--- Returns: threat data or nil
-function ThreatTracker:getThreat(unitName)
-    return self.threats[unitName]
-end
-
--- Merge threat intel from external source (e.g., strategic commander)
--- threatIntel: partial threat table with updates to merge
-function ThreatTracker:mergeThreatIntel(threatIntel)
-    for unitName, incomingThreat in pairs(threatIntel) do
-        local existingThreat = self.threats[unitName]
-        
-        if not existingThreat then
-            -- New threat from external intel
-            self.threats[unitName] = incomingThreat
-        else
-            -- Merge with existing threat
-            -- Update position if incoming is more recent
-            if incomingThreat.lastSighting > existingThreat.lastSighting then
-                existingThreat.position = incomingThreat.position
-                existingThreat.lastSighting = incomingThreat.lastSighting
-            end
-            
-            -- Update status (prefer more definitive states)
-            if incomingThreat.status then
-                existingThreat.status = incomingThreat.status
-            end
-            
-            -- Merge sightings
-            if incomingThreat.sightings then
-                for _, sighting in ipairs(incomingThreat.sightings) do
-                    -- Avoid duplicate sightings from same observer at same time
-                    local isDuplicate = false
-                    for _, existingSighting in ipairs(existingThreat.sightings) do
-                        if existingSighting.observedBy == sighting.observedBy and
-                           existingSighting.observedAt == sighting.observedAt then
-                            isDuplicate = true
-                            break
-                        end
-                    end
-                    if not isDuplicate then
-                        table.insert(existingThreat.sightings, sighting)
-                    end
-                end
-            end
-        end
-    end
-end
-
--- Mark a threat with a specific status
--- unitName: name of the threat unit
--- status: threatStatus constant (OBSERVED, SUSPECTED, UNCONFIRMED, LOST, ELIMINATED)
-function ThreatTracker:markThreatStatus(unitName, status)
-    local threat = self.threats[unitName]
-    if threat then
-        local oldStatus = threat.status
-        threat.status = status
-        if oldStatus ~= status then
-            threat.statusChangedAt = timer.getTime()
-        end
-    end
-end
-
--- Get threats we would expect to see in an area
--- position: {x, y, z} position to check
--- radius: search radius in meters
--- Returns: array of threat names that are in area but not LOST or ELIMINATED
-function ThreatTracker:expectedThreats(position, radius)
-    local expected = {}
-    
-    for unitName, threat in pairs(self.threats) do
-        if threat.status ~= threatStatus.ELIMINATED and threat.status ~= threatStatus.LOST then
-            if SpatialAgent.isWithinRadius(threat.position, position, radius) then
-                table.insert(expected, unitName)
-            end
-        end
-    end
-    
-    return expected
-end
-
--- Count threats in memory
--- Returns: number of threats stored
-function ThreatTracker:count()
-    local count = 0
-    for _ in pairs(self.threats) do
-        count = count + 1
-    end
-    return count
-end
-
--- Age threats and progress their status based on time
--- UNCONFIRMED for >5 minutes → LOST
--- LOST or ELIMINATED for >10 minutes → removed
-function ThreatTracker:ageThreats()
-    local currentTime = timer.getTime()
-    local toRemove = {}
-    
-    for unitName, threat in pairs(self.threats) do
-        -- Track when status was last changed
-        if not threat.statusChangedAt then
-            threat.statusChangedAt = threat.lastSighting
-        end
-        
-        local timeInStatus = currentTime - threat.statusChangedAt
-        
-        -- Progress UNCONFIRMED → LOST after 5 minutes
-        if threat.status == threatStatus.UNCONFIRMED and timeInStatus > 300 then
-            threat.status = threatStatus.LOST
-            threat.statusChangedAt = currentTime
-        end
-        
-        -- Remove LOST or ELIMINATED threats after 10 minutes
-        if (threat.status == threatStatus.LOST or threat.status == threatStatus.ELIMINATED) and timeInStatus > 600 then
-            table.insert(toRemove, unitName)
-        end
-    end
-    
-    -- Remove threats marked for removal
-    for _, unitName in ipairs(toRemove) do
-        self.threats[unitName] = nil
-    end
-end
-
-function ThreatTracker:getRecentThreats(maxAge)
-    local currentTime = timer.getTime()
-    local recentThreats = {}
-    maxAge = maxAge or 120  -- Default 2 minutes
-    
-    for unitName, threat in pairs(self.threats) do
-        -- Only include threats that are actively relevant
-        local includeInAnalysis = false
-        
-        if threat.status == "Observed" then
-            includeInAnalysis = true
-        elseif threat.status == "Suspected" and threat.lastSighting then
-            -- Include suspected threats if seen within last 60 seconds
-            local timeSinceLastSeen = currentTime - threat.lastSighting
-            if timeSinceLastSeen < maxAge then
-                includeInAnalysis = true
-            end
-        end
-        
-        if includeInAnalysis then
-            recentThreats[unitName] = threat  -- Return threat object indexed by name
-        end
-    end
-    
-    return recentThreats
-end
-
--- Check if we have any recently observed or suspected threats
--- Returns: true if there are threats with fresh intel (within maxAge seconds)
-function ThreatTracker:hasRecentThreats(maxAge)
-    local recentThreats = self:getRecentThreats(maxAge)
-    return #recentThreats > 0
-end
-
--- Get the most recent sighting time across all threats
--- Returns: timestamp of most recent sighting, or 0 if no threats
-function ThreatTracker:getMostRecentSightingTime()
-    local mostRecent = 0
-    
-    for _, threat in pairs(self.threats) do
-        if threat.lastSighting and threat.lastSighting > mostRecent then
-            mostRecent = threat.lastSighting
-        end
-    end
-    
-    return mostRecent
-end
-
--- Cull threats that haven't been observed recently (for future use)
--- maxAge: maximum age in seconds (threats older than this will be removed)
-function ThreatTracker:cullOldThreats(maxAge)
-    local currentTime = timer.getTime()
-    local culledThreats = {}
-    
-    for unitName, threatData in pairs(self.threats) do
-        local age = currentTime - threatData.observedAt
-        if age <= maxAge then
-            culledThreats[unitName] = threatData
-        end
-    end
-    
-    self.threats = culledThreats
-end
-
-return ThreatTracker
 
 end)
 __bundle_register("threat-detector", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -3107,6 +4914,64 @@ end
 return ReconDoctrine
 
 end)
+__bundle_register("doctrines.tactical.patrol-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local dispositionTypes = constants.dispositionTypes
+local Doctrine = require("doctrine")
+local SpatialAgent = require("spatial-agent")
+local PatrolDoctrine = {}
+setmetatable(PatrolDoctrine, {__index = Doctrine})
+PatrolDoctrine.__index = PatrolDoctrine
+
+-- Factory method for creating new Doctrine instances
+function PatrolDoctrine.new(commanderName)
+    local self = Doctrine.new("Patrol", commanderName)
+    setmetatable(self, PatrolDoctrine)
+
+    self:registerPhase("OutboundLeg", PatrolDoctrine.outboundPhase)
+    self:registerPhase("InboundLeg", PatrolDoctrine.inboundPhase)
+
+    return self
+end
+
+function PatrolDoctrine:outboundPhase(context)
+    if not self.state.StartingPoint then
+        self.state.StartingPoint = context.ownPosition
+    end
+
+    if not self.state.Destination then
+        self.state.Destination = context.orderPosition or self.state.StartingPoint
+    end
+
+    local distanceToDestination = self.state.Destination and SpatialAgent.distance2D(context.ownPosition, self.state.Destination)
+    env.info(context.groupName .. " is " .. tostring(distanceToDestination) .. " meters from patrol destination")
+    local isAtDestination = distanceToDestination and distanceToDestination < 50
+
+    if isAtDestination then
+        env.info(context.groupName .. " has reached patrol destination, switching to InboundLeg")
+        self:changePhase("InboundLeg")
+        return {disposition = dispositionTypes.HOLD, destination = nil}
+    else
+        return {disposition = dispositionTypes.ADVANCE, destination = self.state.Destination, orderAction = "start"}
+    end
+end
+
+function PatrolDoctrine:inboundPhase(context)
+    local isAtStart = self.state.StartingPoint and SpatialAgent.distance2D(context.ownPosition, self.state.StartingPoint) < 50
+
+    if isAtStart then
+        env.info(context.groupName .. " has returned to starting point, switching to OutboundLeg")
+        self:changePhase("OutboundLeg")
+        return {disposition = dispositionTypes.HOLD, destination = nil}
+    else
+        return {disposition = dispositionTypes.ADVANCE, destination = self.state.StartingPoint}
+    end
+end
+
+
+return PatrolDoctrine
+
+end)
 __bundle_register("doctrines.tactical.assault-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- Reworking of AsOrderedDoctrine to emphasize occupying position
 --
@@ -3227,8 +5092,13 @@ function AssaultDoctrine:defendPhase(context)
     -- Hold position and defend against nearby threats
     local destination = context.orderPosition
     local proximity = context.orderProximity or 500
+    local distanceToObjective = SpatialAgent.distance2D(context.ownPosition, destination)
 
-    if context.orderIsExpired or not context.orderHasDeadline then
+    local isExpired = context.orderIsExpired or not context.orderHasDeadline
+    local isCloseEnough = distanceToObjective <= proximity
+    local isComplete = isExpired or isCloseEnough
+
+    if isComplete then
         return {
             disposition = dispositionTypes.DEFEND,
             destination = destination,
@@ -3269,296 +5139,6 @@ end
 return AssaultDoctrine
 
 end)
-__bundle_register("ooda-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local oodaStates = constants.oodaStates
-
-local OODACommander = {}
-OODACommander.__index = OODACommander
-
-function OODACommander.new(config)
-    local self = setmetatable({}, OODACommander)
-
-    local oodaInterval = config.interval or 10
-
-    self.oodaState = oodaStates.OBSERVE
-    self.oodaOffset = math.random() * oodaInterval
-    self.destroyed = false  -- Flag to stop scheduling
-
-    -- Store schedule ID so we can cancel it later
-    self.scheduleId = mist.scheduleFunction(
-        OODACommander.oodaTick,
-        {self},
-        timer.getTime() + self.oodaOffset,
-        oodaInterval
-    )
-    return self
-end
-
-function OODACommander:oodaTick()
-    if self.oodaState == oodaStates.OBSERVE then
-        self:observe()
-        self.oodaState = oodaStates.ORIENT
-    elseif self.oodaState == oodaStates.ORIENT then
-        self:orient()
-        self.oodaState = oodaStates.DECIDE
-    elseif self.oodaState == oodaStates.DECIDE then
-        self:decide()
-        self.oodaState = oodaStates.ACT
-    elseif self.oodaState == oodaStates.ACT then
-        self:act()
-        self.oodaState = oodaStates.OBSERVE
-    end
-    
-    -- After any phase, check if destroyed and cancel schedule
-    if self.destroyed then
-        self:cancelSchedule()
-    end
-end
-
-function OODACommander:observe()
-    error("OODACommander subclass must implement observe()")
-end
-
-function OODACommander:orient()
-    error("OODACommander subclass must implement orient()")
-end
-
-function OODACommander:decide()
-    error("OODACommander subclass must implement decide()")
-end
-
-function OODACommander:act()
-    error("OODACommander subclass must implement act()")
-end
-
--- Cancel the scheduled OODA loop
-function OODACommander:cancelSchedule()
-    if self.scheduleId then
-        mist.removeFunction(self.scheduleId)
-        self.scheduleId = nil
-    end
-end
-
-return OODACommander
-
-end)
-__bundle_register("group-profiler", function(require, _LOADED, __bundle_register, __bundle_modules)
--- GroupProfiler: Unified force analysis and status profiling
--- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
--- Returns GroupProfile tables with capability, composition, unit count, and status.
---
--- GroupProfile schema:
--- {
---     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
---     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
---     unitCount           = N,
---     -- Status fields (only from profileGroup, nil from profileUnits):
---     attritionRate       = 0.0-1.0,
---     ammoRatio           = 0.0-1.0,
---     fuelRatio           = 0.0-1.0,
--- }
-
-local constants = require("constants")
-local unitClassification = constants.unitClassification
-
-local GroupProfiler = {}
-
--- ============================================================================
--- UNIT CLASSIFICATION
--- ============================================================================
-
-function GroupProfiler.classifyUnit(unit)
-    if not unit or not unit:isExist() then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
-    end
-
-    local typeName = unit:getTypeName()
-    if not typeName then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
-    end
-
-    local classification = unitClassification[typeName]
-    if classification then
-        return classification
-    end
-
-    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
-    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
-end
-
--- ============================================================================
--- UNIT COLLECTION HELPERS
--- ============================================================================
-
-function GroupProfiler.getUnitsFromGroups(groups)
-    local units = {}
-
-    local groupList = {}
-    if type(groups) == "table" and groups.getUnits then
-        groupList = {groups}
-    else
-        groupList = groups
-    end
-
-    for _, group in ipairs(groupList) do
-        if group and group:isExist() then
-            local groupUnits = group:getUnits()
-            for _, unit in ipairs(groupUnits) do
-                if unit and unit:isExist() then
-                    table.insert(units, unit)
-                end
-            end
-        end
-    end
-
-    return units
-end
-
-function GroupProfiler.getUnitsFromGroupNames(groupNames)
-    local groups = {}
-    for _, groupName in ipairs(groupNames) do
-        local group = Group.getByName(groupName)
-        if group and group:isExist() then
-            table.insert(groups, group)
-        end
-    end
-    return GroupProfiler.getUnitsFromGroups(groups)
-end
-
--- ============================================================================
--- PROFILE CONSTRUCTION
--- ============================================================================
-
--- Build a capability/composition profile from a list of unit references.
--- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
-function GroupProfiler.profileUnits(units)
-    local profile = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
-        unitCount           = 0,
-    }
-
-    if not units or #units == 0 then
-        return profile
-    end
-
-    for _, unit in ipairs(units) do
-        if unit and unit:isExist() then
-            local classification = GroupProfiler.classifyUnit(unit)
-            local threats = classification.threats
-
-            profile.unitCount = profile.unitCount + 1
-
-            local cat = classification.category
-            if cat == "infantry" then
-                profile.composition.infantry = profile.composition.infantry + 1
-            elseif cat == "light-armor" then
-                profile.composition.lightArmor = profile.composition.lightArmor + 1
-            elseif cat == "heavy-armor" then
-                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
-            elseif cat == "support" then
-                profile.composition.support = profile.composition.support + 1
-            end
-
-            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
-            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
-                                                     + threats["light-armor"]
-                                                     + threats["heavy-armor"]
-            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
-        end
-    end
-
-    return profile
-end
-
--- Build a full profile for a named DCS group, including status ratios.
-function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
-    local zeroed = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
-        unitCount           = 0,
-        attritionRate       = 1,
-        ammoRatio           = 0,
-        fuelRatio           = 0,
-    }
-
-    local group = Group.getByName(groupName)
-    if not group or not group:isExist() then
-        return zeroed
-    end
-
-    -- Collect alive units
-    local aliveUnits = {}
-    for _, unit in ipairs(group:getUnits()) do
-        if unit and unit:isExist() then
-            table.insert(aliveUnits, unit)
-        end
-    end
-
-    local profile = GroupProfiler.profileUnits(aliveUnits)
-
-    -- Attrition rate
-    local initialCount = (initialUnitNames and #initialUnitNames) or 0
-    if initialCount == 0 then
-        profile.attritionRate = 0
-    else
-        profile.attritionRate = 1 - (profile.unitCount / initialCount)
-    end
-
-    -- Ammo ratio
-    if not initialAmmoCount or initialAmmoCount == 0 then
-        profile.ammoRatio = 1.0  -- unarmed units are always considered "full"
-    else
-        local currentAmmo = 0
-        for _, unit in ipairs(aliveUnits) do
-            local ammoTable = unit:getAmmo()
-            if ammoTable then
-                for _, entry in ipairs(ammoTable) do
-                    if entry.count then
-                        currentAmmo = currentAmmo + entry.count
-                    end
-                end
-            end
-        end
-        profile.ammoRatio = currentAmmo / initialAmmoCount
-    end
-
-    -- Fuel (simulated, passed in directly)
-    profile.fuelRatio = fuelRemaining or 0
-
-    return profile
-end
-
--- ============================================================================
--- FORCE COMPARISON
--- ============================================================================
-
--- Returns how favorable our position is against the threat.
--- Higher = better for us. math.huge = no opposition.
-function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
-    local ownCap    = ownProfile.offensiveCapability
-    local theirComp = threatProfile.composition
-
-    local ourPower = ownCap.vsInfantry * theirComp.infantry
-                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
-                   + ownCap.vsAir      * theirComp.support
-
-    local theirCap = threatProfile.offensiveCapability
-    local ownComp  = ownProfile.composition
-
-    local theirPower = theirCap.vsInfantry * ownComp.infantry
-                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
-                     + theirCap.vsAir      * ownComp.support
-
-    if ourPower == 0 and theirPower == 0 then return 0 end
-    if theirPower == 0 and ourPower > 0 then return math.huge end
-    return ourPower / theirPower
-end
-
-return GroupProfiler
-
-end)
 __bundle_register("doctrines.tactical.defensive-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- DefensivePosturePlan: Stand-your-ground autonomous behavior
 --
@@ -3571,6 +5151,8 @@ __bundle_register("doctrines.tactical.defensive-doctrine", function(require, _LO
 -- This is a conservative defensive strategy for units not actively committed to objectives.
 
 local constants = require("constants")
+local acceptableLevelsOfRisk = constants.acceptableLevelsOfRisk
+
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local Doctrine = require("doctrine")
 local SpatialAgent = require("spatial-agent")
@@ -3581,11 +5163,30 @@ local DefensiveDoctrine = {}
 setmetatable(DefensiveDoctrine, {__index = Doctrine})
 DefensiveDoctrine.__index = DefensiveDoctrine
 
+local alrThreshold = {
+    [acceptableLevelsOfRisk.LOW] = {
+        advance = 1.0,
+        hold = 0.5,
+        retreat = 0.3,
+    },
+    [acceptableLevelsOfRisk.MEDIUM] = {
+        advance = 0.8,
+        hold = 0.6,
+        retreat = 0.5,
+    },
+    [acceptableLevelsOfRisk.HIGH] = {
+        advance = 0.6,
+        hold = 0.9,
+        retreat = 0.7,
+    }
+}
+
 function DefensiveDoctrine.new(commanderName)
     local self = Doctrine.new("Defensive", commanderName)
     setmetatable(self, DefensiveDoctrine)
     self.basePosition = nil
 
+    self:registerPhase("Position", DefensiveDoctrine.positionPhase)
     self:registerPhase("Hold", DefensiveDoctrine.holdPhase)
     self:registerPhase("Retreat", DefensiveDoctrine.retreatPhase)
     self:registerPhase("Advance", DefensiveDoctrine.advancePhase)
@@ -3609,7 +5210,9 @@ function DefensiveDoctrine:considerRetreat(context)
     local defenseRadius = context.defenseRadius or 4000
 
     -- as distance from base approaches max allowed, increase retreat pressure
-    retreatAssessment = retreatAssessment + excursion / defenseRadius
+    if self.currentPhaseName == "Advance" then
+        retreatAssessment = retreatAssessment + excursion / defenseRadius
+    end
 
     -- ammunition
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
@@ -3623,10 +5226,12 @@ function DefensiveDoctrine:considerRetreat(context)
     retreatAssessment = retreatAssessment + attritionRate
 
     -- threat favorability
-    if threat.count > 0 and threat.favorability < 1.0 then
-        retreatAssessment = retreatAssessment + (1 - threat.favorability)
-    else
-        retreatAssessment = retreatAssessment - (1 / threat.favorability)
+    if threat.count > 0 then
+        if threat.favorability < 1.0 then
+            retreatAssessment = retreatAssessment + (1 - threat.favorability) * 2
+        else
+            retreatAssessment = retreatAssessment - (1 / threat.favorability)
+        end
     end
 
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
@@ -3653,15 +5258,13 @@ function DefensiveDoctrine:considerAdvance(context)
     local defenseRadius = context.defenseRadius or 4000
 
     -- decrease advance likelihood as group gets farther from base position
-    advanceAssessment = advanceAssessment - excursion / defenseRadius
+    if self.currentPhaseName == "Advance" then
+        advanceAssessment = advanceAssessment - excursion / defenseRadius
+    end
 
     -- threat favorability
     if threat.count > 0 then
-        if threat.favorability < 1.0 then
-            advanceAssessment = advanceAssessment + threat.favorability
-        else
-            advanceAssessment = advanceAssessment + threat.favorability / 2
-        end
+        advanceAssessment = advanceAssessment + threat.favorability / 2
     end
 
     -- attrition rate
@@ -3676,17 +5279,53 @@ function DefensiveDoctrine:considerAdvance(context)
     return advanceAssessment
 end
 
-function DefensiveDoctrine:holdPhase(context)
-    local retreatThreshold = 1.0
-    local advanceThreshold = 0.7
+function DefensiveDoctrine:positionPhase(context)
+    local alr = context.orderAlr or context.ownAlr
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
+    local distanceToDestination = SpatialAgent.distance2D(ownPosition, context.orderPosition or self.basePosition)
 
-    if self:considerRetreat(context) >= retreatThreshold then
+    local holdThreshold = alrThreshold[alr].hold
+    local retreatThreshold = alrThreshold[alr].retreat
+    local retreatAssessment = self:considerRetreat(context)
+    local advanceAssessment = self:considerAdvance(context)
+
+    if threat.count > 0 then
+        if retreatAssessment >= retreatThreshold then
+            self:changePhase("Retreat")
+        elseif retreatAssessment >= holdThreshold then
+            self:changePhase("Hold")
+        end
+    end
+
+    if distanceToDestination <= 500 then
+        self:changePhase("Hold")
+    end
+
+    return {
+        disposition = dispositionTypes.ADVANCE,
+        destination = context.orderPosition or self.basePosition
+    }
+end
+
+function DefensiveDoctrine:holdPhase(context)
+    local alr = context.orderAlr or context.ownAlr
+    local retreatThreshold = alrThreshold[alr].retreat
+    local advanceThreshold = alrThreshold[alr].advance
+
+    local retreatAssessment = self:considerRetreat(context)
+    local advanceAssessment = self:considerAdvance(context)
+
+    if retreatAssessment >= retreatThreshold then
         self:changePhase("Retreat")
-    elseif self:considerAdvance(context) >= advanceThreshold then
+    elseif advanceAssessment >= advanceThreshold then
         self:changePhase("Advance")
     end
 
-    return {disposition = dispositionTypes.HOLD, destination = nil}
+    return {
+        disposition = dispositionTypes.HOLD,
+        destination = nil
+    }
 end
 
 function DefensiveDoctrine:retreatPhase(context)
@@ -3712,11 +5351,12 @@ function DefensiveDoctrine:retreatPhase(context)
 end
 
 function DefensiveDoctrine:advancePhase(context)
+    local alr = context.orderAlr or context.ownAlr
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    local holdThreshold = 0.5
-    local retreatThreshold = 0.3
+    local holdThreshold = alrThreshold[alr].hold
+    local retreatThreshold = alrThreshold[alr].retreat
     local retreatAssessment = self:considerRetreat(context)
     local standoffDistance = 500
 
@@ -5036,39 +6676,6 @@ end
 return ControlZones
 
 end)
-__bundle_register("helpers", function(require, _LOADED, __bundle_register, __bundle_modules)
-local function isCounterClockwise(p1, p2, p3)
-    -- swapped to account for DCS coordinate weirdness
-    return (p2.y - p1.y) * (p3.x - p1.x) - (p2.x - p1.x) * (p3.y - p1.y) > 0
-    -- standard (x,y) as (N/S,E/W) version:
-    -- return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x) > 0
-end
-
--- Normalize angle to [0, 2π)
-local function normalizeAngle(angle)
-    local TWO_PI = 2 * math.pi
-    angle = angle % TWO_PI
-    if angle < 0 then
-        angle = angle + TWO_PI
-    end
-    return angle
-end
-local function angularDistance(from, to)
-    local TWO_PI = 2 * math.pi
-    local diff = (to - from) % TWO_PI
-    if diff < 0 then
-        diff = diff + TWO_PI
-    end
-    return diff
-end
-
-return {
-    isCounterClockwise = isCounterClockwise,
-    normalizeAngle = normalizeAngle,
-    angularDistance = angularDistance
-}
-
-end)
 __bundle_register("map", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = require("constants").rgb
 local settings = require("settings")
@@ -5272,25 +6879,24 @@ end
 
 return Map
 end)
-__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
-local settings = {
-    draw = {
-        edges = true,
-        zones = true,
-        frontlines = true,
-        directives = true,
-        groupOrders = true,
-        objectives = true,
-    },
-    displayToAll = {
-        zones = true,
-        frontlines = true,
-        directives = true,
-        groupOrders = false,
-        objectives = false,
-    }
-}
+__bundle_register("table", function(require, _LOADED, __bundle_register, __bundle_modules)
+function table.contains(table, el)
+    for _, v in pairs(table) do
+        if v == el then
+            return true
+        end
+    end
+    return false
+end
 
-return settings
+function table.findIndex(table, needle)
+    for i, v in pairs(table) do
+        if v == needle then
+            return i
+        end
+    end
+    return nil
+end
+
 end)
 return __bundle_require("__root")

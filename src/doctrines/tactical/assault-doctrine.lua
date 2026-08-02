@@ -117,8 +117,13 @@ function AssaultDoctrine:defendPhase(context)
     -- Hold position and defend against nearby threats
     local destination = context.orderPosition
     local proximity = context.orderProximity or 500
+    local distanceToObjective = SpatialAgent.distance2D(context.ownPosition, destination)
 
-    if context.orderIsExpired or not context.orderHasDeadline then
+    local isExpired = context.orderIsExpired or not context.orderHasDeadline
+    local isCloseEnough = distanceToObjective <= proximity
+    local isComplete = isExpired or isCloseEnough
+
+    if isComplete then
         return {
             disposition = dispositionTypes.DEFEND,
             destination = destination,
