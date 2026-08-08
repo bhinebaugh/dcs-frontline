@@ -1,93 +1,97 @@
-local constants = require("constants")
-local taskTypes = constants.taskTypes
+Constants = require("constants")
+AcceptableLevelsOfRisk = Constants.acceptableLevelsOfRisk
+GroundTemplates = Constants.groundTemplates
+TaskTypes = Constants.taskTypes
 
-local GroupCommander = require("group-commander")
-local Objective = require("objective")
-local Order = require("order")
-local OperationalCommander = require("operational-commander")
-local PatrolPlan = require("doctrines.tactical.patrol-doctrine")
+CoalitionCommander = require("coalition-commander")
+ControlZones = require("control-zones")
+GroupCommander = require("group-commander")
+Map = require("map")
+Order = require("order")
+PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 
 -- Initial objective for Alpha is to defend the bridge
 -- near the coordinates:
-local blueDefendPosition = coord.LLtoLO(
-    42 + 32/60 + 1/3600,
-    44 + 05/60 + 38/3600
+BlueDefendPosition = coord.LLtoLO(
+    46 + 29/60 + 18/3600,
+    38 + 08/60 + 05/3600
 )
 
 -- Known safe rally point for Blue forces
-local blueRallyPosition = coord.LLtoLO(
-    42 + 31/60 + 45/3600,
-    44 + 05/60 + 35/3600
+BluePatrolPosition = coord.LLtoLO(
+    46 + 28/60 + 26/3600,
+    38 + 19/60 + 12/3600
 )
 
 -- Initial objective for Bravo is to reposition to the
 -- Kvemo-Khoshka village at these coordinates:
-local redRepositionPosition = coord.LLtoLO(
-    42 + 27/60 + 53/3600,
-    44 + 03/60 + 37/3600
+RedPatrolPosition = coord.LLtoLO(
+    46 + 33/60 + 23/3600,
+    38 + 27/60 + 25/3600
 )
 
 -- Known safe rally point for Red forces
-local redRallyPosition = coord.LLtoLO(
-    42 + 34/60 + 0/3600,
-    44 + 06/60 + 30/3600
+RedDefendPosition = coord.LLtoLO(
+    46 + 32/60 + 58/3600,
+    38 + 39/60 + 09/3600
 )
 
-local opsBlue = OperationalCommander.new({color = "blue"})
-local opsRed = OperationalCommander.new({color = "red"})
+CZ = ControlZones.new(nil, GroundTemplates)
+CZ.map = Map.new()
 
--- Assign rally points to strategic commanders
-opsBlue.rallyPoints = {
-    {position = blueRallyPosition, radius = 500}
-}
+CcBlue = CoalitionCommander.new(CZ, {color = "blue", groundTemplates = GroundTemplates.blue})
+CcRed = CoalitionCommander.new(CZ, {color = "red", groundTemplates = GroundTemplates.red})
+CZ:addCommander("blue", CcBlue)
+CZ:addCommander("red", CcRed)
 
-opsRed.rallyPoints = {
-    {position = redRallyPosition, radius = 500}
-}
+ControlZones:spawnGroupAtPoint(
+    "Alpha",
+    BlueDefendPosition,
+    "blue",
+    GroundTemplates.blue[2],
+    90
+)
 
--- Create and assign objectives directly
-opsBlue.orderCoordinator.objectives = {
-    -- Objective.new({
-    --     type = taskTypes.ASSAULT,
-    --     position = blueDefendPosition,
-    --     radius = 500,
-    -- })
-}
+ControlZones:spawnGroupAtPoint(
+    "Arnold",
+    RedPatrolPosition,
+    "red",
+    GroundTemplates.red[1],
+    270
+)
 
-opsRed.orderCoordinator.objectives = {
-    -- Objective.new({
-    --     type = taskTypes.ASSAULT,
-    --     position = redRepositionPosition,
-    --     deadline = timer.getTime() + 1800,  -- 30 minute deadline
-    -- })
-}
+ControlZones:spawnGroupAtPoint(
+    "Benson",
+    RedDefendPosition,
+    "red",
+    GroundTemplates.red[4],
+    270
+)
 
-local function createGroupCommandersForFilter(color, opsCommander)
-    for groupName, groupData in pairs(mist.DBs.groupsByName) do
-        if groupData.coalition == color then
-            local group = Group.getByName(groupName)
-            if group and group:isExist() then
-                GroupCommander.new(groupName, {
-                    color = color
-                })
-            end
-        end
-    end
-end
+CcBlue:addReserves({"Alpha"})
+CcRed:addReserves({"Arnold", "Benson"})
+AlphaCommander = GroupCommander.getInstance("Alpha")
+ArnoldCommander = GroupCommander.getInstance("Arnold")
+BensonCommander = GroupCommander.getInstance("Benson")
 
-createGroupCommandersForFilter("blue", opsBlue)
-createGroupCommandersForFilter("red", opsRed)
+AlphaCommander:issueOrder(Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.MEDIUM
+}))
 
-local blueCommanders = GroupCommander.getInstances("blue")
-local firstBlueCommander = blueCommanders[1]
-local order = Order.new({
-    type = taskTypes.PATROL,
-    position = blueRallyPosition,
-    radius = 500,
+ArnoldCommander:issueOrder(Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.MEDIUM
+}))
+
+ArnoldDefenseOrder = Order.new({
+    type = TaskTypes.DEFEND,
+    position = BluePatrolPosition,
+    alr = AcceptableLevelsOfRisk.LOW
 })
-if firstBlueCommander then
-    firstBlueCommander:issueOrder(order)
-end
+-- ArnoldCommander:issueOrder(ArnoldDefenseOrder)
 
 -- ## General scenario setup
 -- 1. Bravo encounters Alpha overlooking the bridge

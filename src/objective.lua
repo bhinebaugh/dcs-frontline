@@ -123,6 +123,11 @@ function Objective:markFailed(reason)
     self.updatedAt = timer.getTime()
 end
 
+-- Returns true if the objective is no longer being actively pursued
+function Objective:isComplete()
+    return self.status ~= ObjectiveStatus.ACTIVE
+end
+
 -- Mark objective as canceled
 function Objective:markCanceled()
     self.status = ObjectiveStatus.CANCELED

@@ -360,8 +360,72 @@ function SpatialAgent.sortByDistance(positions, referencePoint)
     table.sort(positionsWithDistance, function(a, b)
         return a.distance < b.distance
     end)
-    
+
     return positionsWithDistance
+end
+
+--- Match items to positions minimizing overall travel via greedy nearest-pair assignment
+-- Repeatedly picks the closest unmatched (item, position) pair until all items are matched.
+-- Not globally optimal, but avoids the "stuck with the distant leftover" problem of
+-- assigning by index order, and stays cheap for the small counts (~3) commanders use.
+-- @param items Array of objects with a .position field
+-- @param positions Array of position tables (same length as items, or longer)
+-- @return table Array of {item = ..., position = ..., index = originalPositionIndex}, in item order
+function SpatialAgent.assignByProximity(items, positions)
+    if not items or not positions then
+        return {}
+    end
+
+    local candidates = {}
+    for itemIdx, item in ipairs(items) do
+        local pos = item.position
+        if pos then
+            for posIdx, position in ipairs(positions) do
+                local dist = SpatialAgent.distance2D(pos, position)
+                if dist then
+                    table.insert(candidates, {
+                        itemIdx = itemIdx,
+                        posIdx  = posIdx,
+                        distance = dist,
+                    })
+                end
+            end
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        return a.distance < b.distance
+    end)
+
+    local assignments = {}
+    local itemTaken = {}
+    local posTaken = {}
+    local remaining = #items
+
+    for _, candidate in ipairs(candidates) do
+        if remaining == 0 then
+            break
+        end
+        if not itemTaken[candidate.itemIdx] and not posTaken[candidate.posIdx] then
+            itemTaken[candidate.itemIdx] = true
+            posTaken[candidate.posIdx] = true
+            assignments[candidate.itemIdx] = {
+                item     = items[candidate.itemIdx],
+                position = positions[candidate.posIdx],
+                index    = candidate.posIdx,
+            }
+            remaining = remaining - 1
+        end
+    end
+
+    local result = {}
+    for itemIdx = 1, #items do
+        if assignments[itemIdx] then
+            table.insert(result, assignments[itemIdx])
+        end
+    end
+
+    return result
 end
 
 return SpatialAgent

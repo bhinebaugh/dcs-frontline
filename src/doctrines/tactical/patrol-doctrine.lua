@@ -18,23 +18,20 @@ function PatrolDoctrine.new(commanderName)
 end
 
 function PatrolDoctrine:outboundPhase(context)
-    local commander = context.commander
-    local orders = commander.orders
-
     if not self.state.StartingPoint then
-        self.state.StartingPoint = commander:getOwnPosition()
+        self.state.StartingPoint = context.ownPosition
     end
 
     if not self.state.Destination then
-        self.state.Destination = orders and orders.position or self.state.StartingPoint
+        self.state.Destination = context.orderPosition or self.state.StartingPoint
     end
 
-    local distanceToDestination = self.state.Destination and SpatialAgent.distance2D(commander:getOwnPosition(), self.state.Destination)
-    env.info(commander.groupName .. " is " .. tostring(distanceToDestination) .. " meters from patrol destination")
+    local distanceToDestination = self.state.Destination and SpatialAgent.distance2D(context.ownPosition, self.state.Destination)
+    env.info(context.groupName .. " is " .. tostring(distanceToDestination) .. " meters from patrol destination")
     local isAtDestination = distanceToDestination and distanceToDestination < 50
 
     if isAtDestination then
-        env.info(commander.groupName .. " has reached patrol destination, switching to InboundLeg")
+        env.info(context.groupName .. " has reached patrol destination, switching to InboundLeg")
         self:changePhase("InboundLeg")
         return {disposition = dispositionTypes.HOLD, destination = nil}
     else
@@ -43,12 +40,10 @@ function PatrolDoctrine:outboundPhase(context)
 end
 
 function PatrolDoctrine:inboundPhase(context)
-    local commander = context.commander
-
-    local isAtStart = self.state.StartingPoint and SpatialAgent.distance2D(commander:getOwnPosition(), self.state.StartingPoint) < 50
+    local isAtStart = self.state.StartingPoint and SpatialAgent.distance2D(context.ownPosition, self.state.StartingPoint) < 50
 
     if isAtStart then
-        env.info(commander.groupName .. " has returned to starting point, switching to OutboundLeg")
+        env.info(context.groupName .. " has returned to starting point, switching to OutboundLeg")
         self:changePhase("OutboundLeg")
         return {disposition = dispositionTypes.HOLD, destination = nil}
     else

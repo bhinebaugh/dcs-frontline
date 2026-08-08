@@ -3,10 +3,11 @@ local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
-local PlanningContext = require("planning-context")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
+local AssaultDoctrine = require("doctrines.tactical.assault-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
+local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
 local SpatialAgent = require("spatial-agent")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
@@ -57,20 +58,31 @@ function GroupCommander.new(groupName, config)
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
     self.destroyed = false  -- Tracks if group no longer exists
+    self.visualizer = config.visualizer
     
     -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     self.fuelRemaining = 1.0  -- Start at 100%
     self.lastPosition = nil
     self.lastObserveTime = timer.getTime()
     
-    -- Active Doctrine (persists across OODA cycles until order type changes)
-    self.doctrine = nil
-    self.doctrineType = nil
+    -- Active Doctrine (persists across OODA cycles until a new order is assigned)
+    -- Default to groups defending their current position until tasked to an opscom
+    self.doctrine = DefensiveDoctrine.new(self.groupName)
+    self.doctrineOrder = nil
     
     -- Register this instance
     table.insert(GroupCommander.instances, self)
     
     return self
+end
+
+function GroupCommander.getInstance(groupName)
+    for _, instance in ipairs(GroupCommander.instances) do
+        if instance.groupName == groupName then
+            return instance
+        end
+    end
+    return nil
 end
 
 function GroupCommander.getInstances(coalition)
@@ -85,6 +97,10 @@ function GroupCommander.getInstances(coalition)
         end
     end
     return filtered
+end
+
+function GroupCommander:clearOrders()
+    self.orders = nil
 end
 
 function GroupCommander:observe()
@@ -149,7 +165,7 @@ function GroupCommander:observe()
     local memoryCount = self.threatTracker:count()
     local expectedCount = #self.threatTracker:expectedThreats(currentPos, detectionRadius)
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
-    env.info(self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
+    env.info("* " .. self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
 end
 
 function GroupCommander:orient()
@@ -158,9 +174,8 @@ function GroupCommander:orient()
 
     self.threatAssessment = self:assessThreats()
 
-    -- Derive order context and group profile
+    -- Derive group profile
     local ownPos = self:getOwnPosition()
-    self.orderContext = PlanningContext.deriveOrderContext(self.orders, ownPos, self.alr)
     self.groupProfile = GroupProfiler.profileGroup(self.groupName, self.initialUnitNames, self.initialAmmoCount, self.fuelRemaining)
 
     -- Update suitability against current order's mission profile
@@ -171,25 +186,119 @@ function GroupCommander:orient()
     end
 end
 
+--- @class TacticalContext
+--- @field groupName string
+--- @field ownPosition table
+--- @field totalUnits number
+--- @field initialAmmoCount number
+--- @field threatAssessment table
+--- @field statusReport table
+--- @field suitability number|nil
+--- @field hasActiveOrders boolean
+--- @field orderType string|nil
+--- @field orderPosition table|nil
+--- @field orderProximity number|nil
+--- @field orderAlr string|nil
+--- @field distanceToOrdered number|nil
+--- @field withinObjective boolean|nil
+--- @field retreatThreshold number|nil
+--- @field orderIsExpired boolean|nil
+--- @field orderHasDeadline boolean|nil
+--- @return TacticalContext|nil
+function GroupCommander:buildDecisionContext()
+    local ownPosition = self:getOwnPosition()
+    if not ownPosition then return nil end
+
+    local hasActiveOrders = self.orders ~= nil and self.orders:isActive()
+
+    local orderType, orderPosition, orderProximity, orderAlr
+    local distanceToOrdered, withinObjective, retreatThreshold
+    local orderIsExpired, orderHasDeadline
+
+    if hasActiveOrders then
+        orderType     = self.orders.type
+        orderPosition = self.orders.position
+        orderProximity   = self.orders.proximity or 500
+        orderAlr      = self.orders.alr or alr.LOW
+
+        distanceToOrdered = SpatialAgent.distance2D(ownPosition, orderPosition)
+        withinObjective   = distanceToOrdered <= orderProximity
+
+        retreatThreshold = 0.4
+        if orderAlr == alr.LOW then
+            retreatThreshold = 0.2
+        elseif orderAlr == alr.HIGH then
+            retreatThreshold = 0.8
+        end
+
+        orderHasDeadline = self.orders.deadline ~= nil
+        orderIsExpired   = self.orders:isExpired() or false
+    end
+
+    return {
+        groupName        = self.groupName,
+        ownAlr           = self.alr,
+        ownPosition      = ownPosition,
+        totalUnits       = #self.initialUnitNames,
+        initialAmmoCount = self.initialAmmoCount,
+        threatAssessment = self.threatAssessment,
+        statusReport     = self:getStatusReport(),
+        suitability      = self.suitability,
+        hasActiveOrders  = hasActiveOrders or false,
+        orderType        = orderType,
+        orderPosition    = orderPosition,
+        orderProximity   = orderProximity,
+        orderAlr         = orderAlr,
+        distanceToOrdered = distanceToOrdered,
+        withinObjective  = withinObjective,
+        retreatThreshold = retreatThreshold,
+        orderIsExpired   = orderIsExpired,
+        orderHasDeadline = orderHasDeadline,
+    }
+end
+
 function GroupCommander:decide()
-    if self.orders and self.orders.status == orderStatus.ASSIGNED then
+    -- If an order resolved (completed/aborted) last tick via act(),
+    -- doctrine instance may still be awaiting reassignment by the operational layer.
+    -- In this case hold in place rather than planning against a finished order's stale context
+    -- (e.g. orderPosition is no longer populated).
+    if self.orders and self.orders:isFinished() then
+        self:setDisposition(dispositionTypes.HOLD)
+        self.destination = self:getOwnPosition()
+        self.pendingOrderAction = nil
+        return
+    end
+
+    -- Build a fresh doctrine only when a genuinely new order has been assigned
+    -- (identity check, not status) so in-progress phase state isn't discarded
+    -- while a doctrine is still working an order that hasn't called orderAction "start" yet.
+    if self.orders and self.orders ~= self.doctrineOrder then
+        self.doctrineOrder = self.orders
         if self.orders.type == taskTypes.PATROL then
             self.doctrine = PatrolDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.RECON then
             self.doctrine = ReconDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.RALLY then
+            self.doctrine = RallyDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.ASSAULT then
+            self.doctrine = AssaultDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.DEFEND then
+            self.doctrine = DefensiveDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
     end
 
-    if self.orders and self.orders:isFinished() then
-        self.orders = nil
-        self.doctrine = DefensiveDoctrine.new(self.groupName)
-    end
+    -- TODO decide if it makes sense to reenable this compared to first block above
+    -- // it would be one way of tying up residual orders after opscom disbands
+    -- if self.orders and self.orders:isFinished() then
+    --     self.orders = nil
+    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
+    -- end
 
-    if not self.doctrine then
-        self.doctrine = DefensiveDoctrine.new(self.groupName)
-    end
+    -- if not self.doctrine then
+    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
+    -- end
 
     -- Check if we have valid assessment data
     if not self.ownForceStrength or not self.threatAssessment then
@@ -198,8 +307,8 @@ function GroupCommander:decide()
         return
     end
 
-    -- Get tactical planning context
-    local context = PlanningContext.buildTacticalContext(self)
+    -- Build decision context snapshot
+    local context = self:buildDecisionContext()
     if not context then
         env.info("ERROR: Could not build tactical context for " .. self.groupName)
         self:setDisposition(dispositionTypes.HOLD)
@@ -208,6 +317,7 @@ function GroupCommander:decide()
     end
         
     -- Use Doctrine to make tactical decisions
+    if not self.doctrine then return end
     local decision = self.doctrine:plan(context)
     if decision then
         self:setDisposition(decision.disposition)
@@ -248,14 +358,28 @@ function GroupCommander:act()
     end
 
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
-    if self.destination and (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
-        -- Only issue if destination has changed (more than 100m tolerance)
-        if not self.lastMoveOrder or 
-           math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
-           math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
-            self:issueMoveOrder(self.destination)
-            self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
+    -- If destination has been set to nil, stop the group where they are
+    if self.destination then
+        if (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
+            -- Only issue if destination has changed (more than 100m tolerance)
+            if not self.lastMoveOrder or 
+            math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
+            math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
+                self:issueMoveOrder(self.destination)
+                self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
+                if self.visualizer then
+                    self.visualizer:appendGroupMove(self, self.color)
+                end
+            end
+        else
+            self:stopMovement()
         end
+    else
+        self:stopMovement()
+    end
+
+    if self.visualizer then
+        self.visualizer:syncGroupOrder(self, self.color)
     end
 end
 
@@ -363,7 +487,7 @@ function GroupCommander.removeDestroyed()
             table.insert(surviving, instance)
         else
             removed = removed + 1
-            env.info(string.format("*** GroupCommander: Removing destroyed group %s from memory",
+            env.info(string.format("* GroupCommander: Removing destroyed group %s from memory",
                 instance.groupName or "unknown"))
         end
     end
@@ -473,7 +597,7 @@ function GroupCommander:issueMoveOrder(point)
     
     -- Convert x/z to lat/lon for logging
     local lat, lon = coord.LOtoLL({x = point.x, y = 0, z = point.z})
-    env.info(self.groupName .. " DECIDE: Move to " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
+    env.info("* " .. self.groupName .. " DECIDE: Move to " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
     
     -- Verify group exists
     local group = Group.getByName(self.groupName)
@@ -507,6 +631,7 @@ function GroupCommander:issueMoveOrder(point)
     -- Default to ignoring roads since DCS pathfinding is often problematic
     local ignoreRoads = true
     
+    -- TODO use 'crosscountry' boolean in precalculated control zone edge table to help decide
     -- Only use roads for long-distance movements (>15km) when not in combat
     if distance and distance > 15000 and self.disposition ~= dispositionTypes.RETREAT then
         ignoreRoads = false

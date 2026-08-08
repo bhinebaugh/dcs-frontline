@@ -4,11 +4,15 @@ local settings = {
         zones = true,
         frontlines = true,
         directives = true,
+        groupOrders = true,
+        objectives = true,
     },
-    displayToAll = { 
+    displayToAll = {
         zones = true,
         frontlines = true,
-        directives = false,
+        directives = true,
+        groupOrders = false,
+        objectives = false,
     }
 }
 

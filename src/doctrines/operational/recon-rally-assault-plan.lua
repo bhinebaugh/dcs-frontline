@@ -4,11 +4,12 @@
 -- Phase 3 (Assault): Execute synchronized assault on objective
 -- Phase 4 (Defend):  Hold objective once secured
 --
--- Returns order templates (plain data). OperationalCommander handles
--- commander selection and order assignment.
+-- Returns { orders = { ... }, objectiveComplete = true/nil }.
+-- OperationalCommander handles commander selection and order assignment.
 
 local constants = require("constants")
 local Doctrine = require("doctrine")
+local SpatialAgent = require("spatial-agent")
 
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
@@ -38,9 +39,7 @@ function ReconRallyAssaultPlan.new(commanderName, config)
 end
 
 function ReconRallyAssaultPlan:reconPhase(context)
-    local objective    = context.goal
-    local situation    = context.situation
-    local statusCounts = situation.statusCounts
+    local statusCounts = context.statusCounts
 
     -- Wait for any active orders to resolve
     if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
@@ -52,26 +51,32 @@ function ReconRallyAssaultPlan:reconPhase(context)
     local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
     local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
 
-    -- Advance to Rally when recon orders are resolved
+    -- Recon orders resolved — check if objective itself is already clear
     if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
-        self:changePhase("Rally", statusCounts)
+        if context.nearObjectiveThreatCount == 0 then
+            self:changePhase("Defend", statusCounts)
+        else
+            self:changePhase("Rally", statusCounts)
+        end
         return {}
     end
 
     -- No orders issued yet this phase — dispatch recon
     if totalThisPhase == 0 then
         return {
-            {
-                type     = taskTypes.RECON,
-                position = objective.position,
-                radius   = self.config.reconRadius,
-                alr      = alr.LOW,
-                count    = self.config.maxReconGroups,
-                missionProfile = {
-                    offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
-                    attritionRate = 0.0,
-                    ammoRatio     = 0.2,
-                },
+            orders = {
+                {
+                    type     = taskTypes.RECON,
+                    position = context.objectivePosition,
+                    radius   = self.config.reconRadius,
+                    alr      = alr.LOW,
+                    count    = self.config.maxReconGroups,
+                    missionProfile = {
+                        offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
+                        attritionRate = 0.0,
+                        ammoRatio     = 0.2,
+                    },
+                }
             }
         }
     end
@@ -80,11 +85,9 @@ function ReconRallyAssaultPlan:reconPhase(context)
 end
 
 function ReconRallyAssaultPlan:rallyPhase(context)
-    local objective     = context.goal
-    local situation     = context.situation
-    local statusCounts  = situation.statusCounts
-    local threatProfile = situation.threatProfile
-    local threatCenter  = situation.threatCenter
+    local statusCounts  = context.statusCounts
+    local threatProfile = context.threatProfile
+    local threatCenter  = context.threatCenter
 
     -- Wait for active orders
     if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
@@ -107,25 +110,27 @@ function ReconRallyAssaultPlan:rallyPhase(context)
         return {}
     end
 
-    if situation.availableCommanderCount == 0 then
+    if context.availableCommanderCount == 0 then
         return {}
     end
 
     -- Issue rally order template
     if totalThisPhase == 0 then
         return {
-            {
-                type            = taskTypes.RALLY,
-                targetPosition  = threatCenter,
-                stagingDistance = self.config.assaultStagingDistance,
-                stagingArc      = 120,
-                radius          = 5000,
-                alr             = alr.MEDIUM,
-                count           = 3,
-                missionProfile  = {
-                    attritionRate = 0.0,
-                    ammoRatio     = 0.8,
-                },
+            orders = {
+                {
+                    type            = taskTypes.RALLY,
+                    targetPosition  = threatCenter,
+                    proximity       = 500,
+                    stagingArc      = 120,
+                    stagingRadius   = self.config.assaultStagingDistance,
+                    alr             = alr.MEDIUM,
+                    count           = 3,
+                    missionProfile  = {
+                        attritionRate = 0.0,
+                        ammoRatio     = 0.8,
+                    },
+                }
             }
         }
     end
@@ -134,11 +139,10 @@ function ReconRallyAssaultPlan:rallyPhase(context)
 end
 
 function ReconRallyAssaultPlan:assaultPhase(context)
-    local objective     = context.goal
-    local situation     = context.situation
-    local statusCounts  = situation.statusCounts
-    local threatProfile = situation.threatProfile
-    local threatCenter  = situation.threatCenter
+    local objectiveRadius = context.objectiveRadius
+    local statusCounts  = context.statusCounts
+    local threatProfile = context.threatProfile
+    local threatCenter  = context.threatCenter
 
     -- Wait for active orders
     if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
@@ -149,14 +153,16 @@ function ReconRallyAssaultPlan:assaultPhase(context)
     local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
     local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
 
-    -- Advance to Defend when assault orders resolve
+    -- Assault orders resolved
     if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
-        self:changePhase("Defend", statusCounts)
+        self:changePhase("Recon", statusCounts)
         return {}
     end
 
     if totalThisPhase == 0 then
-        local assaultPosition = threatCenter or objective.position
+        -- Stay focused on assaulting a position rather than units spotted on the group's periphery
+        -- local assaultPosition = threatCenter or context.objectivePosition
+        local assaultPosition = context.objectivePosition
 
         -- Build missionProfile from threat capability (need to match or exceed it)
         local missionProfile = {
@@ -172,14 +178,16 @@ function ReconRallyAssaultPlan:assaultPhase(context)
         end
 
         return {
-            {
-                type           = taskTypes.ASSAULT,
-                position       = assaultPosition,
-                radius         = self.config.assaultRadius,
-                alr            = alr.HIGH,
-                count          = situation.availableCommanderCount,
-                deadline       = objective.deadline or (timer.getTime() + 1800),
-                missionProfile = missionProfile,
+            orders = {
+                {
+                    type           = taskTypes.ASSAULT,
+                    position       = assaultPosition,
+                    proximity      = objectiveRadius or self.config.assaultRadius,
+                    alr            = alr.HIGH,
+                    count          = context.availableCommanderCount,
+                    deadline       = context.objectiveDeadline or (timer.getTime() + 1800),
+                    missionProfile = missionProfile,
+                }
             }
         }
     end
@@ -188,32 +196,31 @@ function ReconRallyAssaultPlan:assaultPhase(context)
 end
 
 function ReconRallyAssaultPlan:defendPhase(context)
-    local objective    = context.goal
-    local situation    = context.situation
-    local threatCenter = situation.threatCenter
-
-    objective:markAchieved()
+    local threatCenter = context.threatCenter
 
     -- Bias defend position toward objective, acknowledging threats
-    local defendPosition = objective.position
+    local defendPosition = context.objectivePosition
     if threatCenter then
         defendPosition = {
-            x = (objective.position.x + threatCenter.x) / 2,
-            z = (objective.position.z + threatCenter.z) / 2,
+            x = (context.objectivePosition.x + threatCenter.x) / 2,
+            z = (context.objectivePosition.z + threatCenter.z) / 2,
         }
     end
 
     return {
-        {
-            type           = taskTypes.DEFEND,
-            position       = defendPosition,
-            radius         = objective.radius or 2000,
-            alr            = alr.MEDIUM,
-            count          = situation.availableCommanderCount,
-            missionProfile = {
-                attritionRate = 0.0,
-                ammoRatio     = 0.5,
-            },
+        objectiveComplete = true,
+        orders = {
+            {
+                type           = taskTypes.DEFEND,
+                position       = defendPosition,
+                radius         = context.objectiveRadius,
+                alr            = alr.MEDIUM,
+                count          = context.availableCommanderCount,
+                missionProfile = {
+                    attritionRate = 0.0,
+                    ammoRatio     = 0.5,
+                },
+            }
         }
     }
 end

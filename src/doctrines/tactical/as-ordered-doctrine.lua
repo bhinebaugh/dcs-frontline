@@ -29,18 +29,16 @@ function AsOrderedDoctrine.new(commanderName)
     self:registerPhase("Engage", AsOrderedDoctrine.engagePhase)
     self:registerPhase("Defend", AsOrderedDoctrine.defendPhase)
     self:registerPhase("Abort", AsOrderedDoctrine.abortPhase)
-    
+
     return self
 end
 
 function AsOrderedDoctrine:considerEngage(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
-    local ownPosition = commander:getOwnPosition()
-    local objectivePosition = situation.orderContext and situation.orderContext.position or nil
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
+    local ownPosition = context.ownPosition
+    local objectivePosition = context.orderPosition
 
     local engageAssessment = 0.0
 
@@ -57,32 +55,30 @@ function AsOrderedDoctrine:considerEngage(context)
     if distanceToObjective and distanceToThreat and distanceToObjective > 0 and distanceToThreat < distanceToObjective then
         engageAssessment = engageAssessment + distanceToThreat / distanceToObjective
     end
-    
+
     -- attrition rate
     local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
     engageAssessment = engageAssessment - attritionRate
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         engageAssessment = 0.0
     end
 
-    if ForceStatusAnalyzer.isUnarmed(commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isUnarmed(context.initialAmmoCount) then
         engageAssessment = 0.0
     end
-    
+
     return engageAssessment
 end
 
 function AsOrderedDoctrine:considerDefend(context)
-    local commander = context.commander
-    local situation = context.situation
-    local objectivePosition = situation.orderContext and situation.orderContext.position or nil
+    local objectivePosition = context.orderPosition
 
     local defendAssessment = 0.0
 
-    local distanceToObjective = SpatialAgent.distance2D(commander:getOwnPosition(), objectivePosition)
-    if distanceToObjective and distanceToObjective < situation.orderContext.radius then
+    local distanceToObjective = SpatialAgent.distance2D(context.ownPosition, objectivePosition)
+    if distanceToObjective and distanceToObjective < context.orderProximity then
         defendAssessment = defendAssessment + 1.0
     end
 
@@ -90,18 +86,16 @@ function AsOrderedDoctrine:considerDefend(context)
 end
 
 function AsOrderedDoctrine:considerAbort(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
 
     local retreatAssessment = 0.0
 
     -- ammunition
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, commander.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, commander.initialAmmoCount) then
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 0.5
     end
 
@@ -117,7 +111,7 @@ function AsOrderedDoctrine:considerAbort(context)
     end
 
     -- suitability: if group no longer meets missionProfile, increase abort pressure
-    local suitability = context.situation.suitability
+    local suitability = context.suitability
     if suitability and suitability < 0.3 then
         retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
     end
@@ -127,19 +121,18 @@ end
 
 function AsOrderedDoctrine:advancePhase(context)
     -- Move toward objective location
-    local commander = context.commander
-    local orders = commander.orders
-    local destination = orders and orders.position or nil
+    local destination = context.orderPosition
 
     local engageThreshold = 0.4
-    local abortThreshold = 0.8
+    local abortThreshold = context.retreatThreshold or 0.8
     local defendThreshold = 0.2
 
     if self:considerAbort(context) >= abortThreshold then
         self:changePhase("Abort")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = nil,
+            orderAction = "abort",
         }
     end
 
@@ -147,7 +140,8 @@ function AsOrderedDoctrine:advancePhase(context)
         self:changePhase("Engage")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = destination,
+            orderAction = "start",
         }
     end
 
@@ -156,6 +150,7 @@ function AsOrderedDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
+            orderAction = "start",
         }
     end
 
@@ -169,10 +164,10 @@ end
 function AsOrderedDoctrine:engagePhase(context)
     -- Engage threats encountered along route
 
-    local threat = context.situation.threatAssessment
+    local threat = context.threatAssessment
 
     local engageThreshold = 0.3
-    local abortThreshold = 0.8
+    local abortThreshold = context.retreatThreshold or 0.8
 
     if self:considerAbort(context) >= abortThreshold then
         self:changePhase("Abort")
@@ -183,7 +178,7 @@ function AsOrderedDoctrine:engagePhase(context)
     end
 
     if self:considerEngage(context) >= engageThreshold then
-        local ownPosition      = context.commander:getOwnPosition()
+        local ownPosition      = context.ownPosition
         local standoffDistance = 1000
         local tolerance        = 100
 
@@ -216,18 +211,14 @@ end
 
 function AsOrderedDoctrine:defendPhase(context)
     -- Hold position and defend against nearby threats
-    local commander = context.commander
-    local destination = context.situation.orderContext.position
-    local radius = context.situation.orderContext.radius or 500
+    local destination = context.orderPosition
+    local proximity = context.orderProximity or 500
 
-    local hasExpiration = commander.orders and commander.orders.expirationTime
-    local isExpired = context.commander.orders:isExpired()
-
-    if isExpired or not hasExpiration then
+    if context.orderIsExpired or not context.orderHasDeadline then
         return {
             disposition = dispositionTypes.DEFEND,
             destination = destination,
-            radius      = radius,
+            proximity   = proximity,
             orderAction = "complete",
         }
     end
@@ -235,24 +226,21 @@ function AsOrderedDoctrine:defendPhase(context)
     return {
         disposition = dispositionTypes.DEFEND,
         destination = destination,
-        radius      = radius,
+        proximity   = proximity,
     }
 end
 
 function AsOrderedDoctrine:abortPhase(context)
     -- Move away from threats toward safety
-    local commander = context.commander
-    local situation = context.situation
-
-    local threat = situation.threatAssessment
-    local ownPosition = commander:getOwnPosition()
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
 
     -- Use directly observed threats if available (more stable)
     local retreatDest = nil
 
     if threat.center then
         local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(threat.center, direction, 1000)
+        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
     else
         self:changePhase("Hold")
     end

@@ -33,6 +33,40 @@ function Map:getVisibility(color, feature)
     end
 end
 
+function Map:removeMarks(markIds)
+    if not markIds then return end
+    for _, id in pairs(markIds) do
+        trigger.action.removeMark(id)
+    end
+end
+
+function Map:placeMarker(text, color, pt)
+    if not settings.draw.zones then return end
+    local sides = self:getVisibility(color, "zones")
+    local labels = {}
+    for _, side in pairs(sides) do
+        -- local markerId = self:getNewMarker()
+        -- trigger.action.circleToAll(side, zoneId, pt, 510, {0,0,0,0.2}, rgb[color], 1)
+        local labelId = self:getNewMarker()
+        table.insert(labels, labelId)
+        trigger.action.textToAll(side, labelId, pt, {0.7,0,0.7,1}, {0,0,0,0.2}, 15, true, text)
+    end
+    return labels
+end
+
+function Map:drawPolygon(points)
+    local mk = mist.marker.add({
+        pos = points,
+        -- name = "",
+        markType = "freeform", --7
+        markForCoa = -1, --?
+        color = {1,1,0,0.5},
+        fillColor = {1,1,0,0.2},
+        lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
+    })
+    return mk.markId --mist helper returns whole table; we want ID only
+end
+
 function Map:drawZone(name, color, pt)
     if not settings.draw.zones then return end
     if not self.markers.zones[name] then self.markers.zones[name] = {} end
@@ -77,28 +111,7 @@ function Map:drawEdges(edges)
     end
 end
 
-function Map:drawFrontline(edges, color)
-    --first erase any existing lines
-    if self.markers.front[color] then
-        for _, id in pairs(self.markers.front[color]) do
-            trigger.action.removeMark(id)
-        end
-        self.markers.front[color] = {}
-    end
-    --then draw a line for each edge of the current color's front
-    local sides = self:getVisibility(color, "frontlines")
-    for _, side in pairs(sides) do
-        for _, zonePoints in pairs(edges) do
-            local lineId = self:getNewMarker()
-            table.insert(self.markers.front[color], lineId)
-            local lineColor = rgb[color]
-            trigger.action.lineToAll(side, lineId, zonePoints.p1, zonePoints.p2, lineColor, 1)
-            -- trigger.action.lineToAll(side, lineId2, p1B, p2B, lineColor, 1) --double the line for better visibility
-        end
-    end
-end
-
-function Map:drawFrontlineFromPoints(points, color, erasePrevious)
+function Map:drawFrontline(points, color, erasePrevious, isLoop)
     local OFFSET = 1500
     -- first erase any existing lines
     if erasePrevious and self.markers.front[color] then
@@ -113,15 +126,22 @@ function Map:drawFrontlineFromPoints(points, color, erasePrevious)
     local prevPts = {}
     for _, side in pairs(sides) do
         local firstPass = true
+        local lineColor = rgb[color]
         for _, data in pairs(points) do
             local lineId1 = self:getNewMarker()
             local lineId2 = self:getNewMarker()
             table.insert(self.markers.front[color], lineId1)
             table.insert(self.markers.front[color], lineId2)
-            local lineColor = rgb[color]
             local point1 = mist.projectPoint(data.center, OFFSET, data.heading)
             local point2 = mist.projectPoint(data.center, OFFSET+200, data.heading)
-            if not firstPass then
+            if firstPass then
+                if not isLoop then
+                    prevPts[1] = mist.projectPoint(point1, OFFSET, data.heading - math.pi/2)
+                    prevPts[2] = mist.projectPoint(point2, OFFSET, data.heading - math.pi/2)
+                    trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
+                    trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
+                end
+            else
                 trigger.action.lineToAll(side, lineId1, prevPts[1], point1, lineColor, 1)
                 trigger.action.lineToAll(side, lineId2, prevPts[2], point2, lineColor, 1)
             end
@@ -129,15 +149,28 @@ function Map:drawFrontlineFromPoints(points, color, erasePrevious)
             prevPts[2] = point2
             firstPass = false
         end
+        if not isLoop then
+            local finalPt1 = mist.projectPoint(prevPts[1], OFFSET, points[#points].heading + math.pi/2)
+            local finalPt2 = mist.projectPoint(prevPts[2], OFFSET, points[#points].heading + math.pi/2)
+            local lineId1 = self:getNewMarker()
+            local lineId2 = self:getNewMarker()
+            table.insert(self.markers.front[color], lineId1)
+            table.insert(self.markers.front[color], lineId2)
+            trigger.action.lineToAll(side, lineId1, prevPts[1], finalPt1, lineColor, 1)
+            trigger.action.lineToAll(side, lineId2, prevPts[2], finalPt2, lineColor, 1)
+        end
     end
 end
 
 function Map:drawDirective(originPoint, targetPoint, color)
     if not settings.draw.directives then return end
+    local Ids = {}
     local sides = self:getVisibility(color, "directives")
     for _, side in pairs(sides) do
         local nextId = self:getNewMarker()
-        local lineColor = {1,1,0.2,1}
+        local lineColor = {1,1,0.2,0.2}
+        -- lineColor[4] = 0.2
+        lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.2}
         local fillColor = lineColor
         local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
         local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
@@ -145,8 +178,24 @@ function Map:drawDirective(originPoint, targetPoint, color)
         local lineStart = mist.projectPoint(originPoint, distance+200, heading)
         local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
         trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
+        table.insert(Ids, nextId)
     end
-    return true
+    return Ids
+end
+function Map:drawArrow(originPoint, targetPoint, color)
+    if not settings.draw.directives then return end
+    local Ids = {}
+    local sides = self:getVisibility(color, "directives")
+    for _, side in pairs(sides) do
+        local nextId = self:getNewMarker()
+        -- lineColor = {0.7,0.7,0.7,0.15}
+        -- local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.08}
+        local lineColor = {(0.7 + rgb[color][1])/2, (0.7 + rgb[color][2])/2, (0.7 + rgb[color][3])/2, 0.15}
+        local fillColor = lineColor
+        trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
+        table.insert(Ids, nextId)
+    end
+    return Ids
 end
 
 return Map

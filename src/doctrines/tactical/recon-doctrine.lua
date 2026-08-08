@@ -25,11 +25,7 @@ function ReconDoctrine.new(commanderName)
 end
 
 function ReconDoctrine:considerAdvance(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
 
     local advanceAssessment = 0.0
 
@@ -41,11 +37,7 @@ function ReconDoctrine:considerAdvance(context)
 end
 
 function ReconDoctrine:considerObserve(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
+    local threat = context.threatAssessment
 
     local observeAssessment = 0.0
 
@@ -57,22 +49,18 @@ function ReconDoctrine:considerObserve(context)
 end
 
 function ReconDoctrine:advancePhase(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
-
-    local ownPosition = commander:getOwnPosition()
-    local objectiveDestination = commander.orders.position
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
+    local objectiveDestination = context.orderPosition
 
     local observeThreshold = 1.0
-    
+
     if self:considerObserve(context) >= observeThreshold then
         self:changePhase("Observe")
         return {
             disposition = dispositionTypes.HOLD,
-            destination = nil
+            destination = nil,
+            orderAction = "start",
         }
     end
 
@@ -88,18 +76,12 @@ function ReconDoctrine:advancePhase(context)
 
     return {
         disposition = dispositionTypes.ADVANCE,
-        destination = commander.orders.position,
+        destination = context.orderPosition,
         orderAction = "start",
     }
 end
 
 function ReconDoctrine:observePhase(context)
-    local commander = context.commander
-    local situation = context.situation
-    local threat = situation.threatAssessment
-    local status = situation.statusReport
-    local totalUnits = #commander.initialUnitNames
-
     local advanceThreshold = 1.0
 
     if self:considerAdvance(context) >= advanceThreshold then
