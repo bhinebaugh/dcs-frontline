@@ -171,56 +171,8 @@ local rulesOfEngagement = {
     WEAPON_HOLD = 4, -- Hold fire, do not engage
 }
 
--- Unit classification and threat ratings
--- Each unit type has threat values against infantry, armor, and air
-local unitClassification = {
-    -- Infantry units (foot soldiers)
-    ["Soldier M4"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
-    ["Soldier M249"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
-    ["Infantry AK"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 0.5, ["heavy-armor"] = 0, support = 0.5}},
-    ["Paratrooper RPG-16"] = {category = "infantry", threats = {infantry = 1.5, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 3}},
-    
-    -- Soft-skinned vehicles (unarmored trucks, transport)
-    ["Hummer"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["GAZ-66"] = {category = "infantry", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["UAZ-469"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["M 818"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["KAMAZ Truck"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Kamaz 43101"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Ural-375"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Ural-4320-31"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    ["Ural-4320T"] = {category = "infantry", threats = {infantry = 0.5, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}},
-    
-    -- Scout vehicles (armed soft-skinned)
-    ["M1043 HMMWV Armament"] = {category = "infantry", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    ["M1045 HMMWV TOW"] = {category = "infantry", threats = {infantry = 2, ["light-armor"] = 7, ["heavy-armor"] = 6, support = 4}},
-    ["BRDM-2"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    ["Tigr_233036"] = {category = "infantry", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
-    
-    -- Light armor (APCs, IFVs)
-    ["M-113"] = {category = "light-armor", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}},
-    ["BMD-1"] = {category = "light-armor", threats = {infantry = 5, ["light-armor"] = 4, ["heavy-armor"] = 2, support = 3}},
-    ["M-2 Bradley"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
-    ["BMP-2"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 2, support = 4}},
-    ["BMP-3"] = {category = "light-armor", threats = {infantry = 6, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
-    ["BTR-60"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    ["BTR-80"] = {category = "light-armor", threats = {infantry = 4, ["light-armor"] = 2, ["heavy-armor"] = 0, support = 2}},
-    
-    -- Heavy armor (MBTs)
-    ["M-1 Abrams"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 8, support = 7}},
-    ["T-72B"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7, support = 7}},
-    ["T-80U"] = {category = "heavy-armor", threats = {infantry = 4, ["light-armor"] = 8, ["heavy-armor"] = 7.5, support = 7}},
-    
-    -- Support units (AA systems)
-    ["Avenger"] = {category = "support", threats = {infantry = 1, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
-    ["Vulcan"] = {category = "support", threats = {infantry = 3, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 2}},
-    ["Strela-10M3"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
-    ["Strela-1 9P31"] = {category = "support", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 1}},
-    
-    -- Support units (Artillery)
-    ["M-109"] = {category = "support", threats = {infantry = 8, ["light-armor"] = 6, ["heavy-armor"] = 4, support = 5}},
-    ["2S9 Nona"] = {category = "support", threats = {infantry = 7, ["light-armor"] = 5, ["heavy-armor"] = 3, support = 4}},
-}
+-- Unit classification (armor/weapons/speed) now lives in src/units.lua and
+-- src/weapons.lua, sourced from data/unit-data.csv and data/weapons-template.csv.
 
 return {
     acceptableLevelsOfRisk = acceptableLevelsOfRisk,
@@ -234,8 +186,7 @@ return {
     rgb = rgb,
     taskTypes = taskTypes,
     threatStatus = threatStatus,
-    statusTypes = statusTypes,
-    unitClassification = unitClassification
+    statusTypes = statusTypes
 }
 
 end)
@@ -2057,43 +2008,77 @@ __bundle_register("group-profiler", function(require, _LOADED, __bundle_register
 -- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
 -- Returns GroupProfile tables with capability, composition, unit count, and status.
 --
+-- Derives per-unit combat profiles from src/units.lua (armor class + weapon
+-- loadout) and src/weapons.lua (per-weapon range/effectiveness), rather than
+-- a single hand-tuned threat number per unit type.
+--
 -- GroupProfile schema:
 -- {
---     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
---     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
+--     offensiveCapability = { vsUnarmored=N, vsLight=N, vsMedium=N, vsHeavy=N, vsAir=N },
+--     composition         = { unarmored=N, light=N, medium=N, heavy=N, air=N },
 --     unitCount           = N,
 --     -- Status fields (only from profileGroup, nil from profileUnits):
 --     attritionRate       = 0.0-1.0,
 --     ammoRatio           = 0.0-1.0,
 --     fuelRatio           = 0.0-1.0,
 -- }
+--
+-- composition/offensiveCapability tiers mirror the armorClass scale in
+-- units.lua (0=unarmored, 1=light, 2=medium, 3=heavy), plus "air" for future
+-- airborne (CAS/helicopter) units - no unit is classified into that tier yet,
+-- so it stays zero until air units are added to units.lua.
 
-local constants = require("constants")
-local unitClassification = constants.unitClassification
+local units = require("units")
+local weapons = require("weapons")
 
 local GroupProfiler = {}
+
+local armorClassNames = {[0] = "unarmored", [1] = "light", [2] = "medium", [3] = "heavy"}
+local capabilityTiers = {"unarmored", "light", "medium", "heavy", "air"}
 
 -- ============================================================================
 -- UNIT CLASSIFICATION
 -- ============================================================================
 
+-- Combine a unit type's weapon loadout into a single per-tier effectiveness
+-- profile. Weapons on one unit are alternatives (it fires whichever suits the
+-- target), not simultaneous - so each tier takes the best (max) effectiveness
+-- among the unit's own weapons. Contrast with profileUnits, which sums these
+-- per-unit profiles across a group, where firepower really does add up.
+local function computeEffectiveness(weaponIds)
+    local effectiveness = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+    for _, weaponId in ipairs(weaponIds or {}) do
+        local weapon = weapons[weaponId]
+        if weapon then
+            for _, tier in ipairs(capabilityTiers) do
+                local value = weapon.effectiveness[tier] or 0
+                if value > effectiveness[tier] then
+                    effectiveness[tier] = value
+                end
+            end
+        end
+    end
+    return effectiveness
+end
+
 function GroupProfiler.classifyUnit(unit)
+    local empty = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+
     if not unit or not unit:isExist() then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+        return {armorClass = 0, effectiveness = empty}
     end
 
     local typeName = unit:getTypeName()
-    if not typeName then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    local unitData = typeName and units[typeName]
+    if not unitData then
+        env.info("WARNING: GroupProfiler - Unknown unit type '" .. tostring(typeName) .. "' - using default classification")
+        return {armorClass = 0, effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1}}
     end
 
-    local classification = unitClassification[typeName]
-    if classification then
-        return classification
-    end
-
-    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
-    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
+    return {
+        armorClass    = unitData.armorClass,
+        effectiveness = computeEffectiveness(unitData.weapons),
+    }
 end
 
 -- ============================================================================
@@ -2101,7 +2086,7 @@ end
 -- ============================================================================
 
 function GroupProfiler.getUnitsFromGroups(groups)
-    local units = {}
+    local unitList = {}
 
     local groupList = {}
     if type(groups) == "table" and groups.getUnits then
@@ -2115,13 +2100,13 @@ function GroupProfiler.getUnitsFromGroups(groups)
             local groupUnits = group:getUnits()
             for _, unit in ipairs(groupUnits) do
                 if unit and unit:isExist() then
-                    table.insert(units, unit)
+                    table.insert(unitList, unit)
                 end
             end
         end
     end
 
-    return units
+    return unitList
 end
 
 function GroupProfiler.getUnitsFromGroupNames(groupNames)
@@ -2141,40 +2126,32 @@ end
 
 -- Build a capability/composition profile from a list of unit references.
 -- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
-function GroupProfiler.profileUnits(units)
+function GroupProfiler.profileUnits(unitList)
     local profile = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
+        composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
     }
 
-    if not units or #units == 0 then
+    if not unitList or #unitList == 0 then
         return profile
     end
 
-    for _, unit in ipairs(units) do
+    for _, unit in ipairs(unitList) do
         if unit and unit:isExist() then
             local classification = GroupProfiler.classifyUnit(unit)
-            local threats = classification.threats
+            local effectiveness = classification.effectiveness
 
             profile.unitCount = profile.unitCount + 1
 
-            local cat = classification.category
-            if cat == "infantry" then
-                profile.composition.infantry = profile.composition.infantry + 1
-            elseif cat == "light-armor" then
-                profile.composition.lightArmor = profile.composition.lightArmor + 1
-            elseif cat == "heavy-armor" then
-                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
-            elseif cat == "support" then
-                profile.composition.support = profile.composition.support + 1
-            end
+            local tierName = armorClassNames[classification.armorClass] or "unarmored"
+            profile.composition[tierName] = profile.composition[tierName] + 1
 
-            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
-            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
-                                                     + threats["light-armor"]
-                                                     + threats["heavy-armor"]
-            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
+            profile.offensiveCapability.vsUnarmored = profile.offensiveCapability.vsUnarmored + effectiveness.unarmored
+            profile.offensiveCapability.vsLight      = profile.offensiveCapability.vsLight      + effectiveness.light
+            profile.offensiveCapability.vsMedium     = profile.offensiveCapability.vsMedium     + effectiveness.medium
+            profile.offensiveCapability.vsHeavy      = profile.offensiveCapability.vsHeavy      + effectiveness.heavy
+            profile.offensiveCapability.vsAir        = profile.offensiveCapability.vsAir        + effectiveness.air
         end
     end
 
@@ -2184,8 +2161,8 @@ end
 -- Build a full profile for a named DCS group, including status ratios.
 function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
     local zeroed = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
+        composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
         attritionRate       = 1,
         ammoRatio           = 0,
@@ -2246,19 +2223,16 @@ end
 -- Returns how favorable our position is against the threat.
 -- Higher = better for us. math.huge = no opposition.
 function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
-    local ownCap    = ownProfile.offensiveCapability
-    local theirComp = threatProfile.composition
+    local function power(cap, comp)
+        return cap.vsUnarmored * comp.unarmored
+             + cap.vsLight     * comp.light
+             + cap.vsMedium    * comp.medium
+             + cap.vsHeavy     * comp.heavy
+             + cap.vsAir       * comp.air
+    end
 
-    local ourPower = ownCap.vsInfantry * theirComp.infantry
-                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
-                   + ownCap.vsAir      * theirComp.support
-
-    local theirCap = threatProfile.offensiveCapability
-    local ownComp  = ownProfile.composition
-
-    local theirPower = theirCap.vsInfantry * ownComp.infantry
-                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
-                     + theirCap.vsAir      * ownComp.support
+    local ourPower   = power(ownProfile.offensiveCapability, threatProfile.composition)
+    local theirPower = power(threatProfile.offensiveCapability, ownProfile.composition)
 
     if ourPower == 0 and theirPower == 0 then return 0 end
     if theirPower == 0 and ourPower > 0 then return math.huge end
@@ -2266,6 +2240,453 @@ function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
 end
 
 return GroupProfiler
+
+end)
+__bundle_register("weapons", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- Weapon database: per-weapon range and effectiveness.
+-- Source of truth is data/weapons-template.csv (filled in from the DCS
+-- Encyclopedia and, for SAM/AAA engagement ranges, Mission Editor range rings).
+-- Regenerate this file from that CSV rather than hand-editing it out of sync.
+--
+-- range / minRange: meters. minRange is the dead zone (e.g. ATGM minimum
+-- arming distance, indirect fire minimum elevation) - 0 where none applies.
+--
+-- effectiveness: unitless 0-10 scale, calibrated relative to other weapons
+-- rather than derived from any real penetration/ballistics data.
+--   unarmored / light / medium / heavy - vs the armorClass tiers in units.lua
+--   air                                - vs aircraft/helicopters (SAM/AAA/MANPAD)
+
+local weapons = {
+    ["M4_5_56mm_Carbine"] = {
+        displayName = "M4 5.56mm Carbine",
+        kind = "small-arms",
+        range = 500,
+        minRange = 0,
+        effectiveness = {unarmored = 3, light = 2, medium = 0, heavy = 0, air = 1},
+    },
+    ["M249_5_56mm_SAW"] = {
+        displayName = "M249 5.56mm SAW",
+        kind = "mg",
+        range = 700,
+        minRange = 0,
+        effectiveness = {unarmored = 6, light = 4, medium = 1, heavy = 0, air = 2},
+    },
+    ["AK74_5_45mm_Rifle"] = {
+        displayName = "AK74 5.45mm Rifle",
+        kind = "small-arms",
+        range = 500,
+        minRange = 0,
+        effectiveness = {unarmored = 4, light = 2, medium = 0, heavy = 0, air = 1},
+    },
+    ["Vulcan_20mm"] = {
+        displayName = "Vulcan 20mm Cannon",
+        kind = "autocannon",
+        range = 2000,
+        minRange = 500,
+        effectiveness = {unarmored = 2, light = 2, medium = 0, heavy = 0, air = 7},
+    },
+    ["M2_50cal_MG"] = {
+        displayName = "M2 .50 cal MG",
+        kind = "mg",
+        range = 1200,
+        minRange = 0,
+        effectiveness = {unarmored = 8, light = 10, medium = 6, heavy = 3, air = 3},
+    },
+    ["TOW_ATGM"] = {
+        displayName = "TOW ATGM",
+        kind = "atgm",
+        range = 3800,
+        minRange = 65,
+        effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+    },
+    ["KPVT_14_5mm_MG"] = {
+        displayName = "KPVT 14.5mm MG",
+        kind = "mg",
+        range = 1600,
+        minRange = 0,
+        effectiveness = {unarmored = 9, light = 8, medium = 6, heavy = 3, air = 5},
+    },
+    ["PKT_7_62mm_MG"] = {
+        displayName = "PKT 7.62mm MG",
+        kind = "mg",
+        range = 1600,
+        minRange = 0,
+        effectiveness = {unarmored = 7, light = 6, medium = 4, heavy = 0, air = 1},
+    },
+    ["M185_155mm_Howitzer"] = {
+        displayName = "M185 155mm Howitzer",
+        kind = "indirect",
+        range = 22000,
+        minRange = 200,
+        effectiveness = {unarmored = 8, light = 8, medium = 5, heavy = 2, air = 0},
+    },
+    ["2A60_120mm_Mortar"] = {
+        displayName = "2A60 120mm Mortar",
+        kind = "indirect",
+        range = 7000,
+        minRange = 0,
+        effectiveness = {unarmored = 8, light = 7, medium = 4, heavy = 2, air = 0},
+    },
+    ["73mm_Smooth_Bore"] = {
+        displayName = "73mm Smooth Bore",
+        kind = "cannon",
+        range = 3000,
+        minRange = 400,
+        effectiveness = {unarmored = 6, light = 8, medium = 8, heavy = 6, air = 2},
+    },
+    ["AT_3B_Sagger_B"] = {
+        displayName = "9M14M Sagger B ATGM",
+        kind = "atgm",
+        range = 4000,
+        minRange = 0,
+        effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 0},
+    },
+    ["M242_25mm_Cannon"] = {
+        displayName = "M242 25mm Cannon",
+        kind = "autocannon",
+        range = 2500,
+        minRange = 500,
+        effectiveness = {unarmored = 5, light = 8, medium = 7, heavy = 6, air = 4},
+    },
+    ["M240C_7_62mm_MG"] = {
+        displayName = "M240C 7.62mm MG",
+        kind = "mg",
+        range = 1200,
+        minRange = 0,
+        effectiveness = {unarmored = 7, light = 6, medium = 4, heavy = 0, air = 1},
+    },
+    ["2A42_30mm_Cannon"] = {
+        displayName = "2A42 30mm Cannon",
+        kind = "autocannon",
+        range = 2500,
+        minRange = 400,
+        effectiveness = {unarmored = 6, light = 9, medium = 8, heavy = 7, air = 5},
+    },
+    ["AT_5_Konkurs_ATGM"] = {
+        displayName = "AT-5 Konkurs ATGM",
+        kind = "atgm",
+        range = 3000,
+        minRange = 100,
+        effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+    },
+    ["2A70_100mm_Cannon"] = {
+        displayName = "2A70 100mm Cannon",
+        kind = "cannon",
+        range = 2500,
+        minRange = 400,
+        effectiveness = {unarmored = 4, light = 8, medium = 9, heavy = 9, air = 0},
+    },
+    ["2A72_30mm_Cannon"] = {
+        displayName = "2A72 30mm Cannon",
+        kind = "autocannon",
+        range = 2500,
+        minRange = 1000,
+        effectiveness = {unarmored = 6, light = 9, medium = 8, heavy = 7, air = 5},
+    },
+    ["AT10_9M117_ATGM"] = {
+        displayName = "AT10 9M117 ATGM",
+        kind = "atgm",
+        range = 4000,
+        minRange = 400,
+        effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+    },
+    ["RPG_16"] = {
+        displayName = "RPG-16",
+        kind = "rocket",
+        range = 500,
+        minRange = 100,
+        effectiveness = {unarmored = 5, light = 10, medium = 9, heavy = 7, air = 1},
+    },
+    ["SA_13_9M333_IR_SAM"] = {
+        displayName = "SA13 9M333 IR SAM",
+        kind = "sam",
+        range = 5000,
+        minRange = 800,
+        effectiveness = {unarmored = 2, light = 0, medium = 0, heavy = 0, air = 8},
+    },
+    ["SA_9B_9M31M_IR_SAM"] = {
+        displayName = "SA9 9M31M IR SAM",
+        kind = "sam",
+        range = 4200,
+        minRange = 800,
+        effectiveness = {unarmored = 2, light = 0, medium = 0, heavy = 0, air = 9},
+    },
+    ["M256_120mm_Cannon"] = {
+        displayName = "M256 120mm Cannon",
+        kind = "cannon",
+        range = 4000,
+        minRange = 400,
+        effectiveness = {unarmored = 5, light = 8, medium = 9, heavy = 10, air = 0},
+    },
+    ["2A46M_125mm_Cannon"] = {
+        displayName = "2A46M 125mm Cannon",
+        kind = "cannon",
+        range = 3500,
+        minRange = 400,
+        effectiveness = {unarmored = 5, light = 8, medium = 9, heavy = 10, air = 0},
+    },
+    ["NSVT_12_7mm_MG"] = {
+        displayName = "NSVT 12.7mm MG",
+        kind = "mg",
+        range = 1600,
+        minRange = 0,
+        effectiveness = {unarmored = 8, light = 10, medium = 6, heavy = 3, air = 5},
+    },
+}
+
+return weapons
+
+end)
+__bundle_register("units", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- Per-unit-type data: armor, speed, and weapon loadout.
+-- Source of truth is data/unit-data.csv, gathered by tools/unit-data-dump.lua
+-- and hand-verified. Regenerate from that CSV rather than hand-editing out of
+-- sync. Table keys are exact DCS typeName strings - do not rename them, they
+-- must match what DCS/mist expect when spawning (see src/constants.lua's
+-- groundTemplates/garrisonTemplates, which reference these same strings).
+--
+-- armorClass: ordinal tier judged by feel, not real armor thickness -
+--   0 = unarmored (infantry, soft-skinned trucks/cars)
+--   1 = light (APC/SAM/AAA/artillery chassis)
+--   2 = medium (IFV)
+--   3 = heavy (MBT)
+-- Matches the vs-tier effectiveness columns in weapons.lua.
+--
+-- speedMax: meters/second, from DCS's own Unit:getDesc().speedMax. Treat this
+-- as a fast-lookup approximation - prefer a live getDesc() call when a real
+-- Unit reference is available (see GroupCommander:getSlowestUnitSpeed).
+--
+-- weapons: list of weapon_id keys into weapons.lua. Empty list = unarmed -
+-- confirmed by hand for Hummer/Tigr_233036 despite DCS tagging both
+-- "Armed vehicles" (see data/unit-data.csv for DCS's own tags, kept there
+-- for reference only - they've been found unreliable, e.g. those two).
+--
+-- Kamaz 43101 and Avenger are intentionally omitted: DCS could not resolve
+-- either type name during data collection (silently substituted Leopard-2 -
+-- see tools/unit-data-dump.lua's usage notes) and their dumped stats are
+-- garbage. Add them back once verified via the Mission Editor.
+
+local units = {
+    ["Soldier M4"] = {
+        dcsRole = "Infantry",
+        armorClass = 0,
+        life = 1.04,
+        speedMax = 4.00,
+        weapons = {"M4_5_56mm_Carbine"},
+    },
+    ["Soldier M249"] = {
+        dcsRole = "Infantry",
+        armorClass = 0,
+        life = 1.04,
+        speedMax = 4.00,
+        weapons = {"M249_5_56mm_SAW"},
+    },
+    ["Infantry AK"] = {
+        dcsRole = "Infantry",
+        armorClass = 0,
+        life = 1.04,
+        speedMax = 4.00,
+        weapons = {"AK74_5_45mm_Rifle"},
+    },
+    ["Paratrooper RPG-16"] = {
+        dcsRole = "Infantry",
+        armorClass = 0,
+        life = 1.04,
+        speedMax = 4.00,
+        weapons = {"RPG_16"},
+    },
+    ["Hummer"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 2.5,
+        speedMax = 31.39,
+        weapons = {}, -- confirmed unarmed despite DCS "Armed vehicles" tag
+    },
+    ["GAZ-66"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["UAZ-469"] = {
+        dcsRole = "Car",
+        armorClass = 0,
+        life = 1.8,
+        speedMax = 27.78,
+        weapons = {},
+    },
+    ["M 818"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["KAMAZ Truck"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["Ural-375"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["Ural-4320-31"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 3,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["Ural-4320T"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["M1043 HMMWV Armament"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 2.5,
+        speedMax = 31.39,
+        weapons = {"M2_50cal_MG"},
+    },
+    ["M1045 HMMWV TOW"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 2.5,
+        speedMax = 31.39,
+        weapons = {"TOW_ATGM"},
+    },
+    ["BRDM-2"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 3,
+        speedMax = 27.78,
+        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+    },
+    ["Tigr_233036"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 2.5,
+        speedMax = 40.00,
+        weapons = {}, -- confirmed unarmed despite DCS "Armed vehicles" tag
+    },
+    ["M-113"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 3,
+        speedMax = 16.67,
+        weapons = {"M2_50cal_MG"},
+    },
+    ["BMD-1"] = {
+        dcsRole = "IFV",
+        armorClass = 2,
+        life = 3,
+        speedMax = 16.95,
+        weapons = {"73mm_Smooth_Bore", "PKT_7_62mm_MG", "AT_3B_Sagger_B"},
+    },
+    ["M-2 Bradley"] = {
+        dcsRole = "IFV",
+        armorClass = 2,
+        life = 6,
+        speedMax = 18.33,
+        weapons = {"M242_25mm_Cannon", "TOW_ATGM", "M240C_7_62mm_MG"},
+    },
+    ["BMP-2"] = {
+        dcsRole = "IFV",
+        armorClass = 2,
+        life = 5,
+        speedMax = 18.33,
+        weapons = {"2A42_30mm_Cannon", "PKT_7_62mm_MG", "AT_5_Konkurs_ATGM"},
+    },
+    ["BMP-3"] = {
+        dcsRole = "IFV",
+        armorClass = 2,
+        life = 5,
+        speedMax = 19.44,
+        weapons = {"2A70_100mm_Cannon", "2A72_30mm_Cannon", "PKT_7_62mm_MG", "AT10_9M117_ATGM"},
+    },
+    ["BTR-60"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 3,
+        speedMax = 22.00,
+        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+    },
+    ["BTR-80"] = {
+        dcsRole = "APC",
+        armorClass = 1,
+        life = 3,
+        speedMax = 25.00,
+        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+    },
+    ["M-1 Abrams"] = {
+        dcsRole = "Tank",
+        armorClass = 3,
+        life = 32,
+        speedMax = 18.53,
+        weapons = {"M256_120mm_Cannon", "M2_50cal_MG", "M240C_7_62mm_MG"},
+    },
+    ["T-72B"] = {
+        dcsRole = "Tank",
+        armorClass = 3,
+        life = 25,
+        speedMax = 16.67,
+        weapons = {"2A46M_125mm_Cannon", "NSVT_12_7mm_MG", "PKT_7_62mm_MG"},
+    },
+    ["T-80U"] = {
+        dcsRole = "Tank",
+        armorClass = 3,
+        life = 28,
+        speedMax = 19.44,
+        weapons = {"2A46M_125mm_Cannon", "NSVT_12_7mm_MG", "PKT_7_62mm_MG"},
+    },
+    ["Vulcan"] = {
+        dcsRole = "AAA",
+        armorClass = 1,
+        life = 3,
+        speedMax = 16.67,
+        weapons = {"Vulcan_20mm"},
+    },
+    ["Strela-10M3"] = {
+        dcsRole = "SAM",
+        armorClass = 1,
+        life = 3,
+        speedMax = 16.67,
+        weapons = {"SA_13_9M333_IR_SAM"},
+    },
+    ["Strela-1 9P31"] = {
+        dcsRole = "SAM",
+        armorClass = 1,
+        life = 3,
+        speedMax = 27.78,
+        weapons = {"SA_9B_9M31M_IR_SAM"},
+    },
+    ["M-109"] = {
+        dcsRole = "Artillery",
+        armorClass = 1,
+        life = 3,
+        speedMax = 15.64,
+        weapons = {"M185_155mm_Howitzer"},
+    },
+    ["2S9 Nona"] = {
+        dcsRole = "Artillery",
+        armorClass = 1,
+        life = 4,
+        speedMax = 16.67,
+        weapons = {"2A60_120mm_Mortar"},
+    },
+}
+
+return units
 
 end)
 __bundle_register("threat-tracker", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -2626,7 +3047,7 @@ function ReconRallyAssaultPlan:reconPhase(context)
                     alr      = alr.LOW,
                     count    = self.config.maxReconGroups,
                     missionProfile = {
-                        offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
+                        offensiveCapability = { vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0 },
                         attritionRate = 0.0,
                         ammoRatio     = 0.2,
                     },
@@ -2725,9 +3146,11 @@ function ReconRallyAssaultPlan:assaultPhase(context)
         }
         if threatProfile and threatProfile.unitCount > 0 then
             missionProfile.offensiveCapability = {
-                vsInfantry = threatProfile.offensiveCapability.vsInfantry,
-                vsArmor    = threatProfile.offensiveCapability.vsArmor,
-                vsAir      = threatProfile.offensiveCapability.vsAir,
+                vsUnarmored = threatProfile.offensiveCapability.vsUnarmored,
+                vsLight     = threatProfile.offensiveCapability.vsLight,
+                vsMedium    = threatProfile.offensiveCapability.vsMedium,
+                vsHeavy     = threatProfile.offensiveCapability.vsHeavy,
+                vsAir       = threatProfile.offensiveCapability.vsAir,
             }
         end
 
@@ -3432,15 +3855,18 @@ function GroupCommander:assessThreats()
         combinedForce = {
             unitCount = self.ownForceStrength.unitCount + self.allyIntel.unitCount,
             offensiveCapability = {
-                vsInfantry = self.ownForceStrength.offensiveCapability.vsInfantry + self.allyIntel.offensiveCapability.vsInfantry,
-                vsArmor    = self.ownForceStrength.offensiveCapability.vsArmor    + self.allyIntel.offensiveCapability.vsArmor,
-                vsAir      = self.ownForceStrength.offensiveCapability.vsAir      + self.allyIntel.offensiveCapability.vsAir,
+                vsUnarmored = self.ownForceStrength.offensiveCapability.vsUnarmored + self.allyIntel.offensiveCapability.vsUnarmored,
+                vsLight     = self.ownForceStrength.offensiveCapability.vsLight     + self.allyIntel.offensiveCapability.vsLight,
+                vsMedium    = self.ownForceStrength.offensiveCapability.vsMedium    + self.allyIntel.offensiveCapability.vsMedium,
+                vsHeavy     = self.ownForceStrength.offensiveCapability.vsHeavy     + self.allyIntel.offensiveCapability.vsHeavy,
+                vsAir       = self.ownForceStrength.offensiveCapability.vsAir       + self.allyIntel.offensiveCapability.vsAir,
             },
             composition = {
-                infantry   = self.ownForceStrength.composition.infantry   + self.allyIntel.composition.infantry,
-                lightArmor = self.ownForceStrength.composition.lightArmor + self.allyIntel.composition.lightArmor,
-                heavyArmor = self.ownForceStrength.composition.heavyArmor + self.allyIntel.composition.heavyArmor,
-                support    = self.ownForceStrength.composition.support    + self.allyIntel.composition.support,
+                unarmored = self.ownForceStrength.composition.unarmored + self.allyIntel.composition.unarmored,
+                light     = self.ownForceStrength.composition.light     + self.allyIntel.composition.light,
+                medium    = self.ownForceStrength.composition.medium    + self.allyIntel.composition.medium,
+                heavy     = self.ownForceStrength.composition.heavy     + self.allyIntel.composition.heavy,
+                air       = self.ownForceStrength.composition.air       + self.allyIntel.composition.air,
             },
         }
     end
@@ -3472,7 +3898,7 @@ function GroupCommander:getSuitability(missionProfile)
     if missionProfile.offensiveCapability then
         local idealCap = missionProfile.offensiveCapability
         local ownCap   = profile.offensiveCapability
-        for _, field in ipairs({"vsInfantry", "vsArmor", "vsAir"}) do
+        for _, field in ipairs({"vsUnarmored", "vsLight", "vsMedium", "vsHeavy", "vsAir"}) do
             if idealCap[field] ~= nil then
                 score = score + proximity(ownCap[field], idealCap[field])
                 count = count + 1

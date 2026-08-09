@@ -72,7 +72,7 @@ function ReconRallyAssaultPlan:reconPhase(context)
                     alr      = alr.LOW,
                     count    = self.config.maxReconGroups,
                     missionProfile = {
-                        offensiveCapability = { vsInfantry = 0, vsArmor = 0, vsAir = 0 },
+                        offensiveCapability = { vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0 },
                         attritionRate = 0.0,
                         ammoRatio     = 0.2,
                     },
@@ -171,9 +171,11 @@ function ReconRallyAssaultPlan:assaultPhase(context)
         }
         if threatProfile and threatProfile.unitCount > 0 then
             missionProfile.offensiveCapability = {
-                vsInfantry = threatProfile.offensiveCapability.vsInfantry,
-                vsArmor    = threatProfile.offensiveCapability.vsArmor,
-                vsAir      = threatProfile.offensiveCapability.vsAir,
+                vsUnarmored = threatProfile.offensiveCapability.vsUnarmored,
+                vsLight     = threatProfile.offensiveCapability.vsLight,
+                vsMedium    = threatProfile.offensiveCapability.vsMedium,
+                vsHeavy     = threatProfile.offensiveCapability.vsHeavy,
+                vsAir       = threatProfile.offensiveCapability.vsAir,
             }
         end
 

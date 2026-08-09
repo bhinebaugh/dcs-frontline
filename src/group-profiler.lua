@@ -2,43 +2,77 @@
 -- Consolidates ThreatAnalyzer and ForceStatusAnalyzer into a single interface.
 -- Returns GroupProfile tables with capability, composition, unit count, and status.
 --
+-- Derives per-unit combat profiles from src/units.lua (armor class + weapon
+-- loadout) and src/weapons.lua (per-weapon range/effectiveness), rather than
+-- a single hand-tuned threat number per unit type.
+--
 -- GroupProfile schema:
 -- {
---     offensiveCapability = { vsInfantry=N, vsArmor=N, vsAir=N },
---     composition         = { infantry=N, lightArmor=N, heavyArmor=N, support=N },
+--     offensiveCapability = { vsUnarmored=N, vsLight=N, vsMedium=N, vsHeavy=N, vsAir=N },
+--     composition         = { unarmored=N, light=N, medium=N, heavy=N, air=N },
 --     unitCount           = N,
 --     -- Status fields (only from profileGroup, nil from profileUnits):
 --     attritionRate       = 0.0-1.0,
 --     ammoRatio           = 0.0-1.0,
 --     fuelRatio           = 0.0-1.0,
 -- }
+--
+-- composition/offensiveCapability tiers mirror the armorClass scale in
+-- units.lua (0=unarmored, 1=light, 2=medium, 3=heavy), plus "air" for future
+-- airborne (CAS/helicopter) units - no unit is classified into that tier yet,
+-- so it stays zero until air units are added to units.lua.
 
-local constants = require("constants")
-local unitClassification = constants.unitClassification
+local units = require("units")
+local weapons = require("weapons")
 
 local GroupProfiler = {}
+
+local armorClassNames = {[0] = "unarmored", [1] = "light", [2] = "medium", [3] = "heavy"}
+local capabilityTiers = {"unarmored", "light", "medium", "heavy", "air"}
 
 -- ============================================================================
 -- UNIT CLASSIFICATION
 -- ============================================================================
 
+-- Combine a unit type's weapon loadout into a single per-tier effectiveness
+-- profile. Weapons on one unit are alternatives (it fires whichever suits the
+-- target), not simultaneous - so each tier takes the best (max) effectiveness
+-- among the unit's own weapons. Contrast with profileUnits, which sums these
+-- per-unit profiles across a group, where firepower really does add up.
+local function computeEffectiveness(weaponIds)
+    local effectiveness = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+    for _, weaponId in ipairs(weaponIds or {}) do
+        local weapon = weapons[weaponId]
+        if weapon then
+            for _, tier in ipairs(capabilityTiers) do
+                local value = weapon.effectiveness[tier] or 0
+                if value > effectiveness[tier] then
+                    effectiveness[tier] = value
+                end
+            end
+        end
+    end
+    return effectiveness
+end
+
 function GroupProfiler.classifyUnit(unit)
+    local empty = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+
     if not unit or not unit:isExist() then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+        return {armorClass = 0, effectiveness = empty}
     end
 
     local typeName = unit:getTypeName()
-    if not typeName then
-        return {category = "infantry", threats = {infantry = 0, ["light-armor"] = 0, ["heavy-armor"] = 0, support = 0}}
+    local unitData = typeName and units[typeName]
+    if not unitData then
+        env.info("WARNING: GroupProfiler - Unknown unit type '" .. tostring(typeName) .. "' - using default classification")
+        return {armorClass = 0, effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1}}
     end
 
-    local classification = unitClassification[typeName]
-    if classification then
-        return classification
-    end
-
-    env.info("WARNING: GroupProfiler - Unknown unit type '" .. typeName .. "' - using default classification")
-    return {category = "infantry", threats = {infantry = 1, ["light-armor"] = 1, ["heavy-armor"] = 0, support = 1}}
+    return {
+        armorClass    = unitData.armorClass,
+        effectiveness = computeEffectiveness(unitData.weapons),
+    }
 end
 
 -- ============================================================================
@@ -46,7 +80,7 @@ end
 -- ============================================================================
 
 function GroupProfiler.getUnitsFromGroups(groups)
-    local units = {}
+    local unitList = {}
 
     local groupList = {}
     if type(groups) == "table" and groups.getUnits then
@@ -60,13 +94,13 @@ function GroupProfiler.getUnitsFromGroups(groups)
             local groupUnits = group:getUnits()
             for _, unit in ipairs(groupUnits) do
                 if unit and unit:isExist() then
-                    table.insert(units, unit)
+                    table.insert(unitList, unit)
                 end
             end
         end
     end
 
-    return units
+    return unitList
 end
 
 function GroupProfiler.getUnitsFromGroupNames(groupNames)
@@ -86,40 +120,32 @@ end
 
 -- Build a capability/composition profile from a list of unit references.
 -- Status fields (attritionRate, ammoRatio, fuelRatio) are NOT set.
-function GroupProfiler.profileUnits(units)
+function GroupProfiler.profileUnits(unitList)
     local profile = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
+        composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
     }
 
-    if not units or #units == 0 then
+    if not unitList or #unitList == 0 then
         return profile
     end
 
-    for _, unit in ipairs(units) do
+    for _, unit in ipairs(unitList) do
         if unit and unit:isExist() then
             local classification = GroupProfiler.classifyUnit(unit)
-            local threats = classification.threats
+            local effectiveness = classification.effectiveness
 
             profile.unitCount = profile.unitCount + 1
 
-            local cat = classification.category
-            if cat == "infantry" then
-                profile.composition.infantry = profile.composition.infantry + 1
-            elseif cat == "light-armor" then
-                profile.composition.lightArmor = profile.composition.lightArmor + 1
-            elseif cat == "heavy-armor" then
-                profile.composition.heavyArmor = profile.composition.heavyArmor + 1
-            elseif cat == "support" then
-                profile.composition.support = profile.composition.support + 1
-            end
+            local tierName = armorClassNames[classification.armorClass] or "unarmored"
+            profile.composition[tierName] = profile.composition[tierName] + 1
 
-            profile.offensiveCapability.vsInfantry = profile.offensiveCapability.vsInfantry + threats.infantry
-            profile.offensiveCapability.vsArmor    = profile.offensiveCapability.vsArmor
-                                                     + threats["light-armor"]
-                                                     + threats["heavy-armor"]
-            profile.offensiveCapability.vsAir      = profile.offensiveCapability.vsAir + threats.support
+            profile.offensiveCapability.vsUnarmored = profile.offensiveCapability.vsUnarmored + effectiveness.unarmored
+            profile.offensiveCapability.vsLight      = profile.offensiveCapability.vsLight      + effectiveness.light
+            profile.offensiveCapability.vsMedium     = profile.offensiveCapability.vsMedium     + effectiveness.medium
+            profile.offensiveCapability.vsHeavy      = profile.offensiveCapability.vsHeavy      + effectiveness.heavy
+            profile.offensiveCapability.vsAir        = profile.offensiveCapability.vsAir        + effectiveness.air
         end
     end
 
@@ -129,8 +155,8 @@ end
 -- Build a full profile for a named DCS group, including status ratios.
 function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCount, fuelRemaining)
     local zeroed = {
-        offensiveCapability = {vsInfantry = 0, vsArmor = 0, vsAir = 0},
-        composition         = {infantry = 0, lightArmor = 0, heavyArmor = 0, support = 0},
+        offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
+        composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
         attritionRate       = 1,
         ammoRatio           = 0,
@@ -191,19 +217,16 @@ end
 -- Returns how favorable our position is against the threat.
 -- Higher = better for us. math.huge = no opposition.
 function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
-    local ownCap    = ownProfile.offensiveCapability
-    local theirComp = threatProfile.composition
+    local function power(cap, comp)
+        return cap.vsUnarmored * comp.unarmored
+             + cap.vsLight     * comp.light
+             + cap.vsMedium    * comp.medium
+             + cap.vsHeavy     * comp.heavy
+             + cap.vsAir       * comp.air
+    end
 
-    local ourPower = ownCap.vsInfantry * theirComp.infantry
-                   + ownCap.vsArmor    * (theirComp.lightArmor + theirComp.heavyArmor)
-                   + ownCap.vsAir      * theirComp.support
-
-    local theirCap = threatProfile.offensiveCapability
-    local ownComp  = ownProfile.composition
-
-    local theirPower = theirCap.vsInfantry * ownComp.infantry
-                     + theirCap.vsArmor    * (ownComp.lightArmor + ownComp.heavyArmor)
-                     + theirCap.vsAir      * ownComp.support
+    local ourPower   = power(ownProfile.offensiveCapability, threatProfile.composition)
+    local theirPower = power(threatProfile.offensiveCapability, ownProfile.composition)
 
     if ourPower == 0 and theirPower == 0 then return 0 end
     if theirPower == 0 and ourPower > 0 then return math.huge end
