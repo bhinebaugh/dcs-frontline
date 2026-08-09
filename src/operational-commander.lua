@@ -59,8 +59,7 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
-    self.visualizer = config.visualizer
-    self.visualizer:initMovementMapper(config.color)
+    self.visualizer = config.visualizer --shares visualizer with coalition commander
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
@@ -247,11 +246,7 @@ function OperationalCommander:cleanupDestroyedCommanders()
     -- Prune destroyed commanders from this opscom's managed list
     local surviving = {}
     for _, gc in ipairs(self.groupCommanders) do
-        if gc.destroyed then
-            if self.visualizer then
-                self.visualizer:release("group:" .. gc.groupName)
-            end
-        else
+        if not gc.destroyed then
             table.insert(surviving, gc)
         end
     end

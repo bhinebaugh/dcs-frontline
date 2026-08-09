@@ -47,14 +47,9 @@ function CommanderVisualizer:release(key)
 end
 
 -- Draw/update a label at a group's position showing its current order type
--- and disposition, or release the label if the group has no active order.
+-- and disposition, or threat assessment if the group has no active order.
 function CommanderVisualizer:syncGroupOrder(gc, color)
     local key = "group:" .. gc.groupName
-
-    if not gc.orders then
-        self:release(key)
-        return
-    end
 
     local position = gc:getOwnPosition()
     if not position then
@@ -62,58 +57,72 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         return
     end
 
-    local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
-    local threatText = "" .. gc.threatAssessment.count .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10
-    -- local text = gc.groupName .. "\n" .. groupDoctrineName .. "\n" .. orderTypeName
-    local text = gc.groupName .. "\n" .. groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]\n" .. threatText
+    local text
+    local textColor
+    local bgColor
+    local signature
     local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
-    local signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatText, roundedPos}, "|")
+
+    local threatCount = gc.threatAssessment.count 
+    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    if gc.orders then
+        textColor = {1,1,1,0.8}
+        bgColor   = {0,0,0,0.3}
+        local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos}, "|")
+    else
+        textColor = {0.8,0.8,0.8,0.35}
+        bgColor   = {0.4,0.4,0.4,0.15}
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos}, "|")
+    end
+
+    local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
+    local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
+    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText
+
 
     self:upsert(key, signature, function()
-        if not settings.draw.groupOrders then return {} end
-        local markIds = {}
-        local sides = self.map:getVisibility(color, "groupOrders")
-        for _, side in pairs(sides) do
-            local labelId = self.map:getNewMarker()
-            table.insert(markIds, labelId)
-            trigger.action.textToAll(side, labelId, mist.projectPoint(position, 100, math.pi), {1,1,1,0.8}, {0,0,0,0.3}, 12, true, text)
-        end
-        return markIds
+        return self.map:drawGroupOrder(text, color, position, textColor, bgColor)
     end)
-end
-
-function CommanderVisualizer:initMovementMapper(color)
-    -- create key that will collect mark ids for all group movement arrows for current objective
-    local key = color .. "_movement"
-
-    -- initial entry is empty
-    if not self.registry[key] then
-        self.registry[key] = { signature = "_", markIds = {} }
-    end
 end
 
 -- Draw and persist arrows showing each time a group changes its intended destination 
 function CommanderVisualizer:appendGroupMove(gc, color)
     local key = color .. "_movement"
     local entry = self.registry[key]
-    if not entry or not gc.orders then
-        -- self:release(key)
-        return
-    end
-
     local position = gc:getOwnPosition()
     if not position then
+        -- not releasing key can helpfully show trace trail for groups
+        -- that blunder unnoticed into bad situations and get obliterated
         -- self:release(key)
         return
     end
 
-    local arrowIds = self.map:drawArrow(position, gc.destination, color)
+    local arrowColor = {0.3,0.3,0.3,0.04}
+    if color == "red" then
+        arrowColor[1] = 0.8
+    end
+    if color == "blue" then
+        arrowColor[3] = 0.8
+    end
+    local arrowIds = self.map:drawMovementTrail(position, gc.destination, color, arrowColor)
     if arrowIds then
-        for _, mk in pairs(arrowIds) do
-            table.insert(self.registry[key].markIds, mk)
+        if not entry then
+            self:upsert(key, "_", function()
+                return arrowIds
+            end)
+        else
+            for _, mk in pairs(arrowIds) do
+                table.insert(self.registry[key].markIds, mk)
+            end
         end
     end
+end
+
+-- Used to erase and reset movement trail upon new orders for group
+function CommanderVisualizer:syncGroupMove(gc, color)
+    local key = color .. "_movement"
+    self:release(key)
 end
 
 -- Draw/update a circle + label at an objective's position showing its task
@@ -136,18 +145,7 @@ function CommanderVisualizer:syncObjective(objective, doctrine, color)
     local signature = table.concat({typeName, objective.status, objective.radius, doctrine.name, doctrine.currentPhaseName, objectiveOrders}, "|")
 
     self:upsert(key, signature, function()
-        if not settings.draw.objectives then return {} end
-        local markIds = {}
-        local sides = self.map:getVisibility(color, "objectives")
-        for _, side in pairs(sides) do
-            local circleId = self.map:getNewMarker()
-            table.insert(markIds, circleId)
-            trigger.action.circleToAll(side, circleId, objective.position, objective.radius+300, rgb[color], {0,0,0,0}, 3)
-            local labelId = self.map:getNewMarker()
-            table.insert(markIds, labelId)
-            trigger.action.textToAll(side, labelId, mist.projectPoint(objective.position, 850, math.pi/2), {1,1,1,1}, {0,0,0,0.3}, 13, true, text)
-        end
-        return markIds
+        return self.map:drawObjective(objective, text, color)
     end)
 end
 

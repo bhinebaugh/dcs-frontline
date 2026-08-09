@@ -54,14 +54,26 @@ function Map:placeMarker(text, color, pt)
     return labels
 end
 
+function Map:drawGroupOrder(text, coalition, point, textColor, bgColor)
+    if not settings.draw.groupOrders then return {} end
+    local Ids = {}
+    local sides = self:getVisibility(coalition, "groupOrders")
+    for _, side in pairs(sides) do
+        local labelId = self:getNewMarker()
+        table.insert(Ids, labelId)
+        trigger.action.textToAll(side, labelId, mist.projectPoint(point, 350, math.pi+0.5), textColor, bgColor, 12, true, text)
+    end
+    return Ids
+end
+
 function Map:drawPolygon(points)
     local mk = mist.marker.add({
         pos = points,
         -- name = "",
         markType = "freeform", --7
         markForCoa = -1, --?
-        color = {1,1,0,0.5},
-        fillColor = {1,1,0,0.2},
+        color = {1,1,0,0.3},
+        fillColor = {1,1,0,0.1},
         lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
     })
     return mk.markId --mist helper returns whole table; we want ID only
@@ -162,38 +174,56 @@ function Map:drawFrontline(points, color, erasePrevious, isLoop)
     end
 end
 
-function Map:drawDirective(originPoint, targetPoint, color)
-    if not settings.draw.directives then return end
+function Map:drawArrow(originPoint, targetPoint, side, lineColor, fillColor)
+    local nextId = self:getNewMarker()
+    trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
+    return nextId
+end
+
+function Map:drawMovementTrail(originPoint, targetPoint, coalition, arrowColor)
+    if not settings.draw.groupMovement then return end
     local Ids = {}
-    local sides = self:getVisibility(color, "directives")
+
+    local lineColor = arrowColor or {(0.7 + rgb[coalition][1])/2, (0.7 + rgb[coalition][2])/2, (0.7 + rgb[coalition][3])/2, 0.5}
+    local fillColor = lineColor
+
+    local sides = self:getVisibility(coalition, "groupMovement")
     for _, side in pairs(sides) do
-        local nextId = self:getNewMarker()
-        local lineColor = {1,1,0.2,0.2}
-        -- lineColor[4] = 0.2
-        lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.2}
-        local fillColor = lineColor
-        local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
-        local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-        local distance = 1000
-        local lineStart = mist.projectPoint(originPoint, distance+200, heading)
-        local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
-        trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
-        table.insert(Ids, nextId)
+        local id = self:drawArrow(originPoint, targetPoint, side, lineColor, fillColor)
+        table.insert(Ids, id)
     end
     return Ids
 end
-function Map:drawArrow(originPoint, targetPoint, color)
+
+function Map:drawDirective(originPoint, targetPoint, color)
     if not settings.draw.directives then return end
     local Ids = {}
+    local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.4}
+    local fillColor = lineColor
+    local distance = 1000
+    local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
+    local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
+    local lineStart = mist.projectPoint(originPoint, distance+200, heading)
+    local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
     local sides = self:getVisibility(color, "directives")
     for _, side in pairs(sides) do
-        local nextId = self:getNewMarker()
-        -- lineColor = {0.7,0.7,0.7,0.15}
-        -- local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.08}
-        local lineColor = {(0.7 + rgb[color][1])/2, (0.7 + rgb[color][2])/2, (0.7 + rgb[color][3])/2, 0.15}
-        local fillColor = lineColor
-        trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
-        table.insert(Ids, nextId)
+        local id = self:drawArrow(lineStart, arrowEnd, side, lineColor, fillColor)
+        table.insert(Ids, id)
+    end
+    return Ids
+end
+
+function Map:drawObjective(objective, text, color)
+    if not settings.draw.objectives then return {} end
+    local sides = self:getVisibility(color, "objectives")
+    local Ids = {}
+    for _, side in pairs(sides) do
+        local circleId = self:getNewMarker()
+        table.insert(Ids, circleId)
+        trigger.action.circleToAll(side, circleId, objective.position, objective.radius+300, rgb[color], {0,0,0,0}, 3)
+        local labelId = self:getNewMarker()
+        table.insert(Ids, labelId)
+        trigger.action.textToAll(side, labelId, mist.projectPoint(objective.position, 850, math.pi/2), {1,1,1,1}, {0,0,0,0.3}, 13, true, text)
     end
     return Ids
 end

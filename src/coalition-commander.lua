@@ -64,7 +64,8 @@ function CoalitionCommander:addReserves(groups)
     for _, groupName in pairs(groups) do
         local gc = GroupCommander.new(groupName, {
             color = self.color,
-            visualizer = self.visualizer,
+            -- visualizer = self.visualizer, --groups have own visualizer to show doctrine and movement
+            map = self.map.map,
         })
         table.insert(self.reserves, gc)
     end
@@ -83,7 +84,7 @@ function CoalitionCommander:initiate(front)
     
             local gc = GroupCommander.new(groupName, {
                 color = self.color,
-                visualizer = self.visualizer,
+                -- visualizer = self.visualizer,
             })
             table.insert(self.reserves, gc)
 
@@ -108,9 +109,7 @@ function CoalitionCommander:observe()
     -- Prune destroyed groups from reserves
     local surviving = {}
     for _, gc in ipairs(self.reserves) do
-        if gc.destroyed then
-            self.visualizer:release("group:" .. gc.groupName)
-        else
+        if not gc.destroyed then
             table.insert(surviving, gc)
         end
     end
@@ -164,7 +163,6 @@ function CoalitionCommander:decide()
     for _, i in ipairs(self.opscoms_to_disband) do
         local opscom = self.opscoms[i]
         self.visualizer:release("opscom:" .. opscom.name)
-        self.visualizer:release(self.color .. "_movement")
         local survivors = opscom:disband()
         for _, gc in ipairs(survivors) do
             -- This could be a good point to check residual gc doctrine and orders,

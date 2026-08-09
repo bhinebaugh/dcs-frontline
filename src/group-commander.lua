@@ -5,6 +5,7 @@ local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local AssaultDoctrine = require("doctrines.tactical.assault-doctrine")
+local CommanderVisualizer = require("commander-visualizer")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
@@ -58,7 +59,8 @@ function GroupCommander.new(groupName, config)
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
     self.destroyed = false  -- Tracks if group no longer exists
-    self.visualizer = config.visualizer
+    -- self.visualizer = config.visualizer
+    self.visualizer = CommanderVisualizer.new(config.map)
     
     -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     self.fuelRemaining = 1.0  -- Start at 100%
@@ -274,6 +276,7 @@ function GroupCommander:decide()
     -- while a doctrine is still working an order that hasn't called orderAction "start" yet.
     if self.orders and self.orders ~= self.doctrineOrder then
         self.doctrineOrder = self.orders
+        self.visualizer:syncGroupMove(self, self.color) --reset movement arrows
         if self.orders.type == taskTypes.PATROL then
             self.doctrine = PatrolDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.RECON then
