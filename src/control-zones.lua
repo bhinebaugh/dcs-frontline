@@ -1004,7 +1004,7 @@ function ControlZones:spawnFARP(color, pt)
         return false
     end
 
-    local coal = color == "blue" and country.id.USA or country.id.RUSSIA --country.id.USSR
+    local coal = color == "blue" and country.id.USA or country.id.USSR --country.id.USSR country.id.RUSSIA
     local farp = {
         ["category"] = "Heliports",
         ["shape_name"] = "FARPS", -- "invisiblefarp"  | "FARP"           | "FARP_SINGLE_01"
@@ -1236,7 +1236,7 @@ function ControlZones:placeFARPs(color)
             env.info(".......... edge depth-1")
             local offset1 = mist.projectPoint(pt1, SETBACK_DISTANCE, heading)
             table.insert(farpPoints, offset1)
-        elseif #zns then
+        elseif zns and #zns > 0 then
             env.info(".......... zone depth-1")
             local pt = self:getZone(zns[1]).point
             local offset1 = mist.projectPoint(pt, SETBACK_DISTANCE, heading)
