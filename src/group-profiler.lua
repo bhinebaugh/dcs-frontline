@@ -249,17 +249,30 @@ end
 
 -- Returns how favorable our position is against the threat.
 -- Higher = better for us. math.huge = no opposition.
+--
+-- Weights each capability tier by the FRACTION of the opposing force in
+-- that tier (comp[tier] / totalCount), not raw count. This keeps the result
+-- sensitive to force size - a force twice as large has twice the summed
+-- capability, and that difference survives into the ratio - without
+-- double-counting the opponent's headcount a second time via the composition
+-- weighting (dividing out totalCount normalizes away raw size, leaving only
+-- the composition's shape). It also preserves a genuine nuance: a powerful
+-- capability against a tier that's only a small slice of the opposing force
+-- (e.g. 1 heavy tank among 8 mostly-light vehicles) counts for less than the
+-- same capability against a force made up mostly of that tier.
 function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
-    local function power(cap, comp)
-        return cap.vsUnarmored * comp.unarmored
-             + cap.vsLight     * comp.light
-             + cap.vsMedium    * comp.medium
-             + cap.vsHeavy     * comp.heavy
-             + cap.vsAir       * comp.air
+    local function power(cap, comp, totalCount)
+        if totalCount == 0 then return 0 end
+        local function fraction(count) return count / totalCount end
+        return cap.vsUnarmored * fraction(comp.unarmored)
+             + cap.vsLight     * fraction(comp.light)
+             + cap.vsMedium    * fraction(comp.medium)
+             + cap.vsHeavy     * fraction(comp.heavy)
+             + cap.vsAir       * fraction(comp.air)
     end
 
-    local ourPower   = power(ownProfile.offensiveCapability, threatProfile.composition)
-    local theirPower = power(threatProfile.offensiveCapability, ownProfile.composition)
+    local ourPower   = power(ownProfile.offensiveCapability, threatProfile.composition, threatProfile.unitCount)
+    local theirPower = power(threatProfile.offensiveCapability, ownProfile.composition, ownProfile.unitCount)
 
     if ourPower == 0 and theirPower == 0 then return 0 end
     if theirPower == 0 and ourPower > 0 then return math.huge end

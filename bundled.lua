@@ -257,7 +257,8 @@ function CoalitionCommander:addReserves(groups)
     for _, groupName in pairs(groups) do
         local gc = GroupCommander.new(groupName, {
             color = self.color,
-            visualizer = self.visualizer,
+            -- visualizer = self.visualizer, --groups have own visualizer to show doctrine and movement
+            map = self.map.map,
         })
         table.insert(self.reserves, gc)
     end
@@ -276,7 +277,7 @@ function CoalitionCommander:initiate(front)
     
             local gc = GroupCommander.new(groupName, {
                 color = self.color,
-                visualizer = self.visualizer,
+                -- visualizer = self.visualizer,
             })
             table.insert(self.reserves, gc)
 
@@ -301,9 +302,7 @@ function CoalitionCommander:observe()
     -- Prune destroyed groups from reserves
     local surviving = {}
     for _, gc in ipairs(self.reserves) do
-        if gc.destroyed then
-            self.visualizer:release("group:" .. gc.groupName)
-        else
+        if not gc.destroyed then
             table.insert(surviving, gc)
         end
     end
@@ -357,7 +356,6 @@ function CoalitionCommander:decide()
     for _, i in ipairs(self.opscoms_to_disband) do
         local opscom = self.opscoms[i]
         self.visualizer:release("opscom:" .. opscom.name)
-        self.visualizer:release(self.color .. "_movement")
         local survivors = opscom:disband()
         for _, gc in ipairs(survivors) do
             -- This could be a good point to check residual gc doctrine and orders,
@@ -926,14 +924,9 @@ function CommanderVisualizer:release(key)
 end
 
 -- Draw/update a label at a group's position showing its current order type
--- and disposition, or release the label if the group has no active order.
+-- and disposition, or threat assessment if the group has no active order.
 function CommanderVisualizer:syncGroupOrder(gc, color)
     local key = "group:" .. gc.groupName
-
-    if not gc.orders then
-        self:release(key)
-        return
-    end
 
     local position = gc:getOwnPosition()
     if not position then
@@ -941,58 +934,72 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         return
     end
 
-    local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
-    local threatText = "" .. gc.threatAssessment.count .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10
-    -- local text = gc.groupName .. "\n" .. groupDoctrineName .. "\n" .. orderTypeName
-    local text = gc.groupName .. "\n" .. groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]\n" .. threatText
+    local text
+    local textColor
+    local bgColor
+    local signature
     local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
-    local signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatText, roundedPos}, "|")
+
+    local threatCount = gc.threatAssessment.count 
+    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    if gc.orders then
+        textColor = {1,1,1,0.8}
+        bgColor   = {0,0,0,0.3}
+        local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos}, "|")
+    else
+        textColor = {0.8,0.8,0.8,0.35}
+        bgColor   = {0.4,0.4,0.4,0.15}
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos}, "|")
+    end
+
+    local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
+    local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
+    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText
+
 
     self:upsert(key, signature, function()
-        if not settings.draw.groupOrders then return {} end
-        local markIds = {}
-        local sides = self.map:getVisibility(color, "groupOrders")
-        for _, side in pairs(sides) do
-            local labelId = self.map:getNewMarker()
-            table.insert(markIds, labelId)
-            trigger.action.textToAll(side, labelId, mist.projectPoint(position, 100, math.pi), {1,1,1,0.8}, {0,0,0,0.3}, 12, true, text)
-        end
-        return markIds
+        return self.map:drawGroupOrder(text, color, position, textColor, bgColor)
     end)
-end
-
-function CommanderVisualizer:initMovementMapper(color)
-    -- create key that will collect mark ids for all group movement arrows for current objective
-    local key = color .. "_movement"
-
-    -- initial entry is empty
-    if not self.registry[key] then
-        self.registry[key] = { signature = "_", markIds = {} }
-    end
 end
 
 -- Draw and persist arrows showing each time a group changes its intended destination 
 function CommanderVisualizer:appendGroupMove(gc, color)
     local key = color .. "_movement"
     local entry = self.registry[key]
-    if not entry or not gc.orders then
-        -- self:release(key)
-        return
-    end
-
     local position = gc:getOwnPosition()
     if not position then
+        -- not releasing key can helpfully show trace trail for groups
+        -- that blunder unnoticed into bad situations and get obliterated
         -- self:release(key)
         return
     end
 
-    local arrowIds = self.map:drawArrow(position, gc.destination, color)
+    local arrowColor = {0.3,0.3,0.3,0.04}
+    if color == "red" then
+        arrowColor[1] = 0.8
+    end
+    if color == "blue" then
+        arrowColor[3] = 0.8
+    end
+    local arrowIds = self.map:drawMovementTrail(position, gc.destination, color, arrowColor)
     if arrowIds then
-        for _, mk in pairs(arrowIds) do
-            table.insert(self.registry[key].markIds, mk)
+        if not entry then
+            self:upsert(key, "_", function()
+                return arrowIds
+            end)
+        else
+            for _, mk in pairs(arrowIds) do
+                table.insert(self.registry[key].markIds, mk)
+            end
         end
     end
+end
+
+-- Used to erase and reset movement trail upon new orders for group
+function CommanderVisualizer:syncGroupMove(gc, color)
+    local key = color .. "_movement"
+    self:release(key)
 end
 
 -- Draw/update a circle + label at an objective's position showing its task
@@ -1015,18 +1022,7 @@ function CommanderVisualizer:syncObjective(objective, doctrine, color)
     local signature = table.concat({typeName, objective.status, objective.radius, doctrine.name, doctrine.currentPhaseName, objectiveOrders}, "|")
 
     self:upsert(key, signature, function()
-        if not settings.draw.objectives then return {} end
-        local markIds = {}
-        local sides = self.map:getVisibility(color, "objectives")
-        for _, side in pairs(sides) do
-            local circleId = self.map:getNewMarker()
-            table.insert(markIds, circleId)
-            trigger.action.circleToAll(side, circleId, objective.position, objective.radius+300, rgb[color], {0,0,0,0}, 3)
-            local labelId = self.map:getNewMarker()
-            table.insert(markIds, labelId)
-            trigger.action.textToAll(side, labelId, mist.projectPoint(objective.position, 850, math.pi/2), {1,1,1,1}, {0,0,0,0.3}, 13, true, text)
-        end
-        return markIds
+        return self.map:drawObjective(objective, text, color)
     end)
 end
 
@@ -1147,19 +1143,23 @@ return {
 end)
 __bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
 local settings = {
+    -- whether UI elements will show on the map at all
     draw = {
         edges = true,
         zones = true,
         frontlines = true,
         directives = true,
         groupOrders = true,
+        groupMovement = true,
         objectives = true,
     },
+    -- whether they will be visible to the other coalition
     displayToAll = {
         zones = true,
         frontlines = true,
         directives = true,
         groupOrders = false,
+        groupMovement = false,
         objectives = false,
     }
 }
@@ -1459,8 +1459,7 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
-    self.visualizer = config.visualizer
-    self.visualizer:initMovementMapper(config.color)
+    self.visualizer = config.visualizer --shares visualizer with coalition commander
 
     self.reconRadius = config.reconRadius or 8000
     self.assaultRadius = config.assaultRadius or 3000
@@ -1647,11 +1646,7 @@ function OperationalCommander:cleanupDestroyedCommanders()
     -- Prune destroyed commanders from this opscom's managed list
     local surviving = {}
     for _, gc in ipairs(self.groupCommanders) do
-        if gc.destroyed then
-            if self.visualizer then
-                self.visualizer:release("group:" .. gc.groupName)
-            end
-        else
+        if not gc.destroyed then
             table.insert(surviving, gc)
         end
     end
@@ -2255,17 +2250,30 @@ end
 
 -- Returns how favorable our position is against the threat.
 -- Higher = better for us. math.huge = no opposition.
+--
+-- Weights each capability tier by the FRACTION of the opposing force in
+-- that tier (comp[tier] / totalCount), not raw count. This keeps the result
+-- sensitive to force size - a force twice as large has twice the summed
+-- capability, and that difference survives into the ratio - without
+-- double-counting the opponent's headcount a second time via the composition
+-- weighting (dividing out totalCount normalizes away raw size, leaving only
+-- the composition's shape). It also preserves a genuine nuance: a powerful
+-- capability against a tier that's only a small slice of the opposing force
+-- (e.g. 1 heavy tank among 8 mostly-light vehicles) counts for less than the
+-- same capability against a force made up mostly of that tier.
 function GroupProfiler.calculateFavorability(ownProfile, threatProfile)
-    local function power(cap, comp)
-        return cap.vsUnarmored * comp.unarmored
-             + cap.vsLight     * comp.light
-             + cap.vsMedium    * comp.medium
-             + cap.vsHeavy     * comp.heavy
-             + cap.vsAir       * comp.air
+    local function power(cap, comp, totalCount)
+        if totalCount == 0 then return 0 end
+        local function fraction(count) return count / totalCount end
+        return cap.vsUnarmored * fraction(comp.unarmored)
+             + cap.vsLight     * fraction(comp.light)
+             + cap.vsMedium    * fraction(comp.medium)
+             + cap.vsHeavy     * fraction(comp.heavy)
+             + cap.vsAir       * fraction(comp.air)
     end
 
-    local ourPower   = power(ownProfile.offensiveCapability, threatProfile.composition)
-    local theirPower = power(threatProfile.offensiveCapability, ownProfile.composition)
+    local ourPower   = power(ownProfile.offensiveCapability, threatProfile.composition, threatProfile.unitCount)
+    local theirPower = power(threatProfile.offensiveCapability, ownProfile.composition, ownProfile.unitCount)
 
     if ourPower == 0 and theirPower == 0 then return 0 end
     if theirPower == 0 and ourPower > 0 then return math.huge end
@@ -3634,6 +3642,7 @@ local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local AssaultDoctrine = require("doctrines.tactical.assault-doctrine")
+local CommanderVisualizer = require("commander-visualizer")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
@@ -3687,7 +3696,8 @@ function GroupCommander.new(groupName, config)
     self.lastThreatCenter = nil
     self.allyIntel = nil  -- Nearby ally strength info from OpsCom
     self.destroyed = false  -- Tracks if group no longer exists
-    self.visualizer = config.visualizer
+    -- self.visualizer = config.visualizer
+    self.visualizer = CommanderVisualizer.new(config.map)
     
     -- Simulated fuel tracking (DCS doesn't model fuel for ground units)
     self.fuelRemaining = 1.0  -- Start at 100%
@@ -3903,6 +3913,7 @@ function GroupCommander:decide()
     -- while a doctrine is still working an order that hasn't called orderAction "start" yet.
     if self.orders and self.orders ~= self.doctrineOrder then
         self.doctrineOrder = self.orders
+        self.visualizer:syncGroupMove(self, self.color) --reset movement arrows
         if self.orders.type == taskTypes.PATROL then
             self.doctrine = PatrolDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.RECON then
@@ -6278,6 +6289,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
     end
     if newOwner ~= "neutral" then
         self:recalculateGeometry(newOwner)
+        self:garrisonZones({name}, newOwner)
         for i, front in pairs(self.front[newOwner]) do
             self.map:drawFrontline(front.points, newOwner, i == 1, front.isLoop)
         end
@@ -7125,7 +7137,7 @@ function ControlZones:spawnFARP(color, pt)
         return false
     end
 
-    local coal = color == "blue" and country.id.USA or country.id.RUSSIA --country.id.USSR
+    local coal = color == "blue" and country.id.USA or country.id.USSR --country.id.USSR country.id.RUSSIA
     local farp = {
         ["category"] = "Heliports",
         ["shape_name"] = "FARPS", -- "invisiblefarp"  | "FARP"           | "FARP_SINGLE_01"
@@ -7325,7 +7337,8 @@ function ControlZones:garrisonZones(zones, color)
         -- Static vehicle units are more suited to the limited requirements of garrison forces
         -- but commanded dynamic units don't respond to them by default
         -- self:spawnStaticInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
-        self:spawnGroupInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
+        local groupId = self:getNewGroupId()
+        self:spawnGroupInZone(zoneName.."-garrison-"..groupId, zoneName, color, type, avgHeading)
     end
 end
 
@@ -7356,7 +7369,7 @@ function ControlZones:placeFARPs(color)
             env.info(".......... edge depth-1")
             local offset1 = mist.projectPoint(pt1, SETBACK_DISTANCE, heading)
             table.insert(farpPoints, offset1)
-        elseif #zns then
+        elseif zns and #zns > 0 then
             env.info(".......... zone depth-1")
             local pt = self:getZone(zns[1]).point
             local offset1 = mist.projectPoint(pt, SETBACK_DISTANCE, heading)
@@ -7469,14 +7482,26 @@ function Map:placeMarker(text, color, pt)
     return labels
 end
 
+function Map:drawGroupOrder(text, coalition, point, textColor, bgColor)
+    if not settings.draw.groupOrders then return {} end
+    local Ids = {}
+    local sides = self:getVisibility(coalition, "groupOrders")
+    for _, side in pairs(sides) do
+        local labelId = self:getNewMarker()
+        table.insert(Ids, labelId)
+        trigger.action.textToAll(side, labelId, mist.projectPoint(point, 350, math.pi+0.5), textColor, bgColor, 12, true, text)
+    end
+    return Ids
+end
+
 function Map:drawPolygon(points)
     local mk = mist.marker.add({
         pos = points,
         -- name = "",
         markType = "freeform", --7
         markForCoa = -1, --?
-        color = {1,1,0,0.5},
-        fillColor = {1,1,0,0.2},
+        color = {1,1,0,0.3},
+        fillColor = {1,1,0,0.1},
         lineType = 1 --1 Solid, 2 Dashed, 3 Dotted, 4 Dot Dash, 5 Long Dash
     })
     return mk.markId --mist helper returns whole table; we want ID only
@@ -7577,38 +7602,56 @@ function Map:drawFrontline(points, color, erasePrevious, isLoop)
     end
 end
 
-function Map:drawDirective(originPoint, targetPoint, color)
-    if not settings.draw.directives then return end
+function Map:drawArrow(originPoint, targetPoint, side, lineColor, fillColor)
+    local nextId = self:getNewMarker()
+    trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
+    return nextId
+end
+
+function Map:drawMovementTrail(originPoint, targetPoint, coalition, arrowColor)
+    if not settings.draw.groupMovement then return end
     local Ids = {}
-    local sides = self:getVisibility(color, "directives")
+
+    local lineColor = arrowColor or {(0.7 + rgb[coalition][1])/2, (0.7 + rgb[coalition][2])/2, (0.7 + rgb[coalition][3])/2, 0.5}
+    local fillColor = lineColor
+
+    local sides = self:getVisibility(coalition, "groupMovement")
     for _, side in pairs(sides) do
-        local nextId = self:getNewMarker()
-        local lineColor = {1,1,0.2,0.2}
-        -- lineColor[4] = 0.2
-        lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.2}
-        local fillColor = lineColor
-        local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
-        local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
-        local distance = 1000
-        local lineStart = mist.projectPoint(originPoint, distance+200, heading)
-        local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
-        trigger.action.arrowToAll(side, nextId, arrowEnd, lineStart, lineColor, fillColor, 1)
-        table.insert(Ids, nextId)
+        local id = self:drawArrow(originPoint, targetPoint, side, lineColor, fillColor)
+        table.insert(Ids, id)
     end
     return Ids
 end
-function Map:drawArrow(originPoint, targetPoint, color)
+
+function Map:drawDirective(originPoint, targetPoint, color)
     if not settings.draw.directives then return end
     local Ids = {}
+    local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.4}
+    local fillColor = lineColor
+    local distance = 1000
+    local heading = mist.utils.getHeadingPoints(originPoint, targetPoint)
+    local reciprocal = mist.utils.getHeadingPoints(targetPoint, originPoint)
+    local lineStart = mist.projectPoint(originPoint, distance+200, heading)
+    local arrowEnd = mist.projectPoint(targetPoint, distance, reciprocal)
     local sides = self:getVisibility(color, "directives")
     for _, side in pairs(sides) do
-        local nextId = self:getNewMarker()
-        -- lineColor = {0.7,0.7,0.7,0.15}
-        -- local lineColor = {rgb[color][1], rgb[color][2], rgb[color][3], 0.08}
-        local lineColor = {(0.7 + rgb[color][1])/2, (0.7 + rgb[color][2])/2, (0.7 + rgb[color][3])/2, 0.15}
-        local fillColor = lineColor
-        trigger.action.arrowToAll(side, nextId, targetPoint, originPoint, lineColor, fillColor, 1)
-        table.insert(Ids, nextId)
+        local id = self:drawArrow(lineStart, arrowEnd, side, lineColor, fillColor)
+        table.insert(Ids, id)
+    end
+    return Ids
+end
+
+function Map:drawObjective(objective, text, color)
+    if not settings.draw.objectives then return {} end
+    local sides = self:getVisibility(color, "objectives")
+    local Ids = {}
+    for _, side in pairs(sides) do
+        local circleId = self:getNewMarker()
+        table.insert(Ids, circleId)
+        trigger.action.circleToAll(side, circleId, objective.position, objective.radius+300, rgb[color], {0,0,0,0}, 3)
+        local labelId = self:getNewMarker()
+        table.insert(Ids, labelId)
+        trigger.action.textToAll(side, labelId, mist.projectPoint(objective.position, 850, math.pi/2), {1,1,1,1}, {0,0,0,0.3}, 13, true, text)
     end
     return Ids
 end
