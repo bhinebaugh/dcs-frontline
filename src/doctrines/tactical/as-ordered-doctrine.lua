@@ -179,7 +179,7 @@ function AsOrderedDoctrine:engagePhase(context)
 
     if self:considerEngage(context) >= engageThreshold then
         local ownPosition      = context.ownPosition
-        local standoffDistance = 1000
+        local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
         local tolerance        = 100
 
         -- Standoff position: standoffDistance from threat, on our side of it.

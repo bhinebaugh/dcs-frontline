@@ -10,6 +10,7 @@
 -- {
 --     offensiveCapability = { vsUnarmored=N, vsLight=N, vsMedium=N, vsHeavy=N, vsAir=N },
 --     composition         = { unarmored=N, light=N, medium=N, heavy=N, air=N },
+--     range               = { unarmored=N, light=N, medium=N, heavy=N, air=N },
 --     unitCount           = N,
 --     -- Status fields (only from profileGroup, nil from profileUnits):
 --     attritionRate       = 0.0-1.0,
@@ -17,10 +18,20 @@
 --     fuelRatio           = 0.0-1.0,
 -- }
 --
--- composition/offensiveCapability tiers mirror the armorClass scale in
+-- composition/offensiveCapability/range tiers mirror the armorClass scale in
 -- units.lua (0=unarmored, 1=light, 2=medium, 3=heavy), plus "air" for future
 -- airborne (CAS/helicopter) units - no unit is classified into that tier yet,
 -- so it stays zero until air units are added to units.lua.
+--
+-- range[tier] is how far out this force can engage a target of that tier,
+-- in meters - the range of whichever weapon provides that tier's
+-- offensiveCapability (see computeCombatProfile). It answers "how far out
+-- can we reach this kind of target", not "how far can any of our weapons
+-- fire" - a tier this force has zero effectiveness against reports range 0,
+-- even if some weapon's max range is nonzero, since that weapon isn't what's
+-- winning that tier. See engagement-analyzer.lua for two-sided (distance-
+-- aware) comparisons built on top of this - GroupProfiler itself stays
+-- single-sided ("what does this force have").
 
 local units = require("units")
 local weapons = require("weapons")
@@ -29,18 +40,24 @@ local GroupProfiler = {}
 
 local armorClassNames = {[0] = "unarmored", [1] = "light", [2] = "medium", [3] = "heavy"}
 local capabilityTiers = {"unarmored", "light", "medium", "heavy", "air"}
+GroupProfiler.capabilityTiers = capabilityTiers
 
 -- ============================================================================
 -- UNIT CLASSIFICATION
 -- ============================================================================
 
--- Combine a unit type's weapon loadout into a single per-tier effectiveness
--- profile. Weapons on one unit are alternatives (it fires whichever suits the
--- target), not simultaneous - so each tier takes the best (max) effectiveness
--- among the unit's own weapons. Contrast with profileUnits, which sums these
--- per-unit profiles across a group, where firepower really does add up.
-local function computeEffectiveness(weaponIds)
+-- Combine a unit type's weapon loadout into a single per-tier combat profile.
+-- Weapons on one unit are alternatives (it fires whichever suits the target),
+-- not simultaneous - so each tier takes the best (max) effectiveness among
+-- the unit's own weapons, and range is paired with whichever weapon won that
+-- tier (not independently maxed - a unit doesn't get its coax's range with
+-- its main gun's effectiveness). Contrast with profileUnits, which sums
+-- these per-unit effectiveness profiles across a group (firepower adds up)
+-- but takes the max of their ranges (reach doesn't add up - the longest-
+-- reaching unit sets the group's engagement envelope for that tier).
+local function computeCombatProfile(weaponIds)
     local effectiveness = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+    local range = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
     for _, weaponId in ipairs(weaponIds or {}) do
         local weapon = weapons[weaponId]
         if weapon then
@@ -48,30 +65,37 @@ local function computeEffectiveness(weaponIds)
                 local value = weapon.effectiveness[tier] or 0
                 if value > effectiveness[tier] then
                     effectiveness[tier] = value
+                    range[tier] = weapon.range or 0
                 end
             end
         end
     end
-    return effectiveness
+    return effectiveness, range
 end
 
 function GroupProfiler.classifyUnit(unit)
     local empty = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
 
     if not unit or not unit:isExist() then
-        return {armorClass = 0, effectiveness = empty}
+        return {armorClass = 0, effectiveness = empty, range = empty}
     end
 
     local typeName = unit:getTypeName()
     local unitData = typeName and units[typeName]
     if not unitData then
         env.info("WARNING: GroupProfiler - Unknown unit type '" .. tostring(typeName) .. "' - using default classification")
-        return {armorClass = 0, effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1}}
+        return {
+            armorClass = 0,
+            effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1},
+            range = {unarmored = 500, light = 500, medium = 0, heavy = 0, air = 500},
+        }
     end
 
+    local effectiveness, range = computeCombatProfile(unitData.weapons)
     return {
         armorClass    = unitData.armorClass,
-        effectiveness = computeEffectiveness(unitData.weapons),
+        effectiveness = effectiveness,
+        range         = range,
     }
 end
 
@@ -124,6 +148,7 @@ function GroupProfiler.profileUnits(unitList)
     local profile = {
         offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
         composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
+        range               = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
     }
 
@@ -146,6 +171,13 @@ function GroupProfiler.profileUnits(unitList)
             profile.offensiveCapability.vsMedium     = profile.offensiveCapability.vsMedium     + effectiveness.medium
             profile.offensiveCapability.vsHeavy      = profile.offensiveCapability.vsHeavy      + effectiveness.heavy
             profile.offensiveCapability.vsAir        = profile.offensiveCapability.vsAir        + effectiveness.air
+
+            for _, tier in ipairs(capabilityTiers) do
+                local unitRange = classification.range[tier] or 0
+                if unitRange > profile.range[tier] then
+                    profile.range[tier] = unitRange
+                end
+            end
         end
     end
 
@@ -157,6 +189,7 @@ function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCoun
     local zeroed = {
         offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
         composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
+        range               = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
         attritionRate       = 1,
         ammoRatio           = 0,

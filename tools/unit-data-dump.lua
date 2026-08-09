@@ -3,8 +3,9 @@
 -- One-off diagnostic script for collecting per-unit-type stats directly from DCS
 -- rather than guessing them: spawns a single instance of every unit type listed
 -- below, reads back DCS's own Unit:getDesc() data (max speed, life/hitpoints,
--- category, and DCS's built-in "attributes" tag set - e.g. "Tanks", "IFV", "SAM"),
--- logs one CSV line per unit to the DCS log, then despawns it.
+-- category, and DCS's built-in "attributes" tag set - e.g. "Tanks", "IFV", "SAM")
+-- plus Unit:getAmmo() (DCS's real ammo/weapon type identifiers), logs CSV lines
+-- per unit to the DCS log, then despawns it.
 --
 -- This is standalone (no `require`s) and is NOT part of the bundled mission -
 -- it doesn't go through ./build. Run it directly.
@@ -17,12 +18,20 @@
 -- 3. Run the mission. It dumps everything in a single frame, then you can exit.
 -- 4. Open the DCS log (normally
 --    %USERPROFILE%\Saved Games\DCS\Logs\dcs.log, or DCS.openbeta\Logs\dcs.log)
---    and pull out every line starting with "UNITDATA,". Paste them under the
---    header row into a CSV file.
--- 5. Fill in the trailing empty "weapons" and "armor_class" columns by hand -
---    weapons come from data/weapons-template.csv (reference weapon_id values
---    you've defined there), armor_class is your own judgment call (see the
+--    and pull out every line starting with "UNITDATA," or "AMMODATA,". Paste
+--    each set under its header row into a CSV file.
+-- 5. Fill in the trailing empty "weapons" and "armor_class" columns of
+--    UNITDATA rows by hand - armor_class is your own judgment call (see the
 --    plan notes: 0=unarmored, 1=light, 2=medium, 3=heavy as a starting point).
+--
+-- On AMMODATA: DCS reports ammo per round/munition TYPE, not per weapon
+-- SYSTEM - a single gun (e.g. a 125mm cannon) will usually show up as two or
+-- three separate ammo entries (AP rounds, HEAT rounds, etc.), each with its
+-- own DCS type name, and there's no field linking an ammo entry back to "the
+-- weapon it belongs to." Use the entry's displayName/typeName (which usually
+-- embeds the caliber/gun designation) plus your knowledge of the unit's
+-- loadout to decide whether to fold multiple entries under one weapon_id or
+-- track them separately.
 
 local unitList = {
     -- {typeName, country} - country is only a best-effort guess to make the
@@ -81,7 +90,26 @@ local function dumpAttributes(attributes)
     return table.concat(names, ";")
 end
 
+-- Weapon.Category: 0=SHELL, 1=MISSILE, 2=ROCKET, 3=BOMB
+local function dumpAmmo(typeName, unit)
+    local ammo = unit:getAmmo()
+    if not ammo or #ammo == 0 then
+        env.info("AMMODATA," .. typeName .. ",NONE,,,,")
+        return
+    end
+
+    for _, entry in ipairs(ammo) do
+        local desc = entry.desc or {}
+        env.info(string.format(
+            "AMMODATA,%s,%s,%s,%s,%s",
+            typeName, tostring(entry.count or 0), tostring(desc.typeName or ""),
+            tostring(desc.displayName or ""), tostring(desc.category or "")
+        ))
+    end
+end
+
 env.info("UNITDATA,type,category,life,speed_ms,speed_kmh,attributes,weapons,armor_class")
+env.info("AMMODATA,type,count,dcs_type_name,dcs_display_name,dcs_category")
 
 for i, entry in ipairs(unitList) do
     local typeName, country = entry[1], entry[2]
@@ -113,6 +141,8 @@ for i, entry in ipairs(unitList) do
             "UNITDATA,%s,%s,%s,%.2f,%.1f,%s,,",
             typeName, tostring(desc.category), tostring(desc.life or ""), speedMs, speedKmh, attrs
         ))
+
+        dumpAmmo(typeName, unit)
 
         group:destroy()
     end)

@@ -1,5 +1,6 @@
 local constants = require("constants")
 local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
+local EngagementAnalyzer = require("engagement-analyzer")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
@@ -432,16 +433,27 @@ function GroupCommander:assessThreats()
                 heavy     = self.ownForceStrength.composition.heavy     + self.allyIntel.composition.heavy,
                 air       = self.ownForceStrength.composition.air       + self.allyIntel.composition.air,
             },
+            -- Range doesn't add up like firepower - the longest-reaching
+            -- contributor (own or ally) sets the combined force's reach.
+            range = {
+                unarmored = math.max(self.ownForceStrength.range.unarmored, self.allyIntel.range.unarmored),
+                light     = math.max(self.ownForceStrength.range.light,     self.allyIntel.range.light),
+                medium    = math.max(self.ownForceStrength.range.medium,    self.allyIntel.range.medium),
+                heavy     = math.max(self.ownForceStrength.range.heavy,     self.allyIntel.range.heavy),
+                air       = math.max(self.ownForceStrength.range.air,       self.allyIntel.range.air),
+            },
         }
     end
 
     local favorability = GroupProfiler.calculateFavorability(combinedForce, threatAnalysis)
+    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis)
 
     return {
         count        = threatAnalysis.unitCount,
         analysis     = threatAnalysis,
         center       = threatCenter,
         favorability = favorability,
+        range        = range,
     }
 end
 

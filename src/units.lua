@@ -16,10 +16,14 @@
 -- as a fast-lookup approximation - prefer a live getDesc() call when a real
 -- Unit reference is available (see GroupCommander:getSlowestUnitSpeed).
 --
--- weapons: list of weapon_id keys into weapons.lua. Empty list = unarmed -
--- confirmed by hand for Hummer/Tigr_233036 despite DCS tagging both
--- "Armed vehicles" (see data/unit-data.csv for DCS's own tags, kept there
--- for reference only - they've been found unreliable, e.g. those two).
+-- weapons: list of weapon_id keys into weapons.lua, one per ammo type the
+-- unit carries (weapons.lua is keyed by ammo, not weapon system - see its
+-- header). Empty list = unarmed - confirmed by hand for Hummer/Tigr_233036
+-- despite DCS tagging both "Armed vehicles" (see data/unit-data.csv for DCS's
+-- own tags, kept there for reference only - they've been found unreliable,
+-- e.g. those two). BMP-2 and BMP-3 share "2A42_30_HE"/"2A42_30_AP" rows
+-- despite firing them from different guns (2A42 vs 2A72) - same ammo,
+-- same effectiveness, see weapons-template.csv for the min_range caveat.
 --
 -- Kamaz 43101 and Avenger are intentionally omitted: DCS could not resolve
 -- either type name during data collection (silently substituted Leopard-2 -
@@ -32,28 +36,28 @@ local units = {
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"M4_5_56mm_Carbine"},
+        weapons = {"5_56x45_Carbine", "5_56x45_NOtr_Carbine"},
     },
     ["Soldier M249"] = {
         dcsRole = "Infantry",
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"M249_5_56mm_SAW"},
+        weapons = {"5_56x45_SAW", "5_56x45_NOtr_SAW"},
     },
     ["Infantry AK"] = {
         dcsRole = "Infantry",
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"AK74_5_45mm_Rifle"},
+        weapons = {"5_45x39", "5_45x39_NOtr"},
     },
     ["Paratrooper RPG-16"] = {
         dcsRole = "Infantry",
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"RPG_16"},
+        weapons = {"PG_16V"},
     },
     ["Hummer"] = {
         dcsRole = "APC",
@@ -116,21 +120,21 @@ local units = {
         armorClass = 1,
         life = 2.5,
         speedMax = 31.39,
-        weapons = {"M2_50cal_MG"},
+        weapons = {"M2_12_7_T", "M2_12_7"},
     },
     ["M1045 HMMWV TOW"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 2.5,
         speedMax = 31.39,
-        weapons = {"TOW_ATGM"},
+        weapons = {"TOW2"},
     },
     ["BRDM-2"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 3,
         speedMax = 27.78,
-        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"KPVT_14_5_T", "KPVT_14_5", "7_62x54", "7_62x54_NOTRACER"},
     },
     ["Tigr_233036"] = {
         dcsRole = "APC",
@@ -144,105 +148,105 @@ local units = {
         armorClass = 1,
         life = 3,
         speedMax = 16.67,
-        weapons = {"M2_50cal_MG"},
+        weapons = {"M2_12_7_T", "M2_12_7"},
     },
     ["BMD-1"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 3,
         speedMax = 16.95,
-        weapons = {"73mm_Smooth_Bore", "PKT_7_62mm_MG", "AT_3B_Sagger_B"},
+        weapons = {"2A28_73", "7_62x54", "7_62x54_NOTRACER", "MALUTKA"},
     },
     ["M-2 Bradley"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 6,
         speedMax = 18.33,
-        weapons = {"M242_25mm_Cannon", "TOW_ATGM", "M240C_7_62mm_MG"},
+        weapons = {"M242_25_HE_M792", "M242_25_AP_M791", "TOW2", "7_62x51tr", "7_62x51"},
     },
     ["BMP-2"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 5,
         speedMax = 18.33,
-        weapons = {"2A42_30mm_Cannon", "PKT_7_62mm_MG", "AT_5_Konkurs_ATGM"},
+        weapons = {"2A42_30_HE", "2A42_30_AP", "7_62x54", "7_62x54_NOTRACER", "KONKURS"},
     },
     ["BMP-3"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 5,
         speedMax = 19.44,
-        weapons = {"2A70_100mm_Cannon", "2A72_30mm_Cannon", "PKT_7_62mm_MG", "AT10_9M117_ATGM"},
+        weapons = {"UOF_17_100HE", "2A42_30_HE", "2A42_30_AP", "7_62x54", "7_62x54_NOTRACER", "P_9M117"},
     },
     ["BTR-60"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 3,
         speedMax = 22.00,
-        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"KPVT_14_5_T", "KPVT_14_5", "7_62x54", "7_62x54_NOTRACER"},
     },
     ["BTR-80"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 3,
         speedMax = 25.00,
-        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"KPVT_14_5_T", "KPVT_14_5", "7_62x54", "7_62x54_NOTRACER"},
     },
     ["M-1 Abrams"] = {
         dcsRole = "Tank",
         armorClass = 3,
         life = 32,
         speedMax = 18.53,
-        weapons = {"M256_120mm_Cannon", "M2_50cal_MG", "M240C_7_62mm_MG"},
+        weapons = {"M256_120_AP", "M256_120_HE", "M2_12_7_T", "M2_12_7", "7_62x51tr", "7_62x51"},
     },
     ["T-72B"] = {
         dcsRole = "Tank",
         armorClass = 3,
         life = 25,
         speedMax = 16.67,
-        weapons = {"2A46M_125mm_Cannon", "NSVT_12_7mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"2A46M_125_AP", "2A46M_125_HE", "SVIR", "7_62x54", "7_62x54_NOTRACER", "Utes_12_7x108_T", "Utes_12_7x108"},
     },
     ["T-80U"] = {
         dcsRole = "Tank",
         armorClass = 3,
         life = 28,
         speedMax = 19.44,
-        weapons = {"2A46M_125mm_Cannon", "NSVT_12_7mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"2A46M_125_AP", "2A46M_125_HE", "REFLEX", "7_62x54", "7_62x54_NOTRACER", "Utes_12_7x108_T", "Utes_12_7x108"},
     },
     ["Vulcan"] = {
         dcsRole = "AAA",
         armorClass = 1,
         life = 3,
         speedMax = 16.67,
-        weapons = {"Vulcan_20mm"},
+        weapons = {"M61_20_AP_gr", "M61_20_HE_gr"},
     },
     ["Strela-10M3"] = {
         dcsRole = "SAM",
         armorClass = 1,
         life = 3,
         speedMax = 16.67,
-        weapons = {"SA_13_9M333_IR_SAM"},
+        weapons = {"SA9M333", "7_62x54", "7_62x54_NOTRACER"}, -- AMMODATA also revealed a 7.62mm MG not in the original loadout
     },
     ["Strela-1 9P31"] = {
         dcsRole = "SAM",
         armorClass = 1,
         life = 3,
         speedMax = 27.78,
-        weapons = {"SA_9B_9M31M_IR_SAM"},
+        weapons = {"SA9M31M"},
     },
     ["M-109"] = {
         dcsRole = "Artillery",
         armorClass = 1,
         life = 3,
         speedMax = 15.64,
-        weapons = {"M185_155mm_Howitzer"},
+        weapons = {"M185_155"},
     },
     ["2S9 Nona"] = {
         dcsRole = "Artillery",
         armorClass = 1,
         life = 4,
         speedMax = 16.67,
-        weapons = {"2A60_120mm_Mortar"},
+        weapons = {"2A60_120"},
     },
 }
 

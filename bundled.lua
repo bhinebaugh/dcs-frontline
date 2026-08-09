@@ -2016,6 +2016,7 @@ __bundle_register("group-profiler", function(require, _LOADED, __bundle_register
 -- {
 --     offensiveCapability = { vsUnarmored=N, vsLight=N, vsMedium=N, vsHeavy=N, vsAir=N },
 --     composition         = { unarmored=N, light=N, medium=N, heavy=N, air=N },
+--     range               = { unarmored=N, light=N, medium=N, heavy=N, air=N },
 --     unitCount           = N,
 --     -- Status fields (only from profileGroup, nil from profileUnits):
 --     attritionRate       = 0.0-1.0,
@@ -2023,10 +2024,20 @@ __bundle_register("group-profiler", function(require, _LOADED, __bundle_register
 --     fuelRatio           = 0.0-1.0,
 -- }
 --
--- composition/offensiveCapability tiers mirror the armorClass scale in
+-- composition/offensiveCapability/range tiers mirror the armorClass scale in
 -- units.lua (0=unarmored, 1=light, 2=medium, 3=heavy), plus "air" for future
 -- airborne (CAS/helicopter) units - no unit is classified into that tier yet,
 -- so it stays zero until air units are added to units.lua.
+--
+-- range[tier] is how far out this force can engage a target of that tier,
+-- in meters - the range of whichever weapon provides that tier's
+-- offensiveCapability (see computeCombatProfile). It answers "how far out
+-- can we reach this kind of target", not "how far can any of our weapons
+-- fire" - a tier this force has zero effectiveness against reports range 0,
+-- even if some weapon's max range is nonzero, since that weapon isn't what's
+-- winning that tier. See engagement-analyzer.lua for two-sided (distance-
+-- aware) comparisons built on top of this - GroupProfiler itself stays
+-- single-sided ("what does this force have").
 
 local units = require("units")
 local weapons = require("weapons")
@@ -2035,18 +2046,24 @@ local GroupProfiler = {}
 
 local armorClassNames = {[0] = "unarmored", [1] = "light", [2] = "medium", [3] = "heavy"}
 local capabilityTiers = {"unarmored", "light", "medium", "heavy", "air"}
+GroupProfiler.capabilityTiers = capabilityTiers
 
 -- ============================================================================
 -- UNIT CLASSIFICATION
 -- ============================================================================
 
--- Combine a unit type's weapon loadout into a single per-tier effectiveness
--- profile. Weapons on one unit are alternatives (it fires whichever suits the
--- target), not simultaneous - so each tier takes the best (max) effectiveness
--- among the unit's own weapons. Contrast with profileUnits, which sums these
--- per-unit profiles across a group, where firepower really does add up.
-local function computeEffectiveness(weaponIds)
+-- Combine a unit type's weapon loadout into a single per-tier combat profile.
+-- Weapons on one unit are alternatives (it fires whichever suits the target),
+-- not simultaneous - so each tier takes the best (max) effectiveness among
+-- the unit's own weapons, and range is paired with whichever weapon won that
+-- tier (not independently maxed - a unit doesn't get its coax's range with
+-- its main gun's effectiveness). Contrast with profileUnits, which sums
+-- these per-unit effectiveness profiles across a group (firepower adds up)
+-- but takes the max of their ranges (reach doesn't add up - the longest-
+-- reaching unit sets the group's engagement envelope for that tier).
+local function computeCombatProfile(weaponIds)
     local effectiveness = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+    local range = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
     for _, weaponId in ipairs(weaponIds or {}) do
         local weapon = weapons[weaponId]
         if weapon then
@@ -2054,30 +2071,37 @@ local function computeEffectiveness(weaponIds)
                 local value = weapon.effectiveness[tier] or 0
                 if value > effectiveness[tier] then
                     effectiveness[tier] = value
+                    range[tier] = weapon.range or 0
                 end
             end
         end
     end
-    return effectiveness
+    return effectiveness, range
 end
 
 function GroupProfiler.classifyUnit(unit)
     local empty = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
 
     if not unit or not unit:isExist() then
-        return {armorClass = 0, effectiveness = empty}
+        return {armorClass = 0, effectiveness = empty, range = empty}
     end
 
     local typeName = unit:getTypeName()
     local unitData = typeName and units[typeName]
     if not unitData then
         env.info("WARNING: GroupProfiler - Unknown unit type '" .. tostring(typeName) .. "' - using default classification")
-        return {armorClass = 0, effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1}}
+        return {
+            armorClass = 0,
+            effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1},
+            range = {unarmored = 500, light = 500, medium = 0, heavy = 0, air = 500},
+        }
     end
 
+    local effectiveness, range = computeCombatProfile(unitData.weapons)
     return {
         armorClass    = unitData.armorClass,
-        effectiveness = computeEffectiveness(unitData.weapons),
+        effectiveness = effectiveness,
+        range         = range,
     }
 end
 
@@ -2130,6 +2154,7 @@ function GroupProfiler.profileUnits(unitList)
     local profile = {
         offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
         composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
+        range               = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
     }
 
@@ -2152,6 +2177,13 @@ function GroupProfiler.profileUnits(unitList)
             profile.offensiveCapability.vsMedium     = profile.offensiveCapability.vsMedium     + effectiveness.medium
             profile.offensiveCapability.vsHeavy      = profile.offensiveCapability.vsHeavy      + effectiveness.heavy
             profile.offensiveCapability.vsAir        = profile.offensiveCapability.vsAir        + effectiveness.air
+
+            for _, tier in ipairs(capabilityTiers) do
+                local unitRange = classification.range[tier] or 0
+                if unitRange > profile.range[tier] then
+                    profile.range[tier] = unitRange
+                end
+            end
         end
     end
 
@@ -2163,6 +2195,7 @@ function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCoun
     local zeroed = {
         offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
         composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
+        range               = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
         attritionRate       = 1,
         ammoRatio           = 0,
@@ -2243,10 +2276,25 @@ return GroupProfiler
 
 end)
 __bundle_register("weapons", function(require, _LOADED, __bundle_register, __bundle_modules)
--- Weapon database: per-weapon range and effectiveness.
+-- Weapon (ammo type) database: per-round range and effectiveness.
 -- Source of truth is data/weapons-template.csv (filled in from the DCS
--- Encyclopedia and, for SAM/AAA engagement ranges, Mission Editor range rings).
--- Regenerate this file from that CSV rather than hand-editing it out of sync.
+-- Encyclopedia, Mission Editor range rings for SAM/AAA, and tools/unit-data-dump.lua's
+-- AMMODATA output for real DCS ammo identifiers). Regenerate this file from
+-- that CSV rather than hand-editing it out of sync.
+--
+-- Rows are keyed by ammo type, not weapon system - e.g. a tank's AP and HE
+-- main gun rounds are two separate entries, since they can have different
+-- effectiveness. Where two different platforms fire the identical DCS ammo
+-- type with identical effectiveness, they share one row (e.g. "7_62x54" is
+-- used by many PKT-armed vehicles). Where the same ammo performs differently
+-- by platform (accuracy/rate of fire), rows are kept distinct and suffixed
+-- (e.g. "5_56x45_Carbine" vs "5_56x45_SAW").
+--
+-- dcsTypeName: the exact DCS ammo type identifier from Unit:getAmmo()'s
+-- desc.typeName (e.g. "weapons.shells.2A46M_125_AP") - used to positively
+-- match a weapon_id to a live ammo entry at runtime for ammo-aware own-force
+-- profiling. A few SAM missiles report a bare id with no dotted path
+-- (e.g. "SA9M333") - stored as-is.
 --
 -- range / minRange: meters. minRange is the dead zone (e.g. ATGM minimum
 -- arming distance, indirect fire minimum elevation) - 0 where none applies.
@@ -2257,180 +2305,317 @@ __bundle_register("weapons", function(require, _LOADED, __bundle_register, __bun
 --   air                                - vs aircraft/helicopters (SAM/AAA/MANPAD)
 
 local weapons = {
-    ["M4_5_56mm_Carbine"] = {
-        displayName = "M4 5.56mm Carbine",
+    ["5_56x45_Carbine"] = {
+        displayName = "5.56mm (Carbine)",
         kind = "small-arms",
         range = 500,
         minRange = 0,
         effectiveness = {unarmored = 3, light = 2, medium = 0, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.5_56x45",
     },
-    ["M249_5_56mm_SAW"] = {
-        displayName = "M249 5.56mm SAW",
+    ["5_56x45_NOtr_Carbine"] = {
+        displayName = "5.56mm no-tracer (Carbine)",
+        kind = "small-arms",
+        range = 500,
+        minRange = 0,
+        effectiveness = {unarmored = 3, light = 2, medium = 0, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.5_56x45_NOtr",
+    },
+    ["5_56x45_SAW"] = {
+        displayName = "5.56mm (SAW)",
         kind = "mg",
         range = 700,
         minRange = 0,
         effectiveness = {unarmored = 6, light = 4, medium = 1, heavy = 0, air = 2},
+        dcsTypeName = "weapons.shells.5_56x45",
     },
-    ["AK74_5_45mm_Rifle"] = {
-        displayName = "AK74 5.45mm Rifle",
+    ["5_56x45_NOtr_SAW"] = {
+        displayName = "5.56mm no-tracer (SAW)",
+        kind = "mg",
+        range = 700,
+        minRange = 0,
+        effectiveness = {unarmored = 6, light = 4, medium = 1, heavy = 0, air = 2},
+        dcsTypeName = "weapons.shells.5_56x45_NOtr",
+    },
+    ["5_45x39"] = {
+        displayName = "5.45mm",
         kind = "small-arms",
         range = 500,
         minRange = 0,
         effectiveness = {unarmored = 4, light = 2, medium = 0, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.5_45x39",
     },
-    ["Vulcan_20mm"] = {
-        displayName = "Vulcan 20mm Cannon",
+    ["5_45x39_NOtr"] = {
+        displayName = "5.45mm no-tracer",
+        kind = "small-arms",
+        range = 500,
+        minRange = 0,
+        effectiveness = {unarmored = 4, light = 2, medium = 0, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.5_45x39_NOtr",
+    },
+    ["M61_20_AP_gr"] = {
+        displayName = "20mm AP",
         kind = "autocannon",
         range = 2000,
         minRange = 500,
         effectiveness = {unarmored = 2, light = 2, medium = 0, heavy = 0, air = 7},
+        dcsTypeName = "weapons.shells.M61_20_AP_gr",
     },
-    ["M2_50cal_MG"] = {
-        displayName = "M2 .50 cal MG",
+    ["M61_20_HE_gr"] = {
+        displayName = "20mm HE",
+        kind = "autocannon",
+        range = 2000,
+        minRange = 500,
+        effectiveness = {unarmored = 2, light = 2, medium = 0, heavy = 0, air = 7},
+        dcsTypeName = "weapons.shells.M61_20_HE_gr",
+    },
+    ["M2_12_7_T"] = {
+        displayName = "12.7mm tracer (M2)",
         kind = "mg",
         range = 1200,
         minRange = 0,
         effectiveness = {unarmored = 8, light = 10, medium = 6, heavy = 3, air = 3},
+        dcsTypeName = "weapons.shells.M2_12_7_T",
     },
-    ["TOW_ATGM"] = {
-        displayName = "TOW ATGM",
+    ["M2_12_7"] = {
+        displayName = "12.7mm (M2)",
+        kind = "mg",
+        range = 1200,
+        minRange = 0,
+        effectiveness = {unarmored = 8, light = 10, medium = 6, heavy = 3, air = 3},
+        dcsTypeName = "weapons.shells.M2_12_7",
+    },
+    ["TOW2"] = {
+        displayName = "BGM-71 TOW",
         kind = "atgm",
         range = 3800,
         minRange = 65,
         effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+        dcsTypeName = "weapons.missiles.TOW2",
     },
-    ["KPVT_14_5mm_MG"] = {
-        displayName = "KPVT 14.5mm MG",
+    ["KPVT_14_5_T"] = {
+        displayName = "14.5mm AP (KPVT)",
         kind = "mg",
         range = 1600,
         minRange = 0,
         effectiveness = {unarmored = 9, light = 8, medium = 6, heavy = 3, air = 5},
+        dcsTypeName = "weapons.shells.KPVT_14_5_T",
     },
-    ["PKT_7_62mm_MG"] = {
-        displayName = "PKT 7.62mm MG",
+    ["KPVT_14_5"] = {
+        displayName = "14.5mm (KPVT)",
+        kind = "mg",
+        range = 1600,
+        minRange = 0,
+        effectiveness = {unarmored = 9, light = 8, medium = 6, heavy = 3, air = 5},
+        dcsTypeName = "weapons.shells.KPVT_14_5",
+    },
+    ["7_62x54"] = {
+        displayName = "7.62mm (PKT)",
         kind = "mg",
         range = 1600,
         minRange = 0,
         effectiveness = {unarmored = 7, light = 6, medium = 4, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.7_62x54",
     },
-    ["M185_155mm_Howitzer"] = {
-        displayName = "M185 155mm Howitzer",
+    ["7_62x54_NOTRACER"] = {
+        displayName = "7.62mm no-tracer (PKT)",
+        kind = "mg",
+        range = 1600,
+        minRange = 0,
+        effectiveness = {unarmored = 7, light = 6, medium = 4, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.7_62x54_NOTRACER",
+    },
+    ["M185_155"] = {
+        displayName = "M795 155mm HE",
         kind = "indirect",
         range = 22000,
         minRange = 200,
         effectiveness = {unarmored = 8, light = 8, medium = 5, heavy = 2, air = 0},
+        dcsTypeName = "weapons.shells.M185_155",
     },
-    ["2A60_120mm_Mortar"] = {
-        displayName = "2A60 120mm Mortar",
+    ["2A60_120"] = {
+        displayName = "3OF49 120mm HE",
         kind = "indirect",
         range = 7000,
         minRange = 0,
         effectiveness = {unarmored = 8, light = 7, medium = 4, heavy = 2, air = 0},
+        dcsTypeName = "weapons.shells.2A60_120",
     },
-    ["73mm_Smooth_Bore"] = {
-        displayName = "73mm Smooth Bore",
+    ["2A28_73"] = {
+        displayName = "PG-15 73mm HEAT",
         kind = "cannon",
         range = 3000,
         minRange = 400,
         effectiveness = {unarmored = 6, light = 8, medium = 8, heavy = 6, air = 2},
+        dcsTypeName = "weapons.shells.2A28_73",
     },
-    ["AT_3B_Sagger_B"] = {
-        displayName = "9M14M Sagger B ATGM",
+    ["MALUTKA"] = {
+        displayName = "AT-3 Sagger",
         kind = "atgm",
         range = 4000,
         minRange = 0,
         effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 0},
+        dcsTypeName = "weapons.missiles.MALUTKA",
     },
-    ["M242_25mm_Cannon"] = {
-        displayName = "M242 25mm Cannon",
+    ["M242_25_HE_M792"] = {
+        displayName = "M792 25mm HEI-T",
         kind = "autocannon",
         range = 2500,
         minRange = 500,
         effectiveness = {unarmored = 5, light = 8, medium = 7, heavy = 6, air = 4},
+        dcsTypeName = "weapons.shells.M242_25_HE_M792",
     },
-    ["M240C_7_62mm_MG"] = {
-        displayName = "M240C 7.62mm MG",
+    ["M242_25_AP_M791"] = {
+        displayName = "M791 25mm APDS-T",
+        kind = "autocannon",
+        range = 2500,
+        minRange = 500,
+        effectiveness = {unarmored = 5, light = 8, medium = 7, heavy = 6, air = 4},
+        dcsTypeName = "weapons.shells.M242_25_AP_M791",
+    },
+    ["7_62x51tr"] = {
+        displayName = "7.62mm tracer (M240)",
         kind = "mg",
         range = 1200,
         minRange = 0,
         effectiveness = {unarmored = 7, light = 6, medium = 4, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.7_62x51tr",
     },
-    ["2A42_30mm_Cannon"] = {
-        displayName = "2A42 30mm Cannon",
+    ["7_62x51"] = {
+        displayName = "7.62mm (M240)",
+        kind = "mg",
+        range = 1200,
+        minRange = 0,
+        effectiveness = {unarmored = 7, light = 6, medium = 4, heavy = 0, air = 1},
+        dcsTypeName = "weapons.shells.7_62x51",
+    },
+    ["2A42_30_HE"] = {
+        displayName = "3UOF8 30mm HE-T",
         kind = "autocannon",
         range = 2500,
         minRange = 400,
         effectiveness = {unarmored = 6, light = 9, medium = 8, heavy = 7, air = 5},
+        dcsTypeName = "weapons.shells.2A42_30_HE",
     },
-    ["AT_5_Konkurs_ATGM"] = {
-        displayName = "AT-5 Konkurs ATGM",
+    ["2A42_30_AP"] = {
+        displayName = "3UBR6 30mm APBC-T",
+        kind = "autocannon",
+        range = 2500,
+        minRange = 400,
+        effectiveness = {unarmored = 6, light = 9, medium = 8, heavy = 7, air = 5},
+        dcsTypeName = "weapons.shells.2A42_30_AP",
+    },
+    ["KONKURS"] = {
+        displayName = "AT-5 Spandrel",
         kind = "atgm",
         range = 3000,
         minRange = 100,
         effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+        dcsTypeName = "weapons.missiles.KONKURS",
     },
-    ["2A70_100mm_Cannon"] = {
-        displayName = "2A70 100mm Cannon",
+    ["UOF_17_100HE"] = {
+        displayName = "3UOF17 100mm HE",
         kind = "cannon",
         range = 2500,
         minRange = 400,
         effectiveness = {unarmored = 4, light = 8, medium = 9, heavy = 9, air = 0},
+        dcsTypeName = "weapons.shells.UOF_17_100HE",
     },
-    ["2A72_30mm_Cannon"] = {
-        displayName = "2A72 30mm Cannon",
-        kind = "autocannon",
-        range = 2500,
-        minRange = 1000,
-        effectiveness = {unarmored = 6, light = 9, medium = 8, heavy = 7, air = 5},
-    },
-    ["AT10_9M117_ATGM"] = {
-        displayName = "AT10 9M117 ATGM",
+    ["P_9M117"] = {
+        displayName = "AT-10 Stabber",
         kind = "atgm",
         range = 4000,
         minRange = 400,
         effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+        dcsTypeName = "weapons.missiles.P_9M117",
     },
-    ["RPG_16"] = {
-        displayName = "RPG-16",
+    ["PG_16V"] = {
+        displayName = "PG-16 HEAT",
         kind = "rocket",
         range = 500,
         minRange = 100,
         effectiveness = {unarmored = 5, light = 10, medium = 9, heavy = 7, air = 1},
+        dcsTypeName = "weapons.nurs.PG_16V",
     },
-    ["SA_13_9M333_IR_SAM"] = {
-        displayName = "SA13 9M333 IR SAM",
+    ["SA9M333"] = {
+        displayName = "9M333 (SA-13 Gopher)",
         kind = "sam",
         range = 5000,
         minRange = 800,
         effectiveness = {unarmored = 2, light = 0, medium = 0, heavy = 0, air = 8},
+        dcsTypeName = "SA9M333",
     },
-    ["SA_9B_9M31M_IR_SAM"] = {
-        displayName = "SA9 9M31M IR SAM",
+    ["SA9M31M"] = {
+        displayName = "9M31 (SA-9 Gaskin)",
         kind = "sam",
         range = 4200,
         minRange = 800,
         effectiveness = {unarmored = 2, light = 0, medium = 0, heavy = 0, air = 9},
+        dcsTypeName = "SA9M31M",
     },
-    ["M256_120mm_Cannon"] = {
-        displayName = "M256 120mm Cannon",
+    ["M256_120_AP"] = {
+        displayName = "M829A2 120mm APFSDS-T",
         kind = "cannon",
         range = 4000,
         minRange = 400,
         effectiveness = {unarmored = 5, light = 8, medium = 9, heavy = 10, air = 0},
+        dcsTypeName = "weapons.shells.M256_120_AP",
     },
-    ["2A46M_125mm_Cannon"] = {
-        displayName = "2A46M 125mm Cannon",
+    ["M256_120_HE"] = {
+        displayName = "M830 120mm HEAT-MP-T",
+        kind = "cannon",
+        range = 4000,
+        minRange = 400,
+        effectiveness = {unarmored = 5, light = 8, medium = 9, heavy = 10, air = 0},
+        dcsTypeName = "weapons.shells.M256_120_HE",
+    },
+    ["2A46M_125_AP"] = {
+        displayName = "3BM42 125mm APFSDS-T",
         kind = "cannon",
         range = 3500,
         minRange = 400,
         effectiveness = {unarmored = 5, light = 8, medium = 9, heavy = 10, air = 0},
+        dcsTypeName = "weapons.shells.2A46M_125_AP",
     },
-    ["NSVT_12_7mm_MG"] = {
-        displayName = "NSVT 12.7mm MG",
+    ["2A46M_125_HE"] = {
+        displayName = "3OF26 125mm HE",
+        kind = "cannon",
+        range = 3500,
+        minRange = 400,
+        effectiveness = {unarmored = 5, light = 8, medium = 9, heavy = 10, air = 0},
+        dcsTypeName = "weapons.shells.2A46M_125_HE",
+    },
+    ["Utes_12_7x108_T"] = {
+        displayName = "12.7mm tracer (NSVT)",
         kind = "mg",
         range = 1600,
         minRange = 0,
         effectiveness = {unarmored = 8, light = 10, medium = 6, heavy = 3, air = 5},
+        dcsTypeName = "weapons.shells.Utes_12_7x108_T",
+    },
+    ["Utes_12_7x108"] = {
+        displayName = "12.7mm (NSVT)",
+        kind = "mg",
+        range = 1600,
+        minRange = 0,
+        effectiveness = {unarmored = 8, light = 10, medium = 6, heavy = 3, air = 5},
+        dcsTypeName = "weapons.shells.Utes_12_7x108",
+    },
+    ["SVIR"] = {
+        displayName = "9M119 Svir (AT-11 Sniper)",
+        kind = "atgm",
+        range = 4000,
+        minRange = 100,
+        effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+        dcsTypeName = "weapons.missiles.SVIR",
+    },
+    ["REFLEX"] = {
+        displayName = "9M119 Reflex (AT-11 Sniper)",
+        kind = "atgm",
+        range = 4000,
+        minRange = 100,
+        effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
+        dcsTypeName = "weapons.missiles.REFLEX",
     },
 }
 
@@ -2456,10 +2641,14 @@ __bundle_register("units", function(require, _LOADED, __bundle_register, __bundl
 -- as a fast-lookup approximation - prefer a live getDesc() call when a real
 -- Unit reference is available (see GroupCommander:getSlowestUnitSpeed).
 --
--- weapons: list of weapon_id keys into weapons.lua. Empty list = unarmed -
--- confirmed by hand for Hummer/Tigr_233036 despite DCS tagging both
--- "Armed vehicles" (see data/unit-data.csv for DCS's own tags, kept there
--- for reference only - they've been found unreliable, e.g. those two).
+-- weapons: list of weapon_id keys into weapons.lua, one per ammo type the
+-- unit carries (weapons.lua is keyed by ammo, not weapon system - see its
+-- header). Empty list = unarmed - confirmed by hand for Hummer/Tigr_233036
+-- despite DCS tagging both "Armed vehicles" (see data/unit-data.csv for DCS's
+-- own tags, kept there for reference only - they've been found unreliable,
+-- e.g. those two). BMP-2 and BMP-3 share "2A42_30_HE"/"2A42_30_AP" rows
+-- despite firing them from different guns (2A42 vs 2A72) - same ammo,
+-- same effectiveness, see weapons-template.csv for the min_range caveat.
 --
 -- Kamaz 43101 and Avenger are intentionally omitted: DCS could not resolve
 -- either type name during data collection (silently substituted Leopard-2 -
@@ -2472,28 +2661,28 @@ local units = {
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"M4_5_56mm_Carbine"},
+        weapons = {"5_56x45_Carbine", "5_56x45_NOtr_Carbine"},
     },
     ["Soldier M249"] = {
         dcsRole = "Infantry",
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"M249_5_56mm_SAW"},
+        weapons = {"5_56x45_SAW", "5_56x45_NOtr_SAW"},
     },
     ["Infantry AK"] = {
         dcsRole = "Infantry",
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"AK74_5_45mm_Rifle"},
+        weapons = {"5_45x39", "5_45x39_NOtr"},
     },
     ["Paratrooper RPG-16"] = {
         dcsRole = "Infantry",
         armorClass = 0,
         life = 1.04,
         speedMax = 4.00,
-        weapons = {"RPG_16"},
+        weapons = {"PG_16V"},
     },
     ["Hummer"] = {
         dcsRole = "APC",
@@ -2556,21 +2745,21 @@ local units = {
         armorClass = 1,
         life = 2.5,
         speedMax = 31.39,
-        weapons = {"M2_50cal_MG"},
+        weapons = {"M2_12_7_T", "M2_12_7"},
     },
     ["M1045 HMMWV TOW"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 2.5,
         speedMax = 31.39,
-        weapons = {"TOW_ATGM"},
+        weapons = {"TOW2"},
     },
     ["BRDM-2"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 3,
         speedMax = 27.78,
-        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"KPVT_14_5_T", "KPVT_14_5", "7_62x54", "7_62x54_NOTRACER"},
     },
     ["Tigr_233036"] = {
         dcsRole = "APC",
@@ -2584,105 +2773,105 @@ local units = {
         armorClass = 1,
         life = 3,
         speedMax = 16.67,
-        weapons = {"M2_50cal_MG"},
+        weapons = {"M2_12_7_T", "M2_12_7"},
     },
     ["BMD-1"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 3,
         speedMax = 16.95,
-        weapons = {"73mm_Smooth_Bore", "PKT_7_62mm_MG", "AT_3B_Sagger_B"},
+        weapons = {"2A28_73", "7_62x54", "7_62x54_NOTRACER", "MALUTKA"},
     },
     ["M-2 Bradley"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 6,
         speedMax = 18.33,
-        weapons = {"M242_25mm_Cannon", "TOW_ATGM", "M240C_7_62mm_MG"},
+        weapons = {"M242_25_HE_M792", "M242_25_AP_M791", "TOW2", "7_62x51tr", "7_62x51"},
     },
     ["BMP-2"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 5,
         speedMax = 18.33,
-        weapons = {"2A42_30mm_Cannon", "PKT_7_62mm_MG", "AT_5_Konkurs_ATGM"},
+        weapons = {"2A42_30_HE", "2A42_30_AP", "7_62x54", "7_62x54_NOTRACER", "KONKURS"},
     },
     ["BMP-3"] = {
         dcsRole = "IFV",
         armorClass = 2,
         life = 5,
         speedMax = 19.44,
-        weapons = {"2A70_100mm_Cannon", "2A72_30mm_Cannon", "PKT_7_62mm_MG", "AT10_9M117_ATGM"},
+        weapons = {"UOF_17_100HE", "2A42_30_HE", "2A42_30_AP", "7_62x54", "7_62x54_NOTRACER", "P_9M117"},
     },
     ["BTR-60"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 3,
         speedMax = 22.00,
-        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"KPVT_14_5_T", "KPVT_14_5", "7_62x54", "7_62x54_NOTRACER"},
     },
     ["BTR-80"] = {
         dcsRole = "APC",
         armorClass = 1,
         life = 3,
         speedMax = 25.00,
-        weapons = {"KPVT_14_5mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"KPVT_14_5_T", "KPVT_14_5", "7_62x54", "7_62x54_NOTRACER"},
     },
     ["M-1 Abrams"] = {
         dcsRole = "Tank",
         armorClass = 3,
         life = 32,
         speedMax = 18.53,
-        weapons = {"M256_120mm_Cannon", "M2_50cal_MG", "M240C_7_62mm_MG"},
+        weapons = {"M256_120_AP", "M256_120_HE", "M2_12_7_T", "M2_12_7", "7_62x51tr", "7_62x51"},
     },
     ["T-72B"] = {
         dcsRole = "Tank",
         armorClass = 3,
         life = 25,
         speedMax = 16.67,
-        weapons = {"2A46M_125mm_Cannon", "NSVT_12_7mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"2A46M_125_AP", "2A46M_125_HE", "SVIR", "7_62x54", "7_62x54_NOTRACER", "Utes_12_7x108_T", "Utes_12_7x108"},
     },
     ["T-80U"] = {
         dcsRole = "Tank",
         armorClass = 3,
         life = 28,
         speedMax = 19.44,
-        weapons = {"2A46M_125mm_Cannon", "NSVT_12_7mm_MG", "PKT_7_62mm_MG"},
+        weapons = {"2A46M_125_AP", "2A46M_125_HE", "REFLEX", "7_62x54", "7_62x54_NOTRACER", "Utes_12_7x108_T", "Utes_12_7x108"},
     },
     ["Vulcan"] = {
         dcsRole = "AAA",
         armorClass = 1,
         life = 3,
         speedMax = 16.67,
-        weapons = {"Vulcan_20mm"},
+        weapons = {"M61_20_AP_gr", "M61_20_HE_gr"},
     },
     ["Strela-10M3"] = {
         dcsRole = "SAM",
         armorClass = 1,
         life = 3,
         speedMax = 16.67,
-        weapons = {"SA_13_9M333_IR_SAM"},
+        weapons = {"SA9M333", "7_62x54", "7_62x54_NOTRACER"}, -- AMMODATA also revealed a 7.62mm MG not in the original loadout
     },
     ["Strela-1 9P31"] = {
         dcsRole = "SAM",
         armorClass = 1,
         life = 3,
         speedMax = 27.78,
-        weapons = {"SA_9B_9M31M_IR_SAM"},
+        weapons = {"SA9M31M"},
     },
     ["M-109"] = {
         dcsRole = "Artillery",
         armorClass = 1,
         life = 3,
         speedMax = 15.64,
-        weapons = {"M185_155mm_Howitzer"},
+        weapons = {"M185_155"},
     },
     ["2S9 Nona"] = {
         dcsRole = "Artillery",
         armorClass = 1,
         life = 4,
         speedMax = 16.67,
-        weapons = {"2A60_120mm_Mortar"},
+        weapons = {"2A60_120"},
     },
 }
 
@@ -3439,6 +3628,7 @@ end)
 __bundle_register("group-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
+local EngagementAnalyzer = require("engagement-analyzer")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
@@ -3868,16 +4058,27 @@ function GroupCommander:assessThreats()
                 heavy     = self.ownForceStrength.composition.heavy     + self.allyIntel.composition.heavy,
                 air       = self.ownForceStrength.composition.air       + self.allyIntel.composition.air,
             },
+            -- Range doesn't add up like firepower - the longest-reaching
+            -- contributor (own or ally) sets the combined force's reach.
+            range = {
+                unarmored = math.max(self.ownForceStrength.range.unarmored, self.allyIntel.range.unarmored),
+                light     = math.max(self.ownForceStrength.range.light,     self.allyIntel.range.light),
+                medium    = math.max(self.ownForceStrength.range.medium,    self.allyIntel.range.medium),
+                heavy     = math.max(self.ownForceStrength.range.heavy,     self.allyIntel.range.heavy),
+                air       = math.max(self.ownForceStrength.range.air,       self.allyIntel.range.air),
+            },
         }
     end
 
     local favorability = GroupProfiler.calculateFavorability(combinedForce, threatAnalysis)
+    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis)
 
     return {
         count        = threatAnalysis.unitCount,
         analysis     = threatAnalysis,
         center       = threatCenter,
         favorability = favorability,
+        range        = range,
     }
 end
 
@@ -4791,7 +4992,7 @@ function AsOrderedDoctrine:engagePhase(context)
 
     if self:considerEngage(context) >= engageThreshold then
         local ownPosition      = context.ownPosition
-        local standoffDistance = 1000
+        local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
         local tolerance        = 100
 
         -- Standoff position: standoffDistance from threat, on our side of it.
@@ -5472,6 +5673,12 @@ function AssaultDoctrine:considerAbort(context)
         retreatAssessment = retreatAssessment - (1 / threat.favorability)
     end
 
+    -- range advantage: outranging the threat reduces retreat pressure,
+    -- being outranged increases it (see EngagementAnalyzer.assessRange)
+    if threat.range then
+        retreatAssessment = retreatAssessment - threat.range.advantageRatio
+    end
+
     -- suitability: if group no longer meets missionProfile, increase abort pressure
     local suitability = context.suitability
     if suitability and suitability < 0.3 then
@@ -5563,6 +5770,103 @@ function AssaultDoctrine:abortPhase(context)
 end
 
 return AssaultDoctrine
+
+end)
+__bundle_register("engagement-analyzer", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- EngagementAnalyzer: two-sided, distance-aware tactical comparisons.
+--
+-- GroupProfiler builds single-sided profiles ("what does this force have",
+-- including a per-tier engagement range - see its header). This module
+-- compares two of them to answer questions that need both sides at once.
+--
+-- Kept separate from GroupProfiler.calculateFavorability on purpose:
+-- favorability is a pure firepower ratio ("who wins if this fight happens
+-- right now"), while range advantage is closer to a threshold effect than a
+-- smooth multiplier - being outside the enemy's max range means they cannot
+-- hurt you yet, not "hurt you slightly less". Blending the two into one
+-- score would hide that distinction. Doctrines are expected to combine both
+-- as independent weighted inputs instead, the same pattern already used for
+-- ammo/attrition/favorability/suitability in considerAbort/considerRetreat.
+
+local GroupProfiler = require("group-profiler")
+local capabilityTiers = GroupProfiler.capabilityTiers
+
+local EngagementAnalyzer = {}
+
+-- How far out `profile` can engage a force with the given composition: the
+-- farthest range at which `profile` has any effectiveness against a tier
+-- actually present in `targetComposition`. This is a best-case distance
+-- ("can hit *something* out here"), not a per-tier breakdown - a mixed
+-- target composition may only be reachable at this range for one of its
+-- tiers, not all of them.
+local function reachAgainst(profile, targetComposition)
+    local best = 0
+    for _, tier in ipairs(capabilityTiers) do
+        if (targetComposition[tier] or 0) > 0 then
+            local tierRange = profile.range[tier] or 0
+            if tierRange > best then
+                best = tierRange
+            end
+        end
+    end
+    return best
+end
+
+-- Signed range gap as a fraction of the longer side, in [-1, 1]. Positive
+-- means we have the range advantage. Self-bounding regardless of how
+-- extreme the absolute ranges get (e.g. infantry vs. artillery) since it's
+-- normalized by the longer reach, not either side's own reach - no separate
+-- cap needed. Zero when neither side has any effective reach against the
+-- other (nothing to compare).
+local function advantageRatio(ourReach, theirReach)
+    local longer = math.max(ourReach, theirReach)
+    if longer == 0 then return 0 end
+    local shorter = math.min(ourReach, theirReach)
+    local ratio = (longer - shorter) / longer
+    if ourReach < theirReach then
+        return -ratio
+    end
+    return ratio
+end
+
+-- Compare two GroupProfiles' engagement envelopes against each other's
+-- actual composition (not their full theoretical range table - only tiers
+-- the opponent actually has units in count).
+--
+-- Returns:
+--   ourReach        - farthest range at which we can hit something of theirs
+--   theirReach       - farthest range at which they can hit something of ours
+--   advantage        - ourReach - theirReach, in meters; positive means we
+--                       can open the engagement before they can respond
+--   advantageRatio   - same comparison, normalized to [-1, 1] - see above.
+--                       Meant for doctrines to add as a weighted term
+--                       alongside ammo/attrition/favorability/suitability,
+--                       not to be blended into favorability itself.
+--   standoffDistance - suggested distance to keep from this specific threat:
+--                       theirReach if we outrange them (sit just outside
+--                       their reach, still inside ours), otherwise ourReach
+--                       (closing further than that doesn't help us hit back;
+--                       being outranged is what should drive retreat/abort
+--                       pressure via advantageRatio, not positioning)
+function EngagementAnalyzer.assessRange(ownProfile, threatProfile)
+    local ourReach   = reachAgainst(ownProfile, threatProfile.composition)
+    local theirReach = reachAgainst(threatProfile, ownProfile.composition)
+
+    local standoffDistance = theirReach
+    if theirReach > ourReach then
+        standoffDistance = ourReach
+    end
+
+    return {
+        ourReach         = ourReach,
+        theirReach       = theirReach,
+        advantage        = ourReach - theirReach,
+        advantageRatio   = advantageRatio(ourReach, theirReach),
+        standoffDistance = standoffDistance,
+    }
+end
+
+return EngagementAnalyzer
 
 end)
 __bundle_register("doctrines.tactical.defensive-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -5658,6 +5962,12 @@ function DefensiveDoctrine:considerRetreat(context)
         else
             retreatAssessment = retreatAssessment - (1 / threat.favorability)
         end
+    end
+
+    -- range advantage: outranging the threat reduces retreat pressure,
+    -- being outranged increases it (see EngagementAnalyzer.assessRange)
+    if threat.range then
+        retreatAssessment = retreatAssessment - threat.range.advantageRatio
     end
 
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
@@ -5784,7 +6094,7 @@ function DefensiveDoctrine:advancePhase(context)
     local holdThreshold = alrThreshold[alr].hold
     local retreatThreshold = alrThreshold[alr].retreat
     local retreatAssessment = self:considerRetreat(context)
-    local standoffDistance = 500
+    local standoffDistance = (threat.range and threat.range.standoffDistance) or 500
 
     -- Use directly observed threats if available (more stable)
     local advanceDest = nil
