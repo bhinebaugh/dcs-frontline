@@ -156,6 +156,7 @@ function ControlZones:changeZoneOwner(name, newOwner)
     end
     if newOwner ~= "neutral" then
         self:recalculateGeometry(newOwner)
+        self:garrisonZones({name}, newOwner)
         for i, front in pairs(self.front[newOwner]) do
             self.map:drawFrontline(front.points, newOwner, i == 1, front.isLoop)
         end
@@ -1203,7 +1204,8 @@ function ControlZones:garrisonZones(zones, color)
         -- Static vehicle units are more suited to the limited requirements of garrison forces
         -- but commanded dynamic units don't respond to them by default
         -- self:spawnStaticInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
-        self:spawnGroupInZone(zoneName.." garrison", zoneName, color, type, avgHeading)
+        local groupId = self:getNewGroupId()
+        self:spawnGroupInZone(zoneName.."-garrison-"..groupId, zoneName, color, type, avgHeading)
     end
 end
 
