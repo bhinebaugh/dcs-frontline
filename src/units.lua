@@ -248,6 +248,13 @@ local units = {
         speedMax = 16.67,
         weapons = {"2A60_120"},
     },
+    ["SAU Msta"] = {
+        dcsRole = "Artillery",
+        armorClass = 1,
+        life = 4,
+        speedMax = 16.67,
+        weapons = {"2A64_152", "Utes_12_7x108_T", "Utes_12_7x108"}, -- AMMODATA revealed a 12.7mm NSVT self-defense MG not in the original estimate
+    },
 }
 
 return units

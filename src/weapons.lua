@@ -339,6 +339,14 @@ local weapons = {
         effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
         dcsTypeName = "weapons.missiles.REFLEX",
     },
+    ["2A64_152"] = {
+        displayName = "3OF45 152mm HE",
+        kind = "indirect",
+        range = 23000,
+        minRange = 200,
+        effectiveness = {unarmored = 9, light = 8, medium = 5, heavy = 2, air = 0},
+        dcsTypeName = "weapons.shells.2A64_152",
+    },
 }
 
 return weapons

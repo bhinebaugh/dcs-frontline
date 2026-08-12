@@ -70,6 +70,7 @@ local unitList = {
     {"Strela-1 9P31", "Russia"},
     {"M-109", "USA"},
     {"2S9 Nona", "Russia"},
+    {"SAU Msta", "Russia"},
     -- Add new candidate unit types here as you scope in fire support / CAS / SAM
     -- units - e.g. {"MLRS", "USA"}, {"Ural-375 Att", "Russia"}, etc.
 }

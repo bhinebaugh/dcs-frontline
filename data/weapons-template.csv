@@ -38,3 +38,4 @@ Utes_12_7x108_T,12.7mm tracer (NSVT),mg,1600,0,8,10,6,3,5,weapons.shells.Utes_12
 Utes_12_7x108,12.7mm (NSVT),mg,1600,0,8,10,6,3,5,weapons.shells.Utes_12_7x108
 SVIR,9M119 Svir (AT-11 Sniper),atgm,4000,100,5,7,8,9,1,weapons.missiles.SVIR
 REFLEX,9M119 Reflex (AT-11 Sniper),atgm,4000,100,5,7,8,9,1,weapons.missiles.REFLEX
+2A64_152,3OF45 152mm HE,indirect,23000,200,9,8,5,2,0,weapons.shells.2A64_152
