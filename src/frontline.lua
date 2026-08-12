@@ -7,6 +7,7 @@ require("table") --Load modified standard libraries
 
 local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
 local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
+local StrategicCommander = require("strategic-commander") --Load the new StrategicCommander class from strategic-commander.lua
 
 local constants = require("constants") --Load constants
 
@@ -18,7 +19,10 @@ cz:precalculateConnections()
 
 cz:assignCompassMaxima()
 
-ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
+-- blue runs the new StrategicCommander/ExpandFrontierPlan, red keeps the
+-- original CoalitionCommander, so the two can be compared side by side in
+-- the same mission. Swap either side's class to compare a different pairing.
+ccBlue = StrategicCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
 ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
 cz:addCommander("blue", ccBlue)
 cz:addCommander("red", ccRed)

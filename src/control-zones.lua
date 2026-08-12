@@ -1,4 +1,5 @@
 local rgb = require("constants").rgb
+local fireSupportTemplates = require("constants").fireSupportTemplates
 local garrisonTemplates = require("constants").garrisonTemplates
 local groundTemplates = require("constants").groundTemplates
 local Map = require("map")
@@ -1196,6 +1197,27 @@ function ControlZones:spawnFrontlineForces(front, color)
 
     return reserves
 end
+-- Spawns artillery one zone back from the frontline (depth 1 - see
+-- calculateDepthMap/placeFARPs, which uses the same depth concept to keep
+-- FARPs out of the front line) rather than on it, so fire-support groups
+-- start out of direct contact and let IndirectDoctrine/EngagementAnalyzer's
+-- range logic position them from there.
+function ControlZones:spawnFireSupportForces(color)
+    local reserves = {}
+    local templates = fireSupportTemplates[color]
+    if not templates or #templates == 0 then return reserves end
+
+    local zones = self:selectZonesAtDepth(color, 1)
+    for _, zoneName in ipairs(zones) do
+        local heading = self:orientToClosestEnemy(zoneName)
+        local groupName = color.."-arty-"..zoneName.."-"..self:getNewGroupId()
+        self:spawnGroupInZone(groupName, zoneName, color, templates[math.random(#templates)], heading)
+        table.insert(reserves, groupName)
+    end
+
+    return reserves
+end
+
 function ControlZones:garrisonZones(zones, color)
     -- on first pass spawn basic template to hold zone,
     local type = garrisonTemplates[color]
@@ -1285,6 +1307,8 @@ function ControlZones:kickoff()
             local reserves = self:spawnFrontlineForces(front, color)
             cmd:addReserves(reserves)
         end
+
+        cmd:addReserves(self:spawnFireSupportForces(color))
     end
 
 end

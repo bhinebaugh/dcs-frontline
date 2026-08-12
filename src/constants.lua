@@ -48,6 +48,20 @@ local groundTemplates = { --frontline, rear, farp
     }
 }
 
+-- Indirect fire support (artillery) templates, spawned one zone back from
+-- the frontline (depth 1, see ControlZones:calculateDepthMap/spawnFireSupportForces)
+-- rather than on the front line itself.
+local fireSupportTemplates = {
+    red = {
+        {"SAU Msta"},
+        {"2S9 Nona", "2S9 Nona"},
+    },
+    blue = {
+        {"M-109"},
+        {"M-109", "M-109"},
+    },
+}
+
 local taskTypes = {
     DEFEND = 1,
     REINFORCE = 2,
@@ -105,6 +119,7 @@ local rulesOfEngagement = {
 return {
     acceptableLevelsOfRisk = acceptableLevelsOfRisk,
     dispositionTypes = dispositionTypes,
+    fireSupportTemplates = fireSupportTemplates,
     formationTypes = formationTypes,
     garrisonTemplates = garrisonTemplates,
     groundTemplates = groundTemplates,

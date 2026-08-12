@@ -18,20 +18,21 @@ function ThreatTracker.new(observerName)
 end
 
 -- Update threats with newly observed units
--- observedUnits: array of {name, position} for units with LOS
+-- observedUnits: array of {name, position, speed} for units with LOS
 function ThreatTracker:updateThreats(observedUnits)
     local currentTime = timer.getTime()
-    
+
     -- Update or add observed threats
     for _, unitData in ipairs(observedUnits) do
         local threat = self.threats[unitData.name]
-        
+
         if not threat then
             -- New threat
             env.info(self.observerName .. " ThreatTracker: New threat detected - " .. unitData.name .. " (OBSERVED)")
             self.threats[unitData.name] = {
                 name = unitData.name,
                 position = unitData.position,
+                speed = unitData.speed,
                 status = threatStatus.OBSERVED,
                 sightings = {
                     {
@@ -46,9 +47,10 @@ function ThreatTracker:updateThreats(observedUnits)
             -- Update existing threat
             local oldStatus = threat.status
             threat.position = unitData.position
+            threat.speed = unitData.speed
             threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
             threat.lastSighting = currentTime
-            
+
             -- Add new sighting
             table.insert(threat.sightings, {
                 observedBy = self.observerName,
@@ -106,9 +108,10 @@ function ThreatTracker:mergeThreatIntel(threatIntel)
             self.threats[unitName] = incomingThreat
         else
             -- Merge with existing threat
-            -- Update position if incoming is more recent
+            -- Update position/speed if incoming is more recent
             if incomingThreat.lastSighting > existingThreat.lastSighting then
                 existingThreat.position = incomingThreat.position
+                existingThreat.speed = incomingThreat.speed
                 existingThreat.lastSighting = incomingThreat.lastSighting
             end
             
