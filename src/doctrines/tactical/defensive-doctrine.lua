@@ -92,6 +92,12 @@ function DefensiveDoctrine:considerRetreat(context)
         end
     end
 
+    -- range advantage: outranging the threat reduces retreat pressure,
+    -- being outranged increases it (see EngagementAnalyzer.assessRange)
+    if threat.range then
+        retreatAssessment = retreatAssessment - threat.range.advantageRatio
+    end
+
     -- suitability: if group no longer meets missionProfile, increase retreat pressure
     local suitability = context.suitability
     if suitability and suitability < 0.3 then
@@ -216,7 +222,7 @@ function DefensiveDoctrine:advancePhase(context)
     local holdThreshold = alrThreshold[alr].hold
     local retreatThreshold = alrThreshold[alr].retreat
     local retreatAssessment = self:considerRetreat(context)
-    local standoffDistance = 500
+    local standoffDistance = (threat.range and threat.range.standoffDistance) or 500
 
     -- Use directly observed threats if available (more stable)
     local advanceDest = nil
