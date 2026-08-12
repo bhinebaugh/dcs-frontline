@@ -1,11 +1,13 @@
 local constants = require("constants")
 local DefensiveDoctrine = require("doctrines.tactical.defensive-doctrine")
+local EngagementAnalyzer = require("engagement-analyzer")
 local ForceStatusAnalyzer = require("force-status-analyzer")
 local GroupProfiler = require("group-profiler")
 local OODACommander = require("ooda-commander")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local AssaultDoctrine = require("doctrines.tactical.assault-doctrine")
 local CommanderVisualizer = require("commander-visualizer")
+local IndirectDoctrine = require("doctrines.tactical.indirect-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
@@ -49,7 +51,9 @@ function GroupCommander.new(groupName, config)
     
     self.orders = nil
     self.lastMoveOrder = nil
+    self.lastFireOrder = nil
     self.pendingOrderAction = nil
+    self.pendingFireAtPoint = nil
     self.groupProfile = nil
     self.suitability = nil
     self.ownForceStrength = nil
@@ -101,8 +105,21 @@ function GroupCommander.getInstances(coalition)
     return filtered
 end
 
+-- Returns a group to a clean slate before it's handed to a new opscom.
+-- Must reset doctrine (not just orders) - a group returning from an
+-- in-progress order still has its old doctrine instance (e.g. IndirectDoctrine
+-- mid-Hold-phase) referencing an order that's about to vanish. Leaving that
+-- stale would crash on the next tick: the doctrine reads context.orderPosition
+-- expecting an active order, but with self.orders nil buildDecisionContext
+-- never populates it. Resetting to DefensiveDoctrine mirrors what a brand
+-- new GroupCommander already starts with.
 function GroupCommander:clearOrders()
+    if self.orders and self.orders:isActive() then
+        self.orders:abort("reassigned")
+    end
     self.orders = nil
+    self.doctrine = DefensiveDoctrine.new(self.groupName)
+    self.doctrineOrder = nil
 end
 
 function GroupCommander:observe()
@@ -146,9 +163,18 @@ function GroupCommander:observe()
         local unit = Unit.getByName(unitName)
         -- Only add if unit exists (error guard, not intel cheat)
         if unit and unit:isExist() then
+            -- Speed captured now, at observation time, same as position -
+            -- it's time-sensitive intel (how fast was it moving when last
+            -- seen), not something a consumer should query live later (see
+            -- FireSupportPlan, which uses this to avoid wasting a fire
+            -- mission on a target that's likely relocated by the time
+            -- rounds land).
+            local velocity = unit:getVelocity()
+            local speed = math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
             table.insert(observedThreats, {
                 name = unitName,
-                position = unit:getPosition().p
+                position = unit:getPosition().p,
+                speed = speed,
             })
         end
     end
@@ -196,6 +222,7 @@ end
 --- @field threatAssessment table
 --- @field statusReport table
 --- @field suitability number|nil
+--- @field ownRange table|nil
 --- @field hasActiveOrders boolean
 --- @field orderType string|nil
 --- @field orderPosition table|nil
@@ -246,6 +273,13 @@ function GroupCommander:buildDecisionContext()
         threatAssessment = self.threatAssessment,
         statusReport     = self:getStatusReport(),
         suitability      = self.suitability,
+        -- The group's own reach, independent of any currently-detected
+        -- threat (threatAssessment.range is two-sided and needs a known
+        -- target composition) - lets a doctrine position itself relative to
+        -- the order position alone, e.g. IndirectDoctrine standing off at
+        -- its own max weapon range regardless of whether a threat has been
+        -- spotted there yet.
+        ownRange         = self.groupProfile and self.groupProfile.range,
         hasActiveOrders  = hasActiveOrders or false,
         orderType        = orderType,
         orderPosition    = orderPosition,
@@ -287,6 +321,8 @@ function GroupCommander:decide()
             self.doctrine = AssaultDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.DEFEND then
             self.doctrine = DefensiveDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.INDIRECT then
+            self.doctrine = IndirectDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
@@ -326,8 +362,10 @@ function GroupCommander:decide()
         self:setDisposition(decision.disposition)
         self.destination = decision.destination
         self.pendingOrderAction = decision.orderAction
+        self.pendingFireAtPoint = decision.fireAtPoint
     else
         env.info("ERROR: Doctrine returned nil decision for " .. self.groupName)
+        self.pendingFireAtPoint = nil
         self:setDisposition(dispositionTypes.HOLD)
         self.destination = self:getOwnPosition()
         self.pendingOrderAction = nil
@@ -360,13 +398,30 @@ function GroupCommander:act()
         self.pendingOrderAction = nil
     end
 
+    -- A pending fire-at-point task (IndirectDoctrine's Hold phase) takes
+    -- over movement dispatch entirely rather than running alongside it -
+    -- stopMovement()'s {id='Hold'} task would otherwise replace/cancel the
+    -- fire mission every single cycle, since DCS's setTask always replaces
+    -- whatever task is currently active.
+    if self.pendingFireAtPoint then
+        local point = self.pendingFireAtPoint.position
+        -- Only reissue if the target has moved (more than 100m tolerance) -
+        -- FireAtPoint is meant to be a standing task the AI keeps executing
+        -- on its own, so reissuing it every cycle risks restarting the fire
+        -- mission instead of letting it run continuously.
+        if not self.lastFireOrder or
+        math.abs(self.lastFireOrder.x - point.x) > 100 or
+        math.abs(self.lastFireOrder.z - point.z) > 100 then
+            self:issueFireAtPoint(point, self.pendingFireAtPoint.radius)
+            self.lastFireOrder = {x = point.x, z = point.z}
+        end
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
     -- If destination has been set to nil, stop the group where they are
-    if self.destination then
+    elseif self.destination then
         if (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
             -- Only issue if destination has changed (more than 100m tolerance)
-            if not self.lastMoveOrder or 
-            math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
+            if not self.lastMoveOrder or
+            math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or
             math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
                 self:issueMoveOrder(self.destination)
                 self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
@@ -419,26 +474,40 @@ function GroupCommander:assessThreats()
         combinedForce = {
             unitCount = self.ownForceStrength.unitCount + self.allyIntel.unitCount,
             offensiveCapability = {
-                vsInfantry = self.ownForceStrength.offensiveCapability.vsInfantry + self.allyIntel.offensiveCapability.vsInfantry,
-                vsArmor    = self.ownForceStrength.offensiveCapability.vsArmor    + self.allyIntel.offensiveCapability.vsArmor,
-                vsAir      = self.ownForceStrength.offensiveCapability.vsAir      + self.allyIntel.offensiveCapability.vsAir,
+                vsUnarmored = self.ownForceStrength.offensiveCapability.vsUnarmored + self.allyIntel.offensiveCapability.vsUnarmored,
+                vsLight     = self.ownForceStrength.offensiveCapability.vsLight     + self.allyIntel.offensiveCapability.vsLight,
+                vsMedium    = self.ownForceStrength.offensiveCapability.vsMedium    + self.allyIntel.offensiveCapability.vsMedium,
+                vsHeavy     = self.ownForceStrength.offensiveCapability.vsHeavy     + self.allyIntel.offensiveCapability.vsHeavy,
+                vsAir       = self.ownForceStrength.offensiveCapability.vsAir       + self.allyIntel.offensiveCapability.vsAir,
             },
             composition = {
-                infantry   = self.ownForceStrength.composition.infantry   + self.allyIntel.composition.infantry,
-                lightArmor = self.ownForceStrength.composition.lightArmor + self.allyIntel.composition.lightArmor,
-                heavyArmor = self.ownForceStrength.composition.heavyArmor + self.allyIntel.composition.heavyArmor,
-                support    = self.ownForceStrength.composition.support    + self.allyIntel.composition.support,
+                unarmored = self.ownForceStrength.composition.unarmored + self.allyIntel.composition.unarmored,
+                light     = self.ownForceStrength.composition.light     + self.allyIntel.composition.light,
+                medium    = self.ownForceStrength.composition.medium    + self.allyIntel.composition.medium,
+                heavy     = self.ownForceStrength.composition.heavy     + self.allyIntel.composition.heavy,
+                air       = self.ownForceStrength.composition.air       + self.allyIntel.composition.air,
+            },
+            -- Range doesn't add up like firepower - the longest-reaching
+            -- contributor (own or ally) sets the combined force's reach.
+            range = {
+                unarmored = math.max(self.ownForceStrength.range.unarmored, self.allyIntel.range.unarmored),
+                light     = math.max(self.ownForceStrength.range.light,     self.allyIntel.range.light),
+                medium    = math.max(self.ownForceStrength.range.medium,    self.allyIntel.range.medium),
+                heavy     = math.max(self.ownForceStrength.range.heavy,     self.allyIntel.range.heavy),
+                air       = math.max(self.ownForceStrength.range.air,       self.allyIntel.range.air),
             },
         }
     end
 
     local favorability = GroupProfiler.calculateFavorability(combinedForce, threatAnalysis)
+    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis)
 
     return {
         count        = threatAnalysis.unitCount,
         analysis     = threatAnalysis,
         center       = threatCenter,
         favorability = favorability,
+        range        = range,
     }
 end
 
@@ -459,9 +528,20 @@ function GroupCommander:getSuitability(missionProfile)
     if missionProfile.offensiveCapability then
         local idealCap = missionProfile.offensiveCapability
         local ownCap   = profile.offensiveCapability
-        for _, field in ipairs({"vsInfantry", "vsArmor", "vsAir"}) do
+        for _, field in ipairs({"vsUnarmored", "vsLight", "vsMedium", "vsHeavy", "vsAir"}) do
             if idealCap[field] ~= nil then
                 score = score + proximity(ownCap[field], idealCap[field])
+                count = count + 1
+            end
+        end
+    end
+
+    if missionProfile.range then
+        local idealRange = missionProfile.range
+        local ownRange   = profile.range
+        for _, field in ipairs({"unarmored", "light", "medium", "heavy", "air"}) do
+            if idealRange[field] ~= nil then
+                score = score + proximity(ownRange[field], idealRange[field])
                 count = count + 1
             end
         end
@@ -665,6 +745,36 @@ function GroupCommander:issueMoveOrder(point)
         speed,
         true
     )
+end
+
+-- Issues DCS's FireAtPoint task, the actual mechanism for indirect/area
+-- fire - ROE alone only governs whether AI auto-engages targets it directly
+-- perceives, it doesn't make artillery shell a map point. radius is the
+-- task's dispersion radius (how tightly rounds land around the point), not
+-- an engagement/detection range.
+function GroupCommander:issueFireAtPoint(point, radius)
+    if not point or not point.x or not point.z then
+        env.info("ERROR: " .. self.groupName .. " received invalid fire-at-point order (nil or invalid point)")
+        return
+    end
+
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        env.info("ERROR: Cannot issue fire-at-point, group " .. self.groupName .. " does not exist")
+        return
+    end
+
+    local lat, lon = coord.LOtoLL({x = point.x, y = 0, z = point.z})
+    env.info("* " .. self.groupName .. " ACT: Fire at point " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
+
+    local controller = group:getController()
+    controller:setTask({
+        id = 'FireAtPoint',
+        params = {
+            point  = {x = point.x, y = point.z}, -- DCS Vec2: y is the world's z axis
+            radius = radius or 100,
+        },
+    })
 end
 
 function GroupCommander:issueOrder(order)

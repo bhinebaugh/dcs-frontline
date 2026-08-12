@@ -125,13 +125,27 @@ function CommanderVisualizer:syncGroupMove(gc, color)
     self:release(key)
 end
 
+-- Key for an objective's map mark, shared with releaseObjective below so
+-- whoever tears down the opscom owning this objective can clean up its
+-- mark directly - syncObjective's own isComplete() check only fires if
+-- syncObjective gets called again, which requires the opscom's act() to
+-- still be running, but the opscom is usually disbanded (its OODA schedule
+-- cancelled) in the very same moment its objective resolves.
+function CommanderVisualizer:objectiveKey(objective)
+    return "objective:" .. tostring(objective)
+end
+
+function CommanderVisualizer:releaseObjective(objective)
+    self:release(self:objectiveKey(objective))
+end
+
 -- Draw/update a circle + label at an objective's position showing its task
 -- type and status.
 function CommanderVisualizer:syncObjective(objective, doctrine, color)
-    local key = "objective:" .. tostring(objective)
+    local key = self:objectiveKey(objective)
 
     if objective:isComplete() then
-        self:release(key)
+        self:releaseObjective(objective)
         return
     end
 

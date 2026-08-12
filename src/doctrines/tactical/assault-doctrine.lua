@@ -71,6 +71,12 @@ function AssaultDoctrine:considerAbort(context)
         retreatAssessment = retreatAssessment - (1 / threat.favorability)
     end
 
+    -- range advantage: outranging the threat reduces retreat pressure,
+    -- being outranged increases it (see EngagementAnalyzer.assessRange)
+    if threat.range then
+        retreatAssessment = retreatAssessment - threat.range.advantageRatio
+    end
+
     -- suitability: if group no longer meets missionProfile, increase abort pressure
     local suitability = context.suitability
     if suitability and suitability < 0.3 then

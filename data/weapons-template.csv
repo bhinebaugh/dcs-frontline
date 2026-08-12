@@ -1,0 +1,41 @@
+weapon_id,display_name,kind,range_m,min_range_m,eff_unarmored,eff_light,eff_medium,eff_heavy,eff_air,dcs_type_name
+5_56x45_Carbine,5.56mm (Carbine),small-arms,500,0,3,2,0,0,1,weapons.shells.5_56x45
+5_56x45_NOtr_Carbine,5.56mm no-tracer (Carbine),small-arms,500,0,3,2,0,0,1,weapons.shells.5_56x45_NOtr
+5_56x45_SAW,5.56mm (SAW),mg,700,0,6,4,1,0,2,weapons.shells.5_56x45
+5_56x45_NOtr_SAW,5.56mm no-tracer (SAW),mg,700,0,6,4,1,0,2,weapons.shells.5_56x45_NOtr
+5_45x39,5.45mm,small-arms,500,0,4,2,0,0,1,weapons.shells.5_45x39
+5_45x39_NOtr,5.45mm no-tracer,small-arms,500,0,4,2,0,0,1,weapons.shells.5_45x39_NOtr
+M61_20_AP_gr,20mm AP,autocannon,2000,500,2,2,0,0,7,weapons.shells.M61_20_AP_gr
+M61_20_HE_gr,20mm HE,autocannon,2000,500,2,2,0,0,7,weapons.shells.M61_20_HE_gr
+M2_12_7_T,12.7mm tracer (M2),mg,1200,0,8,10,6,3,3,weapons.shells.M2_12_7_T
+M2_12_7,12.7mm (M2),mg,1200,0,8,10,6,3,3,weapons.shells.M2_12_7
+TOW2,BGM-71 TOW,atgm,3800,65,5,7,8,9,1,weapons.missiles.TOW2
+KPVT_14_5_T,14.5mm AP (KPVT),mg,1600,0,9,8,6,3,5,weapons.shells.KPVT_14_5_T
+KPVT_14_5,14.5mm (KPVT),mg,1600,0,9,8,6,3,5,weapons.shells.KPVT_14_5
+7_62x54,7.62mm (PKT),mg,1600,0,7,6,4,0,1,weapons.shells.7_62x54
+7_62x54_NOTRACER,7.62mm no-tracer (PKT),mg,1600,0,7,6,4,0,1,weapons.shells.7_62x54_NOTRACER
+M185_155,M795 155mm HE,indirect,22000,200,8,8,5,2,0,weapons.shells.M185_155
+2A60_120,3OF49 120mm HE,indirect,7000,0,8,7,4,2,0,weapons.shells.2A60_120
+2A28_73,PG-15 73mm HEAT,cannon,3000,400,6,8,8,6,2,weapons.shells.2A28_73
+MALUTKA,AT-3 Sagger,atgm,4000,0,5,7,8,9,0,weapons.missiles.MALUTKA
+M242_25_HE_M792,M792 25mm HEI-T,autocannon,2500,500,5,8,7,6,4,weapons.shells.M242_25_HE_M792
+M242_25_AP_M791,M791 25mm APDS-T,autocannon,2500,500,5,8,7,6,4,weapons.shells.M242_25_AP_M791
+7_62x51tr,7.62mm tracer (M240),mg,1200,0,7,6,4,0,1,weapons.shells.7_62x51tr
+7_62x51,7.62mm (M240),mg,1200,0,7,6,4,0,1,weapons.shells.7_62x51
+2A42_30_HE,3UOF8 30mm HE-T,autocannon,2500,400,6,9,8,7,5,weapons.shells.2A42_30_HE
+2A42_30_AP,3UBR6 30mm APBC-T,autocannon,2500,400,6,9,8,7,5,weapons.shells.2A42_30_AP
+KONKURS,AT-5 Spandrel,atgm,3000,100,5,7,8,9,1,weapons.missiles.KONKURS
+UOF_17_100HE,3UOF17 100mm HE,cannon,2500,400,4,8,9,9,0,weapons.shells.UOF_17_100HE
+P_9M117,AT-10 Stabber,atgm,4000,400,5,7,8,9,1,weapons.missiles.P_9M117
+PG_16V,PG-16 HEAT,rocket,500,100,5,10,9,7,1,weapons.nurs.PG_16V
+SA9M333,9M333 (SA-13 Gopher),sam,5000,800,2,0,0,0,8,SA9M333
+SA9M31M,9M31 (SA-9 Gaskin),sam,4200,800,2,0,0,0,9,SA9M31M
+M256_120_AP,M829A2 120mm APFSDS-T,cannon,4000,400,5,8,9,10,0,weapons.shells.M256_120_AP
+M256_120_HE,M830 120mm HEAT-MP-T,cannon,4000,400,5,8,9,10,0,weapons.shells.M256_120_HE
+2A46M_125_AP,3BM42 125mm APFSDS-T,cannon,3500,400,5,8,9,10,0,weapons.shells.2A46M_125_AP
+2A46M_125_HE,3OF26 125mm HE,cannon,3500,400,5,8,9,10,0,weapons.shells.2A46M_125_HE
+Utes_12_7x108_T,12.7mm tracer (NSVT),mg,1600,0,8,10,6,3,5,weapons.shells.Utes_12_7x108_T
+Utes_12_7x108,12.7mm (NSVT),mg,1600,0,8,10,6,3,5,weapons.shells.Utes_12_7x108
+SVIR,9M119 Svir (AT-11 Sniper),atgm,4000,100,5,7,8,9,1,weapons.missiles.SVIR
+REFLEX,9M119 Reflex (AT-11 Sniper),atgm,4000,100,5,7,8,9,1,weapons.missiles.REFLEX
+2A64_152,3OF45 152mm HE,indirect,23000,200,9,8,5,2,0,weapons.shells.2A64_152
