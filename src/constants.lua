@@ -54,7 +54,7 @@ local groundTemplates = { --frontline, rear, farp
 local fireSupportTemplates = {
     red = {
         {"SAU Msta"},
-        {"2S9 Nona", "2S9 Nona"},
+        {"SAU Msta", "SAU Msta"},
     },
     blue = {
         {"M-109"},

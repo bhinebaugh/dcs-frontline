@@ -23,7 +23,7 @@ cz:assignCompassMaxima()
 -- original CoalitionCommander, so the two can be compared side by side in
 -- the same mission. Swap either side's class to compare a different pairing.
 ccBlue = StrategicCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
-ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
+ccRed = StrategicCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
 cz:addCommander("blue", ccBlue)
 cz:addCommander("red", ccRed)
 cz:kickoff()

@@ -122,7 +122,7 @@ function ReconRallyAssaultPlan:rallyPhase(context)
                     type            = taskTypes.RALLY,
                     targetPosition  = threatCenter,
                     proximity       = 500,
-                    stagingArc      = 120,
+                    stagingArc      = 60,
                     stagingRadius   = self.config.assaultStagingDistance,
                     alr             = alr.MEDIUM,
                     count           = 3,
