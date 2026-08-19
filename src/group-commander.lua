@@ -446,7 +446,14 @@ function GroupCommander:analyzeOwnForce()
 end
 
 function GroupCommander:analyzeThreatCapabilities()
-    local threats = self.threatTracker:getRecentThreats()
+    -- Scoped to detectionRadius of our own current position - unlike
+    -- OperationalCommander's threatTracker (deliberately unscoped, since it
+    -- aggregates broadly for later position-scoped lookups elsewhere), this
+    -- feeds this specific group's own favorability/range/standoff decisions,
+    -- which should react to what's actually nearby right now, not every
+    -- threat we've personally seen anywhere on our route in the last two
+    -- minutes (see EngagementAnalyzer.assessRange, considerAbort/considerEngage).
+    local threats = self.threatTracker:getRecentThreats(nil, self:getOwnPosition(), detectionRadius)
     local threatUnits = {}
     for unitName, _ in pairs(threats) do
         local unit = Unit.getByName(unitName)
@@ -461,9 +468,11 @@ end
 function GroupCommander:assessThreats()
     local threatAnalysis = self:analyzeThreatCapabilities()
 
-    -- Calculate threat center if threats exist
+    -- Calculate threat center if threats exist - same scoping as
+    -- analyzeThreatCapabilities, so the center is drawn from the same
+    -- nearby set the favorability/range figures above it were built from.
     local threatCenter = nil
-    local recentThreats = self.threatTracker:getRecentThreats()
+    local recentThreats = self.threatTracker:getRecentThreats(nil, self:getOwnPosition(), detectionRadius)
     if threatAnalysis.unitCount > 0 then
         threatCenter = SpatialAgent.calculateCenterOfObjects(recentThreats)
     end

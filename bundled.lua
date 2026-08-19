@@ -2771,15 +2771,22 @@ function ThreatTracker:ageThreats()
     end
 end
 
-function ThreatTracker:getRecentThreats(maxAge)
+-- position/radius are optional: without them, this returns every threat
+-- this tracker has personally seen recently, anywhere - correct for a
+-- tracker that's meant to aggregate broadly (e.g. OperationalCommander's,
+-- fed by every group it owns). Callers judging a specific group's local
+-- tactical situation (favorability, standoff/retreat positioning) should
+-- pass both, or a threat spotted 8km behind on an earlier leg of the route
+-- counts the same as one 50m away right now.
+function ThreatTracker:getRecentThreats(maxAge, position, radius)
     local currentTime = timer.getTime()
     local recentThreats = {}
     maxAge = maxAge or 120  -- Default 2 minutes
-    
+
     for unitName, threat in pairs(self.threats) do
         -- Only include threats that are actively relevant
         local includeInAnalysis = false
-        
+
         if threat.status == "Observed" then
             includeInAnalysis = true
         elseif threat.status == "Suspected" and threat.lastSighting then
@@ -2789,12 +2796,16 @@ function ThreatTracker:getRecentThreats(maxAge)
                 includeInAnalysis = true
             end
         end
-        
+
+        if includeInAnalysis and position and radius then
+            includeInAnalysis = SpatialAgent.isWithinRadius(threat.position, position, radius)
+        end
+
         if includeInAnalysis then
             recentThreats[unitName] = threat  -- Return threat object indexed by name
         end
     end
-    
+
     return recentThreats
 end
 
@@ -2963,7 +2974,7 @@ function ReconRallyAssaultPlan:rallyPhase(context)
                     type            = taskTypes.RALLY,
                     targetPosition  = threatCenter,
                     proximity       = 500,
-                    stagingArc      = 120,
+                    stagingArc      = 60,
                     stagingRadius   = self.config.assaultStagingDistance,
                     alr             = alr.MEDIUM,
                     count           = 3,
@@ -3835,7 +3846,14 @@ function GroupCommander:analyzeOwnForce()
 end
 
 function GroupCommander:analyzeThreatCapabilities()
-    local threats = self.threatTracker:getRecentThreats()
+    -- Scoped to detectionRadius of our own current position - unlike
+    -- OperationalCommander's threatTracker (deliberately unscoped, since it
+    -- aggregates broadly for later position-scoped lookups elsewhere), this
+    -- feeds this specific group's own favorability/range/standoff decisions,
+    -- which should react to what's actually nearby right now, not every
+    -- threat we've personally seen anywhere on our route in the last two
+    -- minutes (see EngagementAnalyzer.assessRange, considerAbort/considerEngage).
+    local threats = self.threatTracker:getRecentThreats(nil, self:getOwnPosition(), detectionRadius)
     local threatUnits = {}
     for unitName, _ in pairs(threats) do
         local unit = Unit.getByName(unitName)
@@ -3850,9 +3868,11 @@ end
 function GroupCommander:assessThreats()
     local threatAnalysis = self:analyzeThreatCapabilities()
 
-    -- Calculate threat center if threats exist
+    -- Calculate threat center if threats exist - same scoping as
+    -- analyzeThreatCapabilities, so the center is drawn from the same
+    -- nearby set the favorability/range figures above it were built from.
     local threatCenter = nil
-    local recentThreats = self.threatTracker:getRecentThreats()
+    local recentThreats = self.threatTracker:getRecentThreats(nil, self:getOwnPosition(), detectionRadius)
     if threatAnalysis.unitCount > 0 then
         threatCenter = SpatialAgent.calculateCenterOfObjects(recentThreats)
     end
