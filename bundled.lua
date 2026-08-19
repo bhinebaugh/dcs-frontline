@@ -1483,14 +1483,25 @@ function OperationalCommander:assignOrderTemplate(template, objective)
         if not s.orderStatus or
            s.orderStatus == orderStatus.COMPLETED or
            s.orderStatus == orderStatus.ABORTED then
-            local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
-            local dist = (s.position and template.position)
-                and SpatialAgent.distance2D(s.position, template.position) or 0
-            table.insert(suitabilityResults, {
-                commander   = commander,
-                suitability = suitability,
-                distance    = dist,
-            })
+            -- A hard floor, not just a low suitability score: a group in
+            -- dire condition (critical ammo/health/fuel) is excluded from
+            -- new tasking entirely, regardless of how well it'd otherwise
+            -- match missionProfile - suitability alone only deprioritizes
+            -- via sort order, which still picks a dire group when it's the
+            -- best (or only) candidate available.
+            if commander:isConditionCritical() then
+                env.info(string.format("*** %s Ops: excluding %s from order assignment (dire condition)",
+                    self.color, commander.groupName))
+            else
+                local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
+                local dist = (s.position and template.position)
+                    and SpatialAgent.distance2D(s.position, template.position) or 0
+                table.insert(suitabilityResults, {
+                    commander   = commander,
+                    suitability = suitability,
+                    distance    = dist,
+                })
+            end
         end
     end
 
@@ -1709,17 +1720,19 @@ __bundle_register("group-profiler", function(require, _LOADED, __bundle_register
 --     offensiveCapability = { vsUnarmored=N, vsLight=N, vsMedium=N, vsHeavy=N, vsAir=N },
 --     composition         = { unarmored=N, light=N, medium=N, heavy=N, air=N },
 --     range               = { unarmored=N, light=N, medium=N, heavy=N, air=N },
+--     minRange            = { unarmored=N, light=N, medium=N, heavy=N, air=N },
 --     unitCount           = N,
 --     -- Status fields (only from profileGroup, nil from profileUnits):
 --     attritionRate       = 0.0-1.0,
 --     ammoRatio           = 0.0-1.0,
 --     fuelRatio           = 0.0-1.0,
+--     healthRatio         = 0.0-1.0,
 -- }
 --
--- composition/offensiveCapability/range tiers mirror the armorClass scale in
--- units.lua (0=unarmored, 1=light, 2=medium, 3=heavy), plus "air" for future
--- airborne (CAS/helicopter) units - no unit is classified into that tier yet,
--- so it stays zero until air units are added to units.lua.
+-- composition/offensiveCapability/range/minRange tiers mirror the armorClass
+-- scale in units.lua (0=unarmored, 1=light, 2=medium, 3=heavy), plus "air"
+-- for future airborne (CAS/helicopter) units - no unit is classified into
+-- that tier yet, so it stays zero until air units are added to units.lua.
 --
 -- range[tier] is how far out this force can engage a target of that tier,
 -- in meters - the range of whichever weapon provides that tier's
@@ -1727,7 +1740,9 @@ __bundle_register("group-profiler", function(require, _LOADED, __bundle_register
 -- can we reach this kind of target", not "how far can any of our weapons
 -- fire" - a tier this force has zero effectiveness against reports range 0,
 -- even if some weapon's max range is nonzero, since that weapon isn't what's
--- winning that tier. See engagement-analyzer.lua for two-sided (distance-
+-- winning that tier. minRange[tier] is that same weapon's dead zone (e.g. an
+-- indirect weapon's minimum effective distance against something already
+-- closing on it) - see engagement-analyzer.lua for two-sided (distance-
 -- aware) comparisons built on top of this - GroupProfiler itself stays
 -- single-sided ("what does this force have").
 
@@ -1756,6 +1771,7 @@ GroupProfiler.capabilityTiers = capabilityTiers
 local function computeCombatProfile(weaponIds)
     local effectiveness = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
     local range = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
+    local minRange = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
     for _, weaponId in ipairs(weaponIds or {}) do
         local weapon = weapons[weaponId]
         if weapon then
@@ -1764,18 +1780,19 @@ local function computeCombatProfile(weaponIds)
                 if value > effectiveness[tier] then
                     effectiveness[tier] = value
                     range[tier] = weapon.range or 0
+                    minRange[tier] = weapon.minRange or 0
                 end
             end
         end
     end
-    return effectiveness, range
+    return effectiveness, range, minRange
 end
 
 function GroupProfiler.classifyUnit(unit)
     local empty = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0}
 
     if not unit or not unit:isExist() then
-        return {armorClass = 0, effectiveness = empty, range = empty}
+        return {armorClass = 0, effectiveness = empty, range = empty, minRange = empty}
     end
 
     local typeName = unit:getTypeName()
@@ -1786,14 +1803,16 @@ function GroupProfiler.classifyUnit(unit)
             armorClass = 0,
             effectiveness = {unarmored = 1, light = 1, medium = 0, heavy = 0, air = 1},
             range = {unarmored = 500, light = 500, medium = 0, heavy = 0, air = 500},
+            minRange = empty,
         }
     end
 
-    local effectiveness, range = computeCombatProfile(unitData.weapons)
+    local effectiveness, range, minRange = computeCombatProfile(unitData.weapons)
     return {
         armorClass    = unitData.armorClass,
         effectiveness = effectiveness,
         range         = range,
+        minRange      = minRange,
     }
 end
 
@@ -1847,6 +1866,7 @@ function GroupProfiler.profileUnits(unitList)
         offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
         composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         range               = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
+        minRange            = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
     }
 
@@ -1870,10 +1890,15 @@ function GroupProfiler.profileUnits(unitList)
             profile.offensiveCapability.vsHeavy      = profile.offensiveCapability.vsHeavy      + effectiveness.heavy
             profile.offensiveCapability.vsAir        = profile.offensiveCapability.vsAir        + effectiveness.air
 
+            -- minRange is paired with whichever unit's weapon just won this
+            -- tier's range (not independently maxed/minned) - it belongs to
+            -- that specific weapon, same as computeCombatProfile pairs range
+            -- with the effectiveness-winning weapon.
             for _, tier in ipairs(capabilityTiers) do
                 local unitRange = classification.range[tier] or 0
                 if unitRange > profile.range[tier] then
                     profile.range[tier] = unitRange
+                    profile.minRange[tier] = classification.minRange[tier] or 0
                 end
             end
         end
@@ -1888,10 +1913,12 @@ function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCoun
         offensiveCapability = {vsUnarmored = 0, vsLight = 0, vsMedium = 0, vsHeavy = 0, vsAir = 0},
         composition         = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         range               = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
+        minRange            = {unarmored = 0, light = 0, medium = 0, heavy = 0, air = 0},
         unitCount           = 0,
         attritionRate       = 1,
         ammoRatio           = 0,
         fuelRatio           = 0,
+        healthRatio         = 0,
     }
 
     local group = Group.getByName(groupName)
@@ -1937,6 +1964,18 @@ function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCoun
 
     -- Fuel (simulated, passed in directly)
     profile.fuelRatio = fuelRemaining or 0
+
+    -- Health ratio: current life pool over max life pool (getLife0()) across
+    -- alive units - distinct from attritionRate (unit count lost), since a
+    -- group that hasn't lost a single unit can still be battered close to
+    -- death without attritionRate ever reflecting it.
+    local healthPool = 0
+    local maxHealthPool = 0
+    for _, unit in ipairs(aliveUnits) do
+        healthPool = healthPool + unit:getLife()
+        maxHealthPool = maxHealthPool + (unit:getLife0() or unit:getLife())
+    end
+    profile.healthRatio = maxHealthPool > 0 and (healthPool / maxHealthPool) or 0
 
     return profile
 end
@@ -2134,7 +2173,7 @@ local weapons = {
         displayName = "M795 155mm HE",
         kind = "indirect",
         range = 22000,
-        minRange = 200,
+        minRange = 5000,
         effectiveness = {unarmored = 8, light = 8, medium = 5, heavy = 2, air = 0},
         dcsTypeName = "weapons.shells.M185_155",
     },
@@ -2142,7 +2181,7 @@ local weapons = {
         displayName = "3OF49 120mm HE",
         kind = "indirect",
         range = 7000,
-        minRange = 0,
+        minRange = 5000,
         effectiveness = {unarmored = 8, light = 7, medium = 4, heavy = 2, air = 0},
         dcsTypeName = "weapons.shells.2A60_120",
     },
@@ -2326,7 +2365,7 @@ local weapons = {
         displayName = "3OF45 152mm HE",
         kind = "indirect",
         range = 23000,
-        minRange = 200,
+        minRange = 5000,
         effectiveness = {unarmored = 9, light = 8, medium = 5, heavy = 2, air = 0},
         dcsTypeName = "weapons.shells.2A64_152",
     },
@@ -3635,11 +3674,18 @@ function GroupCommander:observe()
     -- Store direct LOS count for decision-making (to distinguish self-observed from shared intel)
     self.directLOSCount = #visibleThreatNames
     
-    -- Single consolidated OBSERVE summary
+    -- Single consolidated OBSERVE summary. Condition percentages ride along
+    -- here (rather than only logging on level transitions, see orient())
+    -- so the underlying values are visible continuously, confirming they're
+    -- actually being recomputed each cycle and not just frozen at spawn.
     local memoryCount = self.threatTracker:count()
     local expectedCount = #self.threatTracker:expectedThreats(currentPos, detectionRadius)
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
-    env.info("* " .. self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
+    local condition = self:getConditionSummary()
+    env.info(string.format("* %s OBSERVE: LOS:%d%s Mem:%d HP:%s%% Fuel:%s%% Ammo:%s%% [%s]",
+        self.groupName, #visibleThreatNames, expectedStr, memoryCount,
+        condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?",
+        condition.level))
 end
 
 function GroupCommander:orient()
@@ -3657,6 +3703,22 @@ function GroupCommander:orient()
         self.suitability = self:getSuitability(self.orders.missionProfile)
     else
         self.suitability = nil
+    end
+
+    -- Log condition level transitions (not every tick - that's what the
+    -- OBSERVE line's ammo/fuel/health readout is for) so NOMINAL/DEGRADED/
+    -- CRITICAL crossings are directly greppable, confirming the criteria
+    -- doctrines act on are actually being computed and changing over time.
+    local condition = self:getConditionSummary()
+    if condition.level ~= self.lastConditionLevel then
+        env.info(string.format("* %s CONDITION: %s -> %s (health:%s%% fuel:%s%% ammo:%s%%)",
+            self.groupName,
+            self.lastConditionLevel or "?",
+            condition.level,
+            condition.healthPercent or "?",
+            condition.fuelPercent or "?",
+            condition.ammoPercent or "?"))
+        self.lastConditionLevel = condition.level
     end
 end
 
@@ -3740,15 +3802,20 @@ function GroupCommander:buildDecisionContext()
 end
 
 function GroupCommander:decide()
-    -- If an order resolved (completed/aborted) last tick via act(),
-    -- doctrine instance may still be awaiting reassignment by the operational layer.
-    -- In this case hold in place rather than planning against a finished order's stale context
-    -- (e.g. orderPosition is no longer populated).
+    -- An order that resolved (completed/aborted) via act() last tick is
+    -- done with this doctrine instance, which may sit awaiting reassignment
+    -- by the operational layer for a while yet. Rather than freezing in
+    -- place until that happens, hand off to DefensiveDoctrine - the same
+    -- autonomous "no active order" behavior any reserve already runs,
+    -- including its own retreat-to-safety handling - via clearOrders(),
+    -- the same reset used elsewhere (opscom disband, reassignment). This is
+    -- GroupCommander's call to make, not the finishing doctrine's: no
+    -- doctrine ever references another, only this orchestration layer
+    -- switches between them. Falls through into normal doctrine-driven
+    -- decision-making below so Defensive actually runs this same tick
+    -- instead of losing a cycle sitting idle.
     if self.orders and self.orders:isFinished() then
-        self:setDisposition(dispositionTypes.HOLD)
-        self.destination = self:getOwnPosition()
-        self.pendingOrderAction = nil
-        return
+        self:clearOrders()
     end
 
     -- Build a fresh doctrine only when a genuinely new order has been assigned
@@ -3773,17 +3840,6 @@ function GroupCommander:decide()
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
     end
-
-    -- TODO decide if it makes sense to reenable this compared to first block above
-    -- // it would be one way of tying up residual orders after opscom disbands
-    -- if self.orders and self.orders:isFinished() then
-    --     self.orders = nil
-    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
-    -- end
-
-    -- if not self.doctrine then
-    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
-    -- end
 
     -- Check if we have valid assessment data
     if not self.ownForceStrength or not self.threatAssessment then
@@ -3926,6 +3982,16 @@ function GroupCommander:assessThreats()
     -- Combine own force with ally intel for favorability calculation
     local combinedForce = self.ownForceStrength
     if self.allyIntel and self.allyIntel.unitCount and self.allyIntel.unitCount > 0 then
+        -- minRange belongs to whichever side's weapon just won that tier's
+        -- range below (not independently maxed/minned) - same pairing
+        -- GroupProfiler keeps within a single force's own profile.
+        local function pairedMinRange(tier)
+            if self.ownForceStrength.range[tier] >= self.allyIntel.range[tier] then
+                return self.ownForceStrength.minRange[tier]
+            end
+            return self.allyIntel.minRange[tier]
+        end
+
         combinedForce = {
             unitCount = self.ownForceStrength.unitCount + self.allyIntel.unitCount,
             offensiveCapability = {
@@ -3951,11 +4017,24 @@ function GroupCommander:assessThreats()
                 heavy     = math.max(self.ownForceStrength.range.heavy,     self.allyIntel.range.heavy),
                 air       = math.max(self.ownForceStrength.range.air,       self.allyIntel.range.air),
             },
+            minRange = {
+                unarmored = pairedMinRange("unarmored"),
+                light     = pairedMinRange("light"),
+                medium    = pairedMinRange("medium"),
+                heavy     = pairedMinRange("heavy"),
+                air       = pairedMinRange("air"),
+            },
         }
     end
 
+    -- How far apart we and the threat actually are right now - lets
+    -- assessRange treat a weapon as unable to engage while we're inside its
+    -- own dead zone (see GroupProfile.minRange), rather than always judging
+    -- reach by nominal max range alone.
+    local currentDistance = threatCenter and SpatialAgent.distance2D(self:getOwnPosition(), threatCenter)
+
     local favorability = GroupProfiler.calculateFavorability(combinedForce, threatAnalysis)
-    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis)
+    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis, currentDistance)
 
     return {
         count        = threatAnalysis.unitCount,
@@ -4040,6 +4119,58 @@ end
 
 function GroupCommander:getCriticalStatus()
     return ForceStatusAnalyzer.getCriticalStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
+end
+
+-- True if ammo, health, or fuel is critically low - the "dire" floor used to
+-- exclude a group from new order assignment entirely (see
+-- OperationalCommander:assignOrderTemplate), independent of how well it'd
+-- otherwise fit a mission's missionProfile. Same thresholds considerAbort
+-- uses in each tactical doctrine, so a group that's ineligible for a new
+-- order is exactly the kind that should also be pushing to abort/disengage
+-- whatever it's currently doing. status is optional - pass one in if you
+-- already fetched it this tick (see getConditionSummary) to avoid querying
+-- DCS for ammo/life a second time.
+function GroupCommander:isConditionCritical(status)
+    status = status or self:getStatusReport()
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount) then
+        return true
+    end
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        return true
+    end
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        return true
+    end
+    return false
+end
+
+-- Rolled-up condition for display/logging: NOMINAL, DEGRADED (any of ammo/
+-- health/fuel below its "low" threshold), or CRITICAL (isConditionCritical).
+-- Percentages are nil where the underlying data isn't available (e.g.
+-- ammoPercent for a group with no initialAmmoCount).
+function GroupCommander:getConditionSummary()
+    local status = self:getStatusReport()
+
+    local ammoPercent = (self.initialAmmoCount and self.initialAmmoCount > 0)
+        and math.floor((status.ammoCount / self.initialAmmoCount) * 100) or nil
+    local healthPercent = status.healthRatio and math.floor(status.healthRatio * 100) or nil
+    local fuelPercent = status.fuelRemaining and math.floor(status.fuelRemaining * 100) or nil
+
+    local level = "NOMINAL"
+    if self:isConditionCritical(status) then
+        level = "CRITICAL"
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount)
+        or ForceStatusAnalyzer.isHealthLow(status.healthRatio)
+        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        level = "DEGRADED"
+    end
+
+    return {
+        level = level,
+        ammoPercent = ammoPercent,
+        healthPercent = healthPercent,
+        fuelPercent = fuelPercent,
+    }
 end
 
 function GroupCommander:getCollectiveStatus()
@@ -4671,6 +4802,22 @@ function RallyDoctrine:considerAbort(context)
         retreatAssessment = retreatAssessment + 0.5
     end
 
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
     -- attrition rate
     local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
     retreatAssessment = retreatAssessment + attritionRate
@@ -4714,7 +4861,6 @@ function RallyDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -4737,7 +4883,6 @@ function RallyDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "complete",
         }
     end
 
@@ -4756,7 +4901,6 @@ function RallyDoctrine:holdPhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -4768,12 +4912,25 @@ function RallyDoctrine:holdPhase(context)
         }
     end
 
+    -- Genuinely arrived and stable (not aborting, not falling back out of
+    -- range) - this is Hold's real first shot at running at all (see
+    -- GroupCommander:decide/abortPhase's comment on why), so it's the right
+    -- moment to actually declare the order complete rather than the
+    -- advance-arrival trigger doing it prematurely, one cycle before this
+    -- phase ever got to run.
     return {
         disposition = dispositionTypes.HOLD,
         destination = nil,
+        orderAction = "complete",
     }
 end
 
+-- Abort's one real shot to act(): the trigger that got us here (considerAbort
+-- tripping in Advance or Hold) deliberately only transitioned phase without
+-- setting orderAction, so this handler - not the trigger - is what actually
+-- retreats and declares the order aborted. Only after this runs does the
+-- order become finished and GroupCommander:decide() hand off to
+-- DefensiveDoctrine for continued self-preservation (see its comment).
 function RallyDoctrine:abortPhase(context)
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
@@ -4820,7 +4977,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
     if type(groupNameOrGroup) == "string" then
         group = Group.getByName(groupNameOrGroup)
     end
-    
+
     if not group or not group:isExist() then
         return {
             aliveCount = 0,
@@ -4829,6 +4986,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             fuelRemaining = fuelRemaining or 0,
             healthPool = 0,
             healthLowState = nil,
+            healthRatio = 0,
         }
     end
 
@@ -4841,21 +4999,28 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             fuelRemaining = fuelRemaining or 0,
             healthPool = 0,
             healthLowState = nil,
+            healthRatio = 0,
         }
     end
-    
+
     local aliveCount = 0
     local ammoCount = 0
     local ammmoLowState = nil
     local healthPool = 0
     local healthLowState = nil
-    
+    local maxHealthPool = 0
+
     for _, unitName in ipairs(initialUnitNames) do
         local unit = Unit.getByName(unitName)
         if unit and unit:isExist() then
             local unitAmmoTable = unit:getAmmo()
             local unitHealth = unit:getLife()
-            
+            -- getLife0() is the unit's starting/max life - normalizes
+            -- getLife() into a 0-1 ratio the same way ammoRatio normalizes
+            -- against initialAmmoCount (raw getLife() alone isn't
+            -- comparable across unit types with different life pools).
+            local unitMaxHealth = unit:getLife0() or unitHealth
+
             -- Sum up all ammo counts from the table
             local unitAmmoTotal = 0
             if unitAmmoTable then
@@ -4869,6 +5034,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             aliveCount = aliveCount + 1
             ammoCount = ammoCount + unitAmmoTotal
             healthPool = healthPool + unitHealth
+            maxHealthPool = maxHealthPool + unitMaxHealth
 
             if not ammmoLowState or unitAmmoTotal < ammmoLowState then
                 ammmoLowState = unitAmmoTotal
@@ -4879,7 +5045,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             end
         end
     end
-    
+
     return {
         aliveCount = aliveCount,
         ammoCount = ammoCount,
@@ -4887,6 +5053,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
         fuelRemaining = fuelRemaining or 0,
         healthPool = healthPool,
         healthLowState = healthLowState,
+        healthRatio = maxHealthPool > 0 and (healthPool / maxHealthPool) or 0,
     }
 end
 
@@ -5020,6 +5187,56 @@ end
 
 function ForceStatusAnalyzer.isUnarmed(baselineAmmo)
     return baselineAmmo == 0
+end
+
+-- ============================================================================
+-- Health Ratio / Fuel Analysis
+-- ============================================================================
+-- Both are already 0.0-1.0 ratios (see getStatusReport's healthRatio, and
+-- GroupCommander's simulated fuelRemaining) so these thresholds compare
+-- directly, unlike the ammo checks above which normalize a raw count
+-- against a baseline first.
+
+--- Check if health ratio is low (a unit near death, or a group's survivors
+-- collectively battered, even if none have been destroyed outright - see
+-- getStatusReport's healthRatio for why this differs from attritionRate).
+-- @param healthRatio number|nil - Current health ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 30%
+-- @return boolean - True if health ratio is below threshold
+function ForceStatusAnalyzer.isHealthLow(healthRatio, thresholdPercent)
+    if not healthRatio then return false end
+    local threshold = (thresholdPercent or 30) / 100
+    return healthRatio < threshold
+end
+
+--- Check if health ratio is critically low.
+-- @param healthRatio number|nil - Current health ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 15%
+-- @return boolean - True if health ratio is below threshold
+function ForceStatusAnalyzer.isHealthCritical(healthRatio, thresholdPercent)
+    if not healthRatio then return false end
+    local threshold = (thresholdPercent or 15) / 100
+    return healthRatio < threshold
+end
+
+--- Check if fuel ratio is low.
+-- @param fuelRatio number|nil - Current fuel ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 20%
+-- @return boolean - True if fuel ratio is below threshold
+function ForceStatusAnalyzer.isFuelLow(fuelRatio, thresholdPercent)
+    if not fuelRatio then return false end
+    local threshold = (thresholdPercent or 20) / 100
+    return fuelRatio < threshold
+end
+
+--- Check if fuel ratio is critically low.
+-- @param fuelRatio number|nil - Current fuel ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 10%
+-- @return boolean - True if fuel ratio is below threshold
+function ForceStatusAnalyzer.isFuelCritical(fuelRatio, thresholdPercent)
+    if not fuelRatio then return false end
+    local threshold = (thresholdPercent or 10) / 100
+    return fuelRatio < threshold
 end
 
 -- ============================================================================
@@ -5400,6 +5617,22 @@ function IndirectDoctrine:considerAbort(context)
         retreatAssessment = retreatAssessment + 0.5
     end
 
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
     -- attrition rate
     local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
     retreatAssessment = retreatAssessment + attritionRate
@@ -5422,7 +5655,6 @@ function IndirectDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -5455,7 +5687,6 @@ function IndirectDoctrine:holdPhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -5492,6 +5723,12 @@ function IndirectDoctrine:holdPhase(context)
     }
 end
 
+-- Abort's one real shot to act(): the trigger that got us here (considerAbort
+-- tripping in Advance or Hold) deliberately only transitioned phase without
+-- setting orderAction, so this handler - not the trigger - is what actually
+-- retreats and declares the order aborted. Only after this runs does the
+-- order become finished and GroupCommander:decide() hand off to
+-- DefensiveDoctrine for continued self-preservation (see its comment).
 function IndirectDoctrine:abortPhase(context)
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
@@ -5500,8 +5737,6 @@ function IndirectDoctrine:abortPhase(context)
     if threat.center then
         local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
         retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    else
-        self:changePhase("Advance")
     end
 
     return {
@@ -5580,22 +5815,35 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
     local signature
     local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
 
-    local threatCount = gc.threatAssessment.count 
+    local threatCount = gc.threatAssessment.count
     local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    local condition = gc:getConditionSummary()
     if gc.orders then
         textColor = {1,1,1,0.8}
         bgColor   = {0,0,0,0.3}
         local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos}, "|")
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos, condition.level}, "|")
     else
         textColor = {0.8,0.8,0.8,0.35}
         bgColor   = {0.4,0.4,0.4,0.15}
-        signature = table.concat({"default", gc.disposition, threatCount, roundedPos}, "|")
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level}, "|")
+    end
+
+    -- Dire condition overrides the normal background so it's visually
+    -- distinct from the coalition-colored default at a glance, independent
+    -- of whatever order/disposition text says - this is the map-level
+    -- confirmation that isConditionCritical's criteria are actually firing.
+    if condition.level == "CRITICAL" then
+        bgColor = {0.6, 0.05, 0.05, 0.55}
+    elseif condition.level == "DEGRADED" then
+        bgColor = {0.6, 0.4, 0.0, 0.4}
     end
 
     local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
     local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
-    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText
+    local conditionText = string.format("%s HP:%s%% Fuel:%s%% Ammo:%s%%",
+        condition.level, condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?")
+    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText .. "\n" .. conditionText
 
 
     self:upsert(key, signature, function()
@@ -5934,6 +6182,12 @@ function AssaultDoctrine:considerEngage(context)
         engageAssessment = 0.0
     end
 
+    -- health/fuel: a battered or nearly-dry group shouldn't pick a fight
+    -- even against a favorable, in-the-way threat
+    if ForceStatusAnalyzer.isHealthLow(status.healthRatio) or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        engageAssessment = 0.0
+    end
+
     return engageAssessment
 end
 
@@ -5948,6 +6202,22 @@ function AssaultDoctrine:considerAbort(context)
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
     elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
         retreatAssessment = retreatAssessment + 0.5
     end
 
@@ -5990,7 +6260,6 @@ function AssaultDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -6030,7 +6299,6 @@ function AssaultDoctrine:engagePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -6096,19 +6364,20 @@ function AssaultDoctrine:defendPhase(context)
     }
 end
 
+-- Abort's one real shot to act(): the trigger that got us here (considerAbort
+-- tripping in Advance or Engage) deliberately only transitioned phase without
+-- setting orderAction, so this handler - not the trigger - is what actually
+-- retreats and declares the order aborted. Only after this runs does the
+-- order become finished and GroupCommander:decide() hand off to
+-- DefensiveDoctrine for continued self-preservation (see its comment).
 function AssaultDoctrine:abortPhase(context)
-    -- Move away from threats toward safety
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    -- Use directly observed threats if available (more stable)
     local retreatDest = nil
-
     if threat.center then
         local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
         retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    else
-        self:changePhase("Hold")
     end
 
     return {
@@ -6193,6 +6462,12 @@ function AsOrderedDoctrine:considerEngage(context)
         engageAssessment = 0.0
     end
 
+    -- health/fuel: a battered or nearly-dry group shouldn't pick a fight
+    -- even against a favorable threat
+    if ForceStatusAnalyzer.isHealthLow(status.healthRatio) or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        engageAssessment = 0.0
+    end
+
     return engageAssessment
 end
 
@@ -6220,6 +6495,22 @@ function AsOrderedDoctrine:considerAbort(context)
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
     elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
         retreatAssessment = retreatAssessment + 0.5
     end
 
@@ -6256,7 +6547,6 @@ function AsOrderedDoctrine:advancePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
-            orderAction = "abort",
         }
     end
 
@@ -6352,19 +6642,21 @@ function AsOrderedDoctrine:defendPhase(context)
     }
 end
 
+-- Abort's one real shot to act(): the triggers that got us here
+-- (considerAbort tripping in Advance or Engage) deliberately only
+-- transitioned phase without setting orderAction, so this handler - not the
+-- trigger - is what actually retreats and declares the order aborted. Only
+-- after this runs does the order become finished and GroupCommander:decide()
+-- hand off to DefensiveDoctrine for continued self-preservation (see its
+-- comment).
 function AsOrderedDoctrine:abortPhase(context)
-    -- Move away from threats toward safety
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    -- Use directly observed threats if available (more stable)
     local retreatDest = nil
-
     if threat.center then
         local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
         retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    else
-        self:changePhase("Hold")
     end
 
     return {
@@ -6404,12 +6696,21 @@ local EngagementAnalyzer = {}
 -- ("can hit *something* out here"), not a per-tier breakdown - a mixed
 -- target composition may only be reachable at this range for one of its
 -- tiers, not all of them.
-local function reachAgainst(profile, targetComposition)
+--
+-- currentDistance, when known, excludes a tier whose winning weapon can't
+-- actually engage at that distance right now - not just beyond its max
+-- range, but also inside its minRange dead zone (e.g. indirect fire against
+-- something that's already closed the distance - see GroupProfile.minRange).
+-- Without it, this stays a pure capability question ("can hit *something*
+-- out here, in principle"), same as before minRange existed.
+local function reachAgainst(profile, targetComposition, currentDistance)
     local best = 0
     for _, tier in ipairs(capabilityTiers) do
         if (targetComposition[tier] or 0) > 0 then
             local tierRange = profile.range[tier] or 0
-            if tierRange > best then
+            local tierMinRange = (profile.minRange and profile.minRange[tier]) or 0
+            local inDeadZone = currentDistance ~= nil and currentDistance < tierMinRange
+            if tierRange > best and not inDeadZone then
                 best = tierRange
             end
         end
@@ -6453,9 +6754,16 @@ end
 --                       (closing further than that doesn't help us hit back;
 --                       being outranged is what should drive retreat/abort
 --                       pressure via advantageRatio, not positioning)
-function EngagementAnalyzer.assessRange(ownProfile, threatProfile)
-    local ourReach   = reachAgainst(ownProfile, threatProfile.composition)
-    local theirReach = reachAgainst(threatProfile, ownProfile.composition)
+--
+-- currentDistance (optional): the actual distance between the two forces
+-- right now, if known - passed through to reachAgainst so a side's own
+-- minRange dead zone can zero out its reach once something has closed
+-- inside it, on both sides at once (e.g. artillery loses ourReach against a
+-- target that's closed inside its minRange, the same way it would lose
+-- theirReach against us for the same reason).
+function EngagementAnalyzer.assessRange(ownProfile, threatProfile, currentDistance)
+    local ourReach   = reachAgainst(ownProfile, threatProfile.composition, currentDistance)
+    local theirReach = reachAgainst(threatProfile, ownProfile.composition, currentDistance)
 
     local standoffDistance = theirReach
     if theirReach > ourReach then
@@ -6556,6 +6864,22 @@ function DefensiveDoctrine:considerRetreat(context)
         retreatAssessment = retreatAssessment + 0.5
     end
 
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
     -- attrition rate
     local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
     retreatAssessment = retreatAssessment + attritionRate
@@ -6617,6 +6941,12 @@ function DefensiveDoctrine:considerAdvance(context)
         advanceAssessment = 0.0
     end
 
+    -- health/fuel: a battered or nearly-dry group shouldn't advance toward
+    -- a fight even under otherwise-favorable conditions
+    if ForceStatusAnalyzer.isHealthLow(status.healthRatio) or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        advanceAssessment = 0.0
+    end
+
     return advanceAssessment
 end
 
@@ -6624,6 +6954,15 @@ function DefensiveDoctrine:positionPhase(context)
     local alr = context.orderAlr or context.ownAlr
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
+
+    -- Lazy-initialized here too (considerRetreat/considerAdvance below do
+    -- the same thing, but too late to help this line - a fresh instance
+    -- with no order has neither orderPosition nor basePosition yet, and
+    -- distanceToDestination reading nil crashes the comparison below it).
+    if not self.basePosition then
+        self.basePosition = ownPosition
+    end
+
     local distanceToDestination = SpatialAgent.distance2D(ownPosition, context.orderPosition or self.basePosition)
 
     local holdThreshold = alrThreshold[alr].hold
