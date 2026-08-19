@@ -480,6 +480,16 @@ function GroupCommander:assessThreats()
     -- Combine own force with ally intel for favorability calculation
     local combinedForce = self.ownForceStrength
     if self.allyIntel and self.allyIntel.unitCount and self.allyIntel.unitCount > 0 then
+        -- minRange belongs to whichever side's weapon just won that tier's
+        -- range below (not independently maxed/minned) - same pairing
+        -- GroupProfiler keeps within a single force's own profile.
+        local function pairedMinRange(tier)
+            if self.ownForceStrength.range[tier] >= self.allyIntel.range[tier] then
+                return self.ownForceStrength.minRange[tier]
+            end
+            return self.allyIntel.minRange[tier]
+        end
+
         combinedForce = {
             unitCount = self.ownForceStrength.unitCount + self.allyIntel.unitCount,
             offensiveCapability = {
@@ -505,11 +515,24 @@ function GroupCommander:assessThreats()
                 heavy     = math.max(self.ownForceStrength.range.heavy,     self.allyIntel.range.heavy),
                 air       = math.max(self.ownForceStrength.range.air,       self.allyIntel.range.air),
             },
+            minRange = {
+                unarmored = pairedMinRange("unarmored"),
+                light     = pairedMinRange("light"),
+                medium    = pairedMinRange("medium"),
+                heavy     = pairedMinRange("heavy"),
+                air       = pairedMinRange("air"),
+            },
         }
     end
 
+    -- How far apart we and the threat actually are right now - lets
+    -- assessRange treat a weapon as unable to engage while we're inside its
+    -- own dead zone (see GroupProfile.minRange), rather than always judging
+    -- reach by nominal max range alone.
+    local currentDistance = threatCenter and SpatialAgent.distance2D(self:getOwnPosition(), threatCenter)
+
     local favorability = GroupProfiler.calculateFavorability(combinedForce, threatAnalysis)
-    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis)
+    local range = EngagementAnalyzer.assessRange(combinedForce, threatAnalysis, currentDistance)
 
     return {
         count        = threatAnalysis.unitCount,

@@ -14,8 +14,8 @@ KPVT_14_5_T,14.5mm AP (KPVT),mg,1600,0,9,8,6,3,5,weapons.shells.KPVT_14_5_T
 KPVT_14_5,14.5mm (KPVT),mg,1600,0,9,8,6,3,5,weapons.shells.KPVT_14_5
 7_62x54,7.62mm (PKT),mg,1600,0,7,6,4,0,1,weapons.shells.7_62x54
 7_62x54_NOTRACER,7.62mm no-tracer (PKT),mg,1600,0,7,6,4,0,1,weapons.shells.7_62x54_NOTRACER
-M185_155,M795 155mm HE,indirect,22000,200,8,8,5,2,0,weapons.shells.M185_155
-2A60_120,3OF49 120mm HE,indirect,7000,0,8,7,4,2,0,weapons.shells.2A60_120
+M185_155,M795 155mm HE,indirect,22000,5000,8,8,5,2,0,weapons.shells.M185_155
+2A60_120,3OF49 120mm HE,indirect,7000,5000,8,7,4,2,0,weapons.shells.2A60_120
 2A28_73,PG-15 73mm HEAT,cannon,3000,400,6,8,8,6,2,weapons.shells.2A28_73
 MALUTKA,AT-3 Sagger,atgm,4000,0,5,7,8,9,0,weapons.missiles.MALUTKA
 M242_25_HE_M792,M792 25mm HEI-T,autocannon,2500,500,5,8,7,6,4,weapons.shells.M242_25_HE_M792
@@ -38,4 +38,4 @@ Utes_12_7x108_T,12.7mm tracer (NSVT),mg,1600,0,8,10,6,3,5,weapons.shells.Utes_12
 Utes_12_7x108,12.7mm (NSVT),mg,1600,0,8,10,6,3,5,weapons.shells.Utes_12_7x108
 SVIR,9M119 Svir (AT-11 Sniper),atgm,4000,100,5,7,8,9,1,weapons.missiles.SVIR
 REFLEX,9M119 Reflex (AT-11 Sniper),atgm,4000,100,5,7,8,9,1,weapons.missiles.REFLEX
-2A64_152,3OF45 152mm HE,indirect,23000,200,9,8,5,2,0,weapons.shells.2A64_152
+2A64_152,3OF45 152mm HE,indirect,23000,5000,9,8,5,2,0,weapons.shells.2A64_152

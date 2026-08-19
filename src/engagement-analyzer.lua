@@ -24,12 +24,21 @@ local EngagementAnalyzer = {}
 -- ("can hit *something* out here"), not a per-tier breakdown - a mixed
 -- target composition may only be reachable at this range for one of its
 -- tiers, not all of them.
-local function reachAgainst(profile, targetComposition)
+--
+-- currentDistance, when known, excludes a tier whose winning weapon can't
+-- actually engage at that distance right now - not just beyond its max
+-- range, but also inside its minRange dead zone (e.g. indirect fire against
+-- something that's already closed the distance - see GroupProfile.minRange).
+-- Without it, this stays a pure capability question ("can hit *something*
+-- out here, in principle"), same as before minRange existed.
+local function reachAgainst(profile, targetComposition, currentDistance)
     local best = 0
     for _, tier in ipairs(capabilityTiers) do
         if (targetComposition[tier] or 0) > 0 then
             local tierRange = profile.range[tier] or 0
-            if tierRange > best then
+            local tierMinRange = (profile.minRange and profile.minRange[tier]) or 0
+            local inDeadZone = currentDistance ~= nil and currentDistance < tierMinRange
+            if tierRange > best and not inDeadZone then
                 best = tierRange
             end
         end
@@ -73,9 +82,16 @@ end
 --                       (closing further than that doesn't help us hit back;
 --                       being outranged is what should drive retreat/abort
 --                       pressure via advantageRatio, not positioning)
-function EngagementAnalyzer.assessRange(ownProfile, threatProfile)
-    local ourReach   = reachAgainst(ownProfile, threatProfile.composition)
-    local theirReach = reachAgainst(threatProfile, ownProfile.composition)
+--
+-- currentDistance (optional): the actual distance between the two forces
+-- right now, if known - passed through to reachAgainst so a side's own
+-- minRange dead zone can zero out its reach once something has closed
+-- inside it, on both sides at once (e.g. artillery loses ourReach against a
+-- target that's closed inside its minRange, the same way it would lose
+-- theirReach against us for the same reason).
+function EngagementAnalyzer.assessRange(ownProfile, threatProfile, currentDistance)
+    local ourReach   = reachAgainst(ownProfile, threatProfile.composition, currentDistance)
+    local theirReach = reachAgainst(threatProfile, ownProfile.composition, currentDistance)
 
     local standoffDistance = theirReach
     if theirReach > ourReach then
