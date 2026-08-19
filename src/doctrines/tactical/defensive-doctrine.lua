@@ -147,6 +147,15 @@ function DefensiveDoctrine:positionPhase(context)
     local alr = context.orderAlr or context.ownAlr
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
+
+    -- Lazy-initialized here too (considerRetreat/considerAdvance below do
+    -- the same thing, but too late to help this line - a fresh instance
+    -- with no order has neither orderPosition nor basePosition yet, and
+    -- distanceToDestination reading nil crashes the comparison below it).
+    if not self.basePosition then
+        self.basePosition = ownPosition
+    end
+
     local distanceToDestination = SpatialAgent.distance2D(ownPosition, context.orderPosition or self.basePosition)
 
     local holdThreshold = alrThreshold[alr].hold

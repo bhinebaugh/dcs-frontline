@@ -273,25 +273,20 @@ function AssaultDoctrine:defendPhase(context)
     }
 end
 
+-- Never actually invoked: the OODA cadence means orderAction="abort" (set
+-- above, in whichever phase's considerAbort check tripped) is always
+-- processed by act() before this doctrine's plan() would run again, so
+-- GroupCommander:decide() hands off to DefensiveDoctrine's own retreat
+-- handling before Abort's own phase handler ever gets a turn (see
+-- GroupCommander:decide). Kept registered as a safe fallback rather than
+-- removed outright, in case that assumption ever stops holding - this used
+-- to call self:changePhase("Hold") in one branch, which crashed since
+-- AssaultDoctrine has never registered a "Hold" phase; unreachable in
+-- practice, but worth not leaving as a landmine.
 function AssaultDoctrine:abortPhase(context)
-    -- Move away from threats toward safety
-    local threat = context.threatAssessment
-    local ownPosition = context.ownPosition
-
-    -- Use directly observed threats if available (more stable)
-    local retreatDest = nil
-
-    if threat.center then
-        local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    else
-        self:changePhase("Hold")
-    end
-
     return {
-        disposition = dispositionTypes.RETREAT,
-        destination = retreatDest,
-        orderAction = "abort",
+        disposition = dispositionTypes.HOLD,
+        destination = nil,
     }
 end
 

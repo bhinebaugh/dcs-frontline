@@ -151,20 +151,17 @@ function RallyDoctrine:holdPhase(context)
     }
 end
 
+-- Never actually invoked: the OODA cadence means orderAction="abort" (set
+-- by whichever phase's considerAbort check tripped, above) is always
+-- processed by act() before this doctrine's plan() would run again, so
+-- GroupCommander:decide() hands off to DefensiveDoctrine's own retreat
+-- handling before Abort's own phase handler ever gets a turn (see
+-- GroupCommander:decide). Kept registered as a safe fallback rather than
+-- removed outright, in case that assumption ever stops holding.
 function RallyDoctrine:abortPhase(context)
-    local threat = context.threatAssessment
-    local ownPosition = context.ownPosition
-
-    local retreatDest = nil
-    if threat.center then
-        local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    end
-
     return {
-        disposition = dispositionTypes.RETREAT,
-        destination = retreatDest,
-        orderAction = "abort",
+        disposition = dispositionTypes.HOLD,
+        destination = nil,
     }
 end
 

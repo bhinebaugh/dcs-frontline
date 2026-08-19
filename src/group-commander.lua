@@ -294,15 +294,20 @@ function GroupCommander:buildDecisionContext()
 end
 
 function GroupCommander:decide()
-    -- If an order resolved (completed/aborted) last tick via act(),
-    -- doctrine instance may still be awaiting reassignment by the operational layer.
-    -- In this case hold in place rather than planning against a finished order's stale context
-    -- (e.g. orderPosition is no longer populated).
+    -- An order that resolved (completed/aborted) via act() last tick is
+    -- done with this doctrine instance, which may sit awaiting reassignment
+    -- by the operational layer for a while yet. Rather than freezing in
+    -- place until that happens, hand off to DefensiveDoctrine - the same
+    -- autonomous "no active order" behavior any reserve already runs,
+    -- including its own retreat-to-safety handling - via clearOrders(),
+    -- the same reset used elsewhere (opscom disband, reassignment). This is
+    -- GroupCommander's call to make, not the finishing doctrine's: no
+    -- doctrine ever references another, only this orchestration layer
+    -- switches between them. Falls through into normal doctrine-driven
+    -- decision-making below so Defensive actually runs this same tick
+    -- instead of losing a cycle sitting idle.
     if self.orders and self.orders:isFinished() then
-        self:setDisposition(dispositionTypes.HOLD)
-        self.destination = self:getOwnPosition()
-        self.pendingOrderAction = nil
-        return
+        self:clearOrders()
     end
 
     -- Build a fresh doctrine only when a genuinely new order has been assigned
@@ -327,17 +332,6 @@ function GroupCommander:decide()
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
     end
-
-    -- TODO decide if it makes sense to reenable this compared to first block above
-    -- // it would be one way of tying up residual orders after opscom disbands
-    -- if self.orders and self.orders:isFinished() then
-    --     self.orders = nil
-    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
-    -- end
-
-    -- if not self.doctrine then
-    --     self.doctrine = DefensiveDoctrine.new(self.groupName)
-    -- end
 
     -- Check if we have valid assessment data
     if not self.ownForceStrength or not self.threatAssessment then
