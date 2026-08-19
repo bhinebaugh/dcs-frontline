@@ -48,25 +48,34 @@ end
 
 function AssaultDoctrine:considerEngage(context)
     local threat = context.threatAssessment
-    local status = context.statusReport
-    local totalUnits = context.totalUnits
+
+    if threat.count == 0 or not threat.center then
+        return 0.0
+    end
+
+    -- Only engage a threat actually standing between us and the objective -
+    -- something nearby but off to the side isn't worth diverting an assault
+    -- for; capturing the zone is the job, not clearing everything within
+    -- detection range on the way. corridorWidth uses the threat's own reach
+    -- (theirReach) rather than a fixed width, since a threat close enough to
+    -- hit us in passing is "in the way" even when not directly on the line.
     local ownPosition = context.ownPosition
     local objectivePosition = context.orderPosition
+    local corridorWidth = (threat.range and threat.range.theirReach) or 1000
+    if not SpatialAgent.isBetween(threat.center, ownPosition, objectivePosition, corridorWidth) then
+        return 0.0
+    end
+
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
 
     local engageAssessment = 0.0
 
     -- threat favorability
-    if threat.count > 0 and threat.favorability < 1.0 then
+    if threat.favorability < 1.0 then
         engageAssessment = engageAssessment + threat.favorability
     else
         engageAssessment = engageAssessment + threat.favorability / 2
-    end
-
-    -- distance: prioritize a threat sitting between us and the objective
-    local distanceToThreat = SpatialAgent.distance2D(ownPosition, threat.center)
-    local distanceToObjective = SpatialAgent.distance2D(ownPosition, objectivePosition)
-    if distanceToObjective and distanceToThreat and distanceToObjective > 0 and distanceToThreat < distanceToObjective then
-        engageAssessment = engageAssessment + distanceToThreat / distanceToObjective
     end
 
     -- attrition rate

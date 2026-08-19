@@ -67,7 +67,7 @@ cz:assignCompassMaxima()
 -- original CoalitionCommander, so the two can be compared side by side in
 -- the same mission. Swap either side's class to compare a different pairing.
 ccBlue = StrategicCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
-ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
+ccRed = StrategicCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
 cz:addCommander("blue", ccBlue)
 cz:addCommander("red", ccRed)
 cz:kickoff()
@@ -809,6 +809,52 @@ function SpatialAgent.fallbackDestination(ownPosition, center, safeDistance, tol
         return nil
     end
     return SpatialAgent.pointAtDistance(ownPosition, center, safeDistance, tolerance)
+end
+
+--- Check whether `point` sits within `corridorWidth` of the straight line
+-- from `from` to `to`, AND projects within that segment's own extent (not
+-- behind `from` or beyond `to`) - i.e. genuinely "in the way" between two
+-- positions, not merely nearer than the destination happens to be. Used to
+-- tell a threat actually blocking a route from one that's simply nearby.
+-- @param point Position to test (e.g. a threat's center)
+-- @param from Start of the segment (e.g. own position)
+-- @param to End of the segment (e.g. destination)
+-- @param corridorWidth Maximum lateral distance from the line, in meters
+-- @return boolean True if point is within the corridor and between from/to
+function SpatialAgent.isBetween(point, from, to, corridorWidth)
+    if not point or not from or not to then
+        return false
+    end
+
+    local p1 = from.p or from
+    local p2 = to.p or to
+    local p  = point.p or point
+
+    local segDx = p2.x - p1.x
+    local segDz = p2.z - p1.z
+    local segLengthSq = segDx * segDx + segDz * segDz
+
+    -- Degenerate segment (from == to): just a proximity check.
+    if segLengthSq < 0.001 then
+        local dist = SpatialAgent.distance2D(point, from)
+        return dist ~= nil and dist <= corridorWidth
+    end
+
+    local dx = p.x - p1.x
+    local dz = p.z - p1.z
+    local t = (dx * segDx + dz * segDz) / segLengthSq
+
+    if t < 0 or t > 1 then
+        return false
+    end
+
+    local closestX = p1.x + t * segDx
+    local closestZ = p1.z + t * segDz
+    local lateralDx = p.x - closestX
+    local lateralDz = p.z - closestZ
+    local lateralDist = math.sqrt(lateralDx * lateralDx + lateralDz * lateralDz)
+
+    return lateralDist <= corridorWidth
 end
 
 --- Calculate multiple staging positions around a center point
@@ -5825,25 +5871,34 @@ end
 
 function AssaultDoctrine:considerEngage(context)
     local threat = context.threatAssessment
-    local status = context.statusReport
-    local totalUnits = context.totalUnits
+
+    if threat.count == 0 or not threat.center then
+        return 0.0
+    end
+
+    -- Only engage a threat actually standing between us and the objective -
+    -- something nearby but off to the side isn't worth diverting an assault
+    -- for; capturing the zone is the job, not clearing everything within
+    -- detection range on the way. corridorWidth uses the threat's own reach
+    -- (theirReach) rather than a fixed width, since a threat close enough to
+    -- hit us in passing is "in the way" even when not directly on the line.
     local ownPosition = context.ownPosition
     local objectivePosition = context.orderPosition
+    local corridorWidth = (threat.range and threat.range.theirReach) or 1000
+    if not SpatialAgent.isBetween(threat.center, ownPosition, objectivePosition, corridorWidth) then
+        return 0.0
+    end
+
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
 
     local engageAssessment = 0.0
 
     -- threat favorability
-    if threat.count > 0 and threat.favorability < 1.0 then
+    if threat.favorability < 1.0 then
         engageAssessment = engageAssessment + threat.favorability
     else
         engageAssessment = engageAssessment + threat.favorability / 2
-    end
-
-    -- distance: prioritize a threat sitting between us and the objective
-    local distanceToThreat = SpatialAgent.distance2D(ownPosition, threat.center)
-    local distanceToObjective = SpatialAgent.distance2D(ownPosition, objectivePosition)
-    if distanceToObjective and distanceToThreat and distanceToObjective > 0 and distanceToThreat < distanceToObjective then
-        engageAssessment = engageAssessment + distanceToThreat / distanceToObjective
     end
 
     -- attrition rate

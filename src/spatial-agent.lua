@@ -251,6 +251,52 @@ function SpatialAgent.fallbackDestination(ownPosition, center, safeDistance, tol
     return SpatialAgent.pointAtDistance(ownPosition, center, safeDistance, tolerance)
 end
 
+--- Check whether `point` sits within `corridorWidth` of the straight line
+-- from `from` to `to`, AND projects within that segment's own extent (not
+-- behind `from` or beyond `to`) - i.e. genuinely "in the way" between two
+-- positions, not merely nearer than the destination happens to be. Used to
+-- tell a threat actually blocking a route from one that's simply nearby.
+-- @param point Position to test (e.g. a threat's center)
+-- @param from Start of the segment (e.g. own position)
+-- @param to End of the segment (e.g. destination)
+-- @param corridorWidth Maximum lateral distance from the line, in meters
+-- @return boolean True if point is within the corridor and between from/to
+function SpatialAgent.isBetween(point, from, to, corridorWidth)
+    if not point or not from or not to then
+        return false
+    end
+
+    local p1 = from.p or from
+    local p2 = to.p or to
+    local p  = point.p or point
+
+    local segDx = p2.x - p1.x
+    local segDz = p2.z - p1.z
+    local segLengthSq = segDx * segDx + segDz * segDz
+
+    -- Degenerate segment (from == to): just a proximity check.
+    if segLengthSq < 0.001 then
+        local dist = SpatialAgent.distance2D(point, from)
+        return dist ~= nil and dist <= corridorWidth
+    end
+
+    local dx = p.x - p1.x
+    local dz = p.z - p1.z
+    local t = (dx * segDx + dz * segDz) / segLengthSq
+
+    if t < 0 or t > 1 then
+        return false
+    end
+
+    local closestX = p1.x + t * segDx
+    local closestZ = p1.z + t * segDz
+    local lateralDx = p.x - closestX
+    local lateralDz = p.z - closestZ
+    local lateralDist = math.sqrt(lateralDx * lateralDx + lateralDz * lateralDz)
+
+    return lateralDist <= corridorWidth
+end
+
 --- Calculate multiple staging positions around a center point
 -- Positions are spread in an arc or circle for tactical deployment
 -- @param center Center position {x, y, z}
