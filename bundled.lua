@@ -124,6 +124,20 @@ local groundTemplates = { --frontline, rear, farp
     }
 }
 
+-- Indirect fire support (artillery) templates, spawned one zone back from
+-- the frontline (depth 1, see ControlZones:calculateDepthMap/spawnFireSupportForces)
+-- rather than on the front line itself.
+local fireSupportTemplates = {
+    red = {
+        {"SAU Msta"},
+        {"2S9 Nona", "2S9 Nona"},
+    },
+    blue = {
+        {"M-109"},
+        {"M-109", "M-109"},
+    },
+}
+
 local taskTypes = {
     DEFEND = 1,
     REINFORCE = 2,
@@ -181,6 +195,7 @@ local rulesOfEngagement = {
 return {
     acceptableLevelsOfRisk = acceptableLevelsOfRisk,
     dispositionTypes = dispositionTypes,
+    fireSupportTemplates = fireSupportTemplates,
     formationTypes = formationTypes,
     garrisonTemplates = garrisonTemplates,
     groundTemplates = groundTemplates,
@@ -2514,20 +2529,21 @@ function ThreatTracker.new(observerName)
 end
 
 -- Update threats with newly observed units
--- observedUnits: array of {name, position} for units with LOS
+-- observedUnits: array of {name, position, speed} for units with LOS
 function ThreatTracker:updateThreats(observedUnits)
     local currentTime = timer.getTime()
-    
+
     -- Update or add observed threats
     for _, unitData in ipairs(observedUnits) do
         local threat = self.threats[unitData.name]
-        
+
         if not threat then
             -- New threat
             env.info(self.observerName .. " ThreatTracker: New threat detected - " .. unitData.name .. " (OBSERVED)")
             self.threats[unitData.name] = {
                 name = unitData.name,
                 position = unitData.position,
+                speed = unitData.speed,
                 status = threatStatus.OBSERVED,
                 sightings = {
                     {
@@ -2542,9 +2558,10 @@ function ThreatTracker:updateThreats(observedUnits)
             -- Update existing threat
             local oldStatus = threat.status
             threat.position = unitData.position
+            threat.speed = unitData.speed
             threat.status = threatStatus.OBSERVED  -- Reset to observed if we see it again
             threat.lastSighting = currentTime
-            
+
             -- Add new sighting
             table.insert(threat.sightings, {
                 observedBy = self.observerName,
@@ -2602,9 +2619,10 @@ function ThreatTracker:mergeThreatIntel(threatIntel)
             self.threats[unitName] = incomingThreat
         else
             -- Merge with existing threat
-            -- Update position if incoming is more recent
+            -- Update position/speed if incoming is more recent
             if incomingThreat.lastSighting > existingThreat.lastSighting then
                 existingThreat.position = incomingThreat.position
+                existingThreat.speed = incomingThreat.speed
                 existingThreat.lastSighting = incomingThreat.lastSighting
             end
             
@@ -3324,6 +3342,7 @@ local OODACommander = require("ooda-commander")
 local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
 local AssaultDoctrine = require("doctrines.tactical.assault-doctrine")
 local CommanderVisualizer = require("commander-visualizer")
+local IndirectDoctrine = require("doctrines.tactical.indirect-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
@@ -3367,7 +3386,9 @@ function GroupCommander.new(groupName, config)
     
     self.orders = nil
     self.lastMoveOrder = nil
+    self.lastFireOrder = nil
     self.pendingOrderAction = nil
+    self.pendingFireAtPoint = nil
     self.groupProfile = nil
     self.suitability = nil
     self.ownForceStrength = nil
@@ -3419,8 +3440,21 @@ function GroupCommander.getInstances(coalition)
     return filtered
 end
 
+-- Returns a group to a clean slate before it's handed to a new opscom.
+-- Must reset doctrine (not just orders) - a group returning from an
+-- in-progress order still has its old doctrine instance (e.g. IndirectDoctrine
+-- mid-Hold-phase) referencing an order that's about to vanish. Leaving that
+-- stale would crash on the next tick: the doctrine reads context.orderPosition
+-- expecting an active order, but with self.orders nil buildDecisionContext
+-- never populates it. Resetting to DefensiveDoctrine mirrors what a brand
+-- new GroupCommander already starts with.
 function GroupCommander:clearOrders()
+    if self.orders and self.orders:isActive() then
+        self.orders:abort("reassigned")
+    end
     self.orders = nil
+    self.doctrine = DefensiveDoctrine.new(self.groupName)
+    self.doctrineOrder = nil
 end
 
 function GroupCommander:observe()
@@ -3464,9 +3498,18 @@ function GroupCommander:observe()
         local unit = Unit.getByName(unitName)
         -- Only add if unit exists (error guard, not intel cheat)
         if unit and unit:isExist() then
+            -- Speed captured now, at observation time, same as position -
+            -- it's time-sensitive intel (how fast was it moving when last
+            -- seen), not something a consumer should query live later (see
+            -- FireSupportPlan, which uses this to avoid wasting a fire
+            -- mission on a target that's likely relocated by the time
+            -- rounds land).
+            local velocity = unit:getVelocity()
+            local speed = math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
             table.insert(observedThreats, {
                 name = unitName,
-                position = unit:getPosition().p
+                position = unit:getPosition().p,
+                speed = speed,
             })
         end
     end
@@ -3514,6 +3557,7 @@ end
 --- @field threatAssessment table
 --- @field statusReport table
 --- @field suitability number|nil
+--- @field ownRange table|nil
 --- @field hasActiveOrders boolean
 --- @field orderType string|nil
 --- @field orderPosition table|nil
@@ -3564,6 +3608,13 @@ function GroupCommander:buildDecisionContext()
         threatAssessment = self.threatAssessment,
         statusReport     = self:getStatusReport(),
         suitability      = self.suitability,
+        -- The group's own reach, independent of any currently-detected
+        -- threat (threatAssessment.range is two-sided and needs a known
+        -- target composition) - lets a doctrine position itself relative to
+        -- the order position alone, e.g. IndirectDoctrine standing off at
+        -- its own max weapon range regardless of whether a threat has been
+        -- spotted there yet.
+        ownRange         = self.groupProfile and self.groupProfile.range,
         hasActiveOrders  = hasActiveOrders or false,
         orderType        = orderType,
         orderPosition    = orderPosition,
@@ -3605,6 +3656,8 @@ function GroupCommander:decide()
             self.doctrine = AssaultDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.DEFEND then
             self.doctrine = DefensiveDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.INDIRECT then
+            self.doctrine = IndirectDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
@@ -3644,8 +3697,10 @@ function GroupCommander:decide()
         self:setDisposition(decision.disposition)
         self.destination = decision.destination
         self.pendingOrderAction = decision.orderAction
+        self.pendingFireAtPoint = decision.fireAtPoint
     else
         env.info("ERROR: Doctrine returned nil decision for " .. self.groupName)
+        self.pendingFireAtPoint = nil
         self:setDisposition(dispositionTypes.HOLD)
         self.destination = self:getOwnPosition()
         self.pendingOrderAction = nil
@@ -3678,13 +3733,30 @@ function GroupCommander:act()
         self.pendingOrderAction = nil
     end
 
+    -- A pending fire-at-point task (IndirectDoctrine's Hold phase) takes
+    -- over movement dispatch entirely rather than running alongside it -
+    -- stopMovement()'s {id='Hold'} task would otherwise replace/cancel the
+    -- fire mission every single cycle, since DCS's setTask always replaces
+    -- whatever task is currently active.
+    if self.pendingFireAtPoint then
+        local point = self.pendingFireAtPoint.position
+        -- Only reissue if the target has moved (more than 100m tolerance) -
+        -- FireAtPoint is meant to be a standing task the AI keeps executing
+        -- on its own, so reissuing it every cycle risks restarting the fire
+        -- mission instead of letting it run continuously.
+        if not self.lastFireOrder or
+        math.abs(self.lastFireOrder.x - point.x) > 100 or
+        math.abs(self.lastFireOrder.z - point.z) > 100 then
+            self:issueFireAtPoint(point, self.pendingFireAtPoint.radius)
+            self.lastFireOrder = {x = point.x, z = point.z}
+        end
     -- Only issue move orders for ADVANCE and RETREAT (not HOLD or DEFEND)
     -- If destination has been set to nil, stop the group where they are
-    if self.destination then
+    elseif self.destination then
         if (self.disposition == dispositionTypes.ADVANCE or self.disposition == dispositionTypes.RETREAT) then
             -- Only issue if destination has changed (more than 100m tolerance)
-            if not self.lastMoveOrder or 
-            math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or 
+            if not self.lastMoveOrder or
+            math.abs(self.lastMoveOrder.x - self.destination.x) > 100 or
             math.abs(self.lastMoveOrder.z - self.destination.z) > 100 then
                 self:issueMoveOrder(self.destination)
                 self.lastMoveOrder = {x = self.destination.x, z = self.destination.z}
@@ -3794,6 +3866,17 @@ function GroupCommander:getSuitability(missionProfile)
         for _, field in ipairs({"vsUnarmored", "vsLight", "vsMedium", "vsHeavy", "vsAir"}) do
             if idealCap[field] ~= nil then
                 score = score + proximity(ownCap[field], idealCap[field])
+                count = count + 1
+            end
+        end
+    end
+
+    if missionProfile.range then
+        local idealRange = missionProfile.range
+        local ownRange   = profile.range
+        for _, field in ipairs({"unarmored", "light", "medium", "heavy", "air"}) do
+            if idealRange[field] ~= nil then
+                score = score + proximity(ownRange[field], idealRange[field])
                 count = count + 1
             end
         end
@@ -3997,6 +4080,36 @@ function GroupCommander:issueMoveOrder(point)
         speed,
         true
     )
+end
+
+-- Issues DCS's FireAtPoint task, the actual mechanism for indirect/area
+-- fire - ROE alone only governs whether AI auto-engages targets it directly
+-- perceives, it doesn't make artillery shell a map point. radius is the
+-- task's dispersion radius (how tightly rounds land around the point), not
+-- an engagement/detection range.
+function GroupCommander:issueFireAtPoint(point, radius)
+    if not point or not point.x or not point.z then
+        env.info("ERROR: " .. self.groupName .. " received invalid fire-at-point order (nil or invalid point)")
+        return
+    end
+
+    local group = Group.getByName(self.groupName)
+    if not group or not group:isExist() then
+        env.info("ERROR: Cannot issue fire-at-point, group " .. self.groupName .. " does not exist")
+        return
+    end
+
+    local lat, lon = coord.LOtoLL({x = point.x, y = 0, z = point.z})
+    env.info("* " .. self.groupName .. " ACT: Fire at point " .. string.format("%.5f", lat or 0) .. "," .. string.format("%.5f", lon or 0))
+
+    local controller = group:getController()
+    controller:setTask({
+        id = 'FireAtPoint',
+        params = {
+            point  = {x = point.x, y = point.z}, -- DCS Vec2: y is the world's z axis
+            radius = radius or 100,
+        },
+    })
 end
 
 function GroupCommander:issueOrder(order)
@@ -5291,6 +5404,179 @@ end
 return PatrolDoctrine
 
 end)
+__bundle_register("doctrines.tactical.indirect-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- IndirectDoctrine: fire-support behavior for INDIRECT orders
+--
+-- Get within the group's own max weapon range of the order position, hold
+-- there while DCS's AI/ROE handles the actual firing, and retreat if
+-- directly threatened, low on ammo, or taking losses.
+--
+-- Deliberately doesn't lean on calculateFavorability for retreat pressure
+-- the way the other tactical doctrines do: an artillery group's raw
+-- offensiveCapability makes it look "favorable" against armor it has no way
+-- to survive once the range gap closes, so considerAbort weights the range
+-- advantage (is the threat closing the distance on us) instead.
+
+local constants = require("constants")
+local ForceStatusAnalyzer = require("force-status-analyzer")
+local Doctrine = require("doctrine")
+local SpatialAgent = require("spatial-agent")
+
+local dispositionTypes = constants.dispositionTypes
+local rangeTiers = {"unarmored", "light", "medium", "heavy", "air"}
+
+local IndirectDoctrine = {}
+setmetatable(IndirectDoctrine, {__index = Doctrine})
+IndirectDoctrine.__index = IndirectDoctrine
+
+function IndirectDoctrine.new(commanderName)
+    local self = Doctrine.new("Indirect", commanderName)
+    setmetatable(self, IndirectDoctrine)
+
+    self:registerPhase("Advance", IndirectDoctrine.advancePhase)
+    self:registerPhase("Hold", IndirectDoctrine.holdPhase)
+    self:registerPhase("Abort", IndirectDoctrine.abortPhase)
+
+    return self
+end
+
+local function maxOwnRange(ownRange)
+    local best = 0
+    for _, tier in ipairs(rangeTiers) do
+        local value = (ownRange and ownRange[tier]) or 0
+        if value > best then best = value end
+    end
+    return best
+end
+
+function IndirectDoctrine:considerAbort(context)
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
+
+    local retreatAssessment = 0.0
+
+    -- ammunition
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- attrition rate
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    retreatAssessment = retreatAssessment + attritionRate
+
+    -- range advantage: a negative advantageRatio means the threat outreaches
+    -- (or is closing the distance on) us, which matters far more here than
+    -- raw favorability
+    if threat.count > 0 and threat.range then
+        retreatAssessment = retreatAssessment - threat.range.advantageRatio
+    end
+
+    return retreatAssessment
+end
+
+function IndirectDoctrine:advancePhase(context)
+    local abortThreshold = context.retreatThreshold or 0.8
+
+    if self:considerAbort(context) >= abortThreshold then
+        self:changePhase("Abort")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil,
+            orderAction = "abort",
+        }
+    end
+
+    local destination = context.orderPosition
+    local ownPosition = context.ownPosition
+    local reach = maxOwnRange(context.ownRange)
+    local distanceToTarget = SpatialAgent.distance2D(ownPosition, destination)
+
+    if reach <= 0 or distanceToTarget <= reach then
+        self:changePhase("Hold")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = ownPosition,
+            orderAction = "start",
+        }
+    end
+
+    return {
+        disposition = dispositionTypes.ADVANCE,
+        destination = destination,
+        orderAction = "start",
+    }
+end
+
+function IndirectDoctrine:holdPhase(context)
+    local abortThreshold = context.retreatThreshold or 0.8
+
+    if self:considerAbort(context) >= abortThreshold then
+        self:changePhase("Abort")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil,
+            orderAction = "abort",
+        }
+    end
+
+    local ownPosition = context.ownPosition
+    local destination = context.orderPosition
+    local reach = maxOwnRange(context.ownRange)
+    local distanceToTarget = SpatialAgent.distance2D(ownPosition, destination)
+
+    -- Target moved out of reach (or we drifted) - go back to closing the distance.
+    if reach > 0 and distanceToTarget > reach then
+        self:changePhase("Advance")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil,
+        }
+    end
+
+    -- Unlike AsOrderedDoctrine's defendPhase, a deadline-less order does NOT
+    -- auto-complete on arrival: fire support is meant to keep firing for as
+    -- long as it's needed, not report "arrived" and free itself up the
+    -- moment it gets in range.
+    if context.orderIsExpired then
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = ownPosition,
+            orderAction = "complete",
+        }
+    end
+
+    return {
+        disposition = dispositionTypes.HOLD,
+        destination = ownPosition,
+        fireAtPoint = { position = destination, radius = context.orderProximity },
+    }
+end
+
+function IndirectDoctrine:abortPhase(context)
+    local threat = context.threatAssessment
+    local ownPosition = context.ownPosition
+
+    local retreatDest = nil
+    if threat.center then
+        local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
+        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
+    else
+        self:changePhase("Advance")
+    end
+
+    return {
+        disposition = dispositionTypes.RETREAT,
+        destination = retreatDest,
+        orderAction = "abort",
+    }
+end
+
+return IndirectDoctrine
+
+end)
 __bundle_register("commander-visualizer", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local settings = require("settings")
@@ -6358,6 +6644,7 @@ end)
 __bundle_register("doctrines.strategic.expand-frontier-plan", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local Doctrine = require("doctrine")
+local FireSupportPlan = require("doctrines.operational.fire-support-plan")
 
 local taskTypes = constants.taskTypes
 
@@ -6405,7 +6692,52 @@ function ExpandFrontierPlan:plan(context)
         operations = {
             {
                 target = target,
+                -- fireSupport listed first so it gets first pick of reserves
+                -- by suitability (see StrategicCommander:createOperation) -
+                -- long-range/light-armor groups get skimmed off for it
+                -- before assault's proximity-only pick sees the remainder.
                 objectiveTemplates = {
+                    {
+                        role       = "fireSupport",
+                        type       = taskTypes.INDIRECT,
+                        position   = target.position,
+                        radius     = 500,
+                        groupCount = 1,
+                        -- Range, not offensiveCapability, is what actually
+                        -- distinguishes artillery from a rifle squad or IFV
+                        -- here (see GroupProfiler.calculateFavorability's
+                        -- header) - an ideal well beyond any direct-fire
+                        -- unit's reach is enough to make suitability favor
+                        -- whichever reserves actually have the range for it.
+                        missionProfile = {
+                            range = { unarmored = 20000, light = 20000, medium = 20000, heavy = 20000, air = 0 },
+                        },
+                        -- Fire support needs its own operational doctrine,
+                        -- not the default ReconRallyAssaultPlan every other
+                        -- opscom gets - it should be issuing INDIRECT
+                        -- orders, not recon/assault ones.
+                        operationalDoctrine       = FireSupportPlan,
+                        operationalDoctrineConfig = { duration = 600 },
+                        -- Matches duration above deliberately: refreshInterval
+                        -- (StrategicCommander:orient/decide's staleByInterval
+                        -- handling) is what keeps this role alive for the
+                        -- life of the operation at all - without it, once
+                        -- FireSupportPlan's own 600s duration elapses and it
+                        -- marks its objective Achieved, decide() stops
+                        -- calling plan() on it entirely (only Active
+                        -- objectives get planned) and the opscom just sits
+                        -- idle for the rest of the operation. Setting it
+                        -- shorter than duration (tried 120s, 300s) cuts
+                        -- missions short before they establish - every
+                        -- refresh pays the same setup latency (opscom/group
+                        -- OODA cadence, travel time to range, DCS's own AI
+                        -- spin-up for FireAtPoint) before firing resumes.
+                        -- Equal to duration: each mission gets its full
+                        -- uninterrupted run, then a new target gets picked
+                        -- and it goes again, repeating for as long as the
+                        -- operation's primary objective stays active.
+                        refreshInterval = 600,
+                    },
                     {
                         role       = "assault",
                         type       = taskTypes.ASSAULT,
@@ -6413,8 +6745,12 @@ function ExpandFrontierPlan:plan(context)
                         radius     = 500,
                         groupCount = 3,
                         -- Primary: the operation is considered done once
-                        -- this resolves (see Operation:getObjectiveStatusCounts
-                        -- and StrategicCommander:orient).
+                        -- this resolves, regardless of fireSupport's own
+                        -- state (see Operation:getObjectiveStatusCounts and
+                        -- StrategicCommander:orient) - achieving it tears
+                        -- down fireSupport alongside it rather than leaving
+                        -- fire support refreshing forever with nothing left
+                        -- to support.
                         primary    = true,
                     },
                 },
@@ -6424,6 +6760,205 @@ function ExpandFrontierPlan:plan(context)
 end
 
 return ExpandFrontierPlan
+
+end)
+__bundle_register("doctrines.operational.fire-support-plan", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local Doctrine = require("doctrine")
+local GroupProfiler = require("group-profiler")
+local SpatialAgent = require("spatial-agent")
+
+local taskTypes = constants.taskTypes
+local alr = constants.acceptableLevelsOfRisk
+
+-- FireSupportPlan: minimal operational doctrine for INDIRECT objectives.
+-- Issues one INDIRECT order at the best available target near the
+-- objective, reissues it if it resolves while the objective is still
+-- needed, and marks the objective complete once its own duration elapses.
+--
+-- Target selection itself only happens at issuance time - once an order is
+-- assigned it keeps aiming at that same point for the rest of its run
+-- rather than continuously re-picking a new "best" target, since doing that
+-- properly would mean letting a doctrine update an in-progress order in
+-- place, which OperationalCommander:assignOrderTemplate doesn't support
+-- today (it only ever considers commanders with no active order) - a
+-- bigger, shared-plumbing change intentionally left for later. It does
+-- still watch the order it already issued: if the specific unit it aimed at
+-- is known to have left that point (targetHasLeft below), it ends the
+-- mission early via objectiveComplete rather than riding out the rest of
+-- `duration` on a stale point - StrategicCommander's refresh handling
+-- treats that exactly like a natural completion and retasks immediately.
+--
+-- There's no coordination with a sibling assault objective under the same
+-- Operation for WHEN to stop (e.g. ceasing fire once friendly ground forces
+-- close on the target) - that needs a StrategicCommander-mediated "danger
+-- close" signal. For now `duration` is what bounds how long fire support
+-- runs - a placeholder for that real signal, not a substitute for it. It
+-- does now get threat visibility from sibling opscoms via
+-- StrategicCommander:shareThreatIntelWithinOperations, which is what makes
+-- target selection below possible in the first place.
+--
+-- Doesn't use Doctrine's phase machinery - there's no real phase
+-- progression here (issue, wait, reissue-or-complete), just a static
+-- currentPhaseName so CommanderVisualizer:syncObjective has something to
+-- display.
+local FireSupportPlan = {}
+setmetatable(FireSupportPlan, {__index = Doctrine})
+FireSupportPlan.__index = FireSupportPlan
+
+-- HE indirect fire is somewhat less reliable against heavier armor (see any
+-- indirect weapon's effectiveness spread in weapons.lua, e.g. 2A64_152's
+-- 9/8/5/2/0), but this is deliberately a shallow curve, not a steep one: a
+-- direct hit is still highly lethal against any target, and even a miss has
+-- real suppression value (buttoned-up crews, degraded sensors, disrupted
+-- movement) - armor should make a target somewhat less preferred, not
+-- effectively excluded. Concretely, a lone rifleman must not outscore a
+-- tank just because the tank is "harder to kill" - the tank is both more
+-- dangerous (much higher threatLevel below, from its gun/ATGM/MGs) and
+-- still very much worth shelling for the chance and the suppression, so
+-- threatLevel should dominate the score, with vulnerability only nudging it.
+local vulnerabilityByArmorClass = {[0] = 1.0, [1] = 0.9, [2] = 0.75, [3] = 0.6}
+
+-- Priority = how dangerous this unit is (summed offensive effectiveness, a
+-- rough stand-in for "how armed is this thing") times how vulnerable it is
+-- to indirect fire, times how likely it is to still be near its
+-- last-reported position by the time a mission actually lands, times how
+-- close it is to the objective itself - a threat right on top of what
+-- we're actually assaulting is more relevant to hit than one merely
+-- somewhere within the wider recon net.
+local function targetPriority(threat, unit, objectivePosition)
+    local classification = GroupProfiler.classifyUnit(unit)
+    local eff = classification.effectiveness
+    local threatLevel = eff.unarmored + eff.light + eff.medium + eff.heavy + eff.air
+    local vulnerability = vulnerabilityByArmorClass[classification.armorClass] or 0.75
+
+    -- Indirect fire is aimed at a last-known point, not a live-tracked one -
+    -- a fast mover is likely to have relocated well outside the impact area
+    -- by the time the mission is actually underway (opscom/group OODA
+    -- cadence, travel-to-range time, DCS's own AI spin-up - see
+    -- ExpandFrontierPlan's refreshInterval comment), so movement is
+    -- penalized rather than assumed away. Halves priority around 5 m/s (a
+    -- jogging pace) and keeps falling off for faster movers; a stationary
+    -- (or unknown/stale, treated as stationary) target is unaffected.
+    local speed = threat.speed or 0
+    local stationaryFactor = 1 / (1 + speed / 5)
+
+    -- Halves priority around 4000m (roughly half the 8000m recon radius
+    -- threats are gathered from - see OperationalCommander.reconRadius) and
+    -- keeps falling off further out, without hard-excluding anything the
+    -- search already found.
+    local distance = SpatialAgent.distance2D(threat.position, objectivePosition)
+    local proximityFactor = 1 / (1 + distance / 4000)
+
+    return threatLevel * vulnerability * stationaryFactor * proximityFactor
+end
+
+-- Picks the highest-priority threat from context.threats (already filtered
+-- to recent sightings near the objective by
+-- OperationalCommander:getThreatsNearPosition). Unit.getByName is only used
+-- as an existence guard and for static type classification, not to read
+-- live position/velocity - see group-commander.lua's OBSERVE comment on
+-- this ("error guard, not intel cheat"); the actual aim point is the
+-- last-reported intel position, same rationale as the speed penalty above.
+-- Returns nil, nil if nothing currently resolves to a live unit, so callers
+-- can fall back to the objective position itself.
+local function selectTarget(threats, objectivePosition)
+    local bestName = nil
+    local bestThreat = nil
+    local bestScore = -1
+    for unitName, threat in pairs(threats or {}) do
+        local unit = Unit.getByName(unitName)
+        if unit and unit:isExist() then
+            local score = targetPriority(threat, unit, objectivePosition)
+            if score > bestScore then
+                bestScore = score
+                bestName = unitName
+                bestThreat = threat
+            end
+        end
+    end
+    if bestThreat then
+        return bestName, bestThreat.position
+    end
+    return nil, nil
+end
+
+-- True if the unit a mission is currently aimed at is no longer where it
+-- was aimed - either it's dropped out of the tracked threat picture
+-- entirely (eliminated, aged out, moved beyond the objective's recon
+-- radius), or fresher intel now places it outside the mission's own
+-- dispersion radius. Either way, continuing to fire at the old point for
+-- the rest of `duration` would just be wasted rounds.
+local function targetHasLeft(targetUnitName, targetPosition, threats, driftThreshold)
+    local threat = threats and threats[targetUnitName]
+    if not threat then
+        return true
+    end
+    return SpatialAgent.distance2D(threat.position, targetPosition) > driftThreshold
+end
+
+function FireSupportPlan.new(commanderName, config)
+    local self = Doctrine.new("FireSupport", commanderName)
+    setmetatable(self, FireSupportPlan)
+
+    self.config = {
+        duration = (config and config.duration) or 600,
+    }
+    self.currentPhaseName = "Active"
+    self.deadline = nil
+    -- Which unit (if any - nil when we fell back to the bare objective
+    -- position) and where we aimed at issuance time, so a later cycle can
+    -- tell whether it's known to have moved on.
+    self.targetUnitName = nil
+    self.targetPosition = nil
+
+    return self
+end
+
+function FireSupportPlan:plan(context)
+    local statusCounts = context.statusCounts
+
+    if not self.deadline then
+        self.deadline = timer.getTime() + self.config.duration
+    end
+
+    if timer.getTime() >= self.deadline then
+        return { objectiveComplete = true }
+    end
+
+    -- Wait for the current order to resolve before reissuing - unless the
+    -- unit it's aimed at is known to have left, in which case there's no
+    -- point riding out the rest of `duration` shelling an empty point.
+    if statusCounts.assigned > 0 or statusCounts.inProgress > 0 then
+        if self.targetUnitName and targetHasLeft(self.targetUnitName, self.targetPosition, context.threats, context.objectiveRadius or 500) then
+            return { objectiveComplete = true }
+        end
+        return {}
+    end
+
+    if context.availableCommanderCount == 0 then
+        return {}
+    end
+
+    local targetUnitName, targetPosition = selectTarget(context.threats, context.objectivePosition)
+    self.targetUnitName = targetUnitName
+    self.targetPosition = targetPosition or context.objectivePosition
+
+    return {
+        orders = {
+            {
+                type      = taskTypes.INDIRECT,
+                position  = self.targetPosition,
+                proximity = context.objectiveRadius or 500,
+                alr       = alr.MEDIUM,
+                count     = context.availableCommanderCount,
+                deadline  = self.deadline,
+            },
+        },
+    }
+end
+
+return FireSupportPlan
 
 end)
 __bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -6678,6 +7213,7 @@ return CoalitionCommander
 end)
 __bundle_register("control-zones", function(require, _LOADED, __bundle_register, __bundle_modules)
 local rgb = require("constants").rgb
+local fireSupportTemplates = require("constants").fireSupportTemplates
 local garrisonTemplates = require("constants").garrisonTemplates
 local groundTemplates = require("constants").groundTemplates
 local Map = require("map")
@@ -7875,6 +8411,27 @@ function ControlZones:spawnFrontlineForces(front, color)
 
     return reserves
 end
+-- Spawns artillery one zone back from the frontline (depth 1 - see
+-- calculateDepthMap/placeFARPs, which uses the same depth concept to keep
+-- FARPs out of the front line) rather than on it, so fire-support groups
+-- start out of direct contact and let IndirectDoctrine/EngagementAnalyzer's
+-- range logic position them from there.
+function ControlZones:spawnFireSupportForces(color)
+    local reserves = {}
+    local templates = fireSupportTemplates[color]
+    if not templates or #templates == 0 then return reserves end
+
+    local zones = self:selectZonesAtDepth(color, 1)
+    for _, zoneName in ipairs(zones) do
+        local heading = self:orientToClosestEnemy(zoneName)
+        local groupName = color.."-arty-"..zoneName.."-"..self:getNewGroupId()
+        self:spawnGroupInZone(groupName, zoneName, color, templates[math.random(#templates)], heading)
+        table.insert(reserves, groupName)
+    end
+
+    return reserves
+end
+
 function ControlZones:garrisonZones(zones, color)
     -- on first pass spawn basic template to hold zone,
     local type = garrisonTemplates[color]
@@ -7964,6 +8521,8 @@ function ControlZones:kickoff()
             local reserves = self:spawnFrontlineForces(front, color)
             cmd:addReserves(reserves)
         end
+
+        cmd:addReserves(self:spawnFireSupportForces(color))
     end
 
 end
