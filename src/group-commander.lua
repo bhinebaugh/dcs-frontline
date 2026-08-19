@@ -189,11 +189,18 @@ function GroupCommander:observe()
     -- Store direct LOS count for decision-making (to distinguish self-observed from shared intel)
     self.directLOSCount = #visibleThreatNames
     
-    -- Single consolidated OBSERVE summary
+    -- Single consolidated OBSERVE summary. Condition percentages ride along
+    -- here (rather than only logging on level transitions, see orient())
+    -- so the underlying values are visible continuously, confirming they're
+    -- actually being recomputed each cycle and not just frozen at spawn.
     local memoryCount = self.threatTracker:count()
     local expectedCount = #self.threatTracker:expectedThreats(currentPos, detectionRadius)
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
-    env.info("* " .. self.groupName .. " OBSERVE: LOS:" .. #visibleThreatNames .. expectedStr .. " Mem:" .. memoryCount)
+    local condition = self:getConditionSummary()
+    env.info(string.format("* %s OBSERVE: LOS:%d%s Mem:%d HP:%s%% Fuel:%s%% Ammo:%s%% [%s]",
+        self.groupName, #visibleThreatNames, expectedStr, memoryCount,
+        condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?",
+        condition.level))
 end
 
 function GroupCommander:orient()
@@ -211,6 +218,22 @@ function GroupCommander:orient()
         self.suitability = self:getSuitability(self.orders.missionProfile)
     else
         self.suitability = nil
+    end
+
+    -- Log condition level transitions (not every tick - that's what the
+    -- OBSERVE line's ammo/fuel/health readout is for) so NOMINAL/DEGRADED/
+    -- CRITICAL crossings are directly greppable, confirming the criteria
+    -- doctrines act on are actually being computed and changing over time.
+    local condition = self:getConditionSummary()
+    if condition.level ~= self.lastConditionLevel then
+        env.info(string.format("* %s CONDITION: %s -> %s (health:%s%% fuel:%s%% ammo:%s%%)",
+            self.groupName,
+            self.lastConditionLevel or "?",
+            condition.level,
+            condition.healthPercent or "?",
+            condition.fuelPercent or "?",
+            condition.ammoPercent or "?"))
+        self.lastConditionLevel = condition.level
     end
 end
 
@@ -611,6 +634,58 @@ end
 
 function GroupCommander:getCriticalStatus()
     return ForceStatusAnalyzer.getCriticalStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
+end
+
+-- True if ammo, health, or fuel is critically low - the "dire" floor used to
+-- exclude a group from new order assignment entirely (see
+-- OperationalCommander:assignOrderTemplate), independent of how well it'd
+-- otherwise fit a mission's missionProfile. Same thresholds considerAbort
+-- uses in each tactical doctrine, so a group that's ineligible for a new
+-- order is exactly the kind that should also be pushing to abort/disengage
+-- whatever it's currently doing. status is optional - pass one in if you
+-- already fetched it this tick (see getConditionSummary) to avoid querying
+-- DCS for ammo/life a second time.
+function GroupCommander:isConditionCritical(status)
+    status = status or self:getStatusReport()
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount) then
+        return true
+    end
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        return true
+    end
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        return true
+    end
+    return false
+end
+
+-- Rolled-up condition for display/logging: NOMINAL, DEGRADED (any of ammo/
+-- health/fuel below its "low" threshold), or CRITICAL (isConditionCritical).
+-- Percentages are nil where the underlying data isn't available (e.g.
+-- ammoPercent for a group with no initialAmmoCount).
+function GroupCommander:getConditionSummary()
+    local status = self:getStatusReport()
+
+    local ammoPercent = (self.initialAmmoCount and self.initialAmmoCount > 0)
+        and math.floor((status.ammoCount / self.initialAmmoCount) * 100) or nil
+    local healthPercent = status.healthRatio and math.floor(status.healthRatio * 100) or nil
+    local fuelPercent = status.fuelRemaining and math.floor(status.fuelRemaining * 100) or nil
+
+    local level = "NOMINAL"
+    if self:isConditionCritical(status) then
+        level = "CRITICAL"
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount)
+        or ForceStatusAnalyzer.isHealthLow(status.healthRatio)
+        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        level = "DEGRADED"
+    end
+
+    return {
+        level = level,
+        ammoPercent = ammoPercent,
+        healthPercent = healthPercent,
+        fuelPercent = fuelPercent,
+    }
 end
 
 function GroupCommander:getCollectiveStatus()

@@ -17,6 +17,7 @@
 --     attritionRate       = 0.0-1.0,
 --     ammoRatio           = 0.0-1.0,
 --     fuelRatio           = 0.0-1.0,
+--     healthRatio         = 0.0-1.0,
 -- }
 --
 -- composition/offensiveCapability/range/minRange tiers mirror the armorClass
@@ -208,6 +209,7 @@ function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCoun
         attritionRate       = 1,
         ammoRatio           = 0,
         fuelRatio           = 0,
+        healthRatio         = 0,
     }
 
     local group = Group.getByName(groupName)
@@ -253,6 +255,18 @@ function GroupProfiler.profileGroup(groupName, initialUnitNames, initialAmmoCoun
 
     -- Fuel (simulated, passed in directly)
     profile.fuelRatio = fuelRemaining or 0
+
+    -- Health ratio: current life pool over max life pool (getLife0()) across
+    -- alive units - distinct from attritionRate (unit count lost), since a
+    -- group that hasn't lost a single unit can still be battered close to
+    -- death without attritionRate ever reflecting it.
+    local healthPool = 0
+    local maxHealthPool = 0
+    for _, unit in ipairs(aliveUnits) do
+        healthPool = healthPool + unit:getLife()
+        maxHealthPool = maxHealthPool + (unit:getLife0() or unit:getLife())
+    end
+    profile.healthRatio = maxHealthPool > 0 and (healthPool / maxHealthPool) or 0
 
     return profile
 end

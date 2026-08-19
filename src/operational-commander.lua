@@ -399,14 +399,25 @@ function OperationalCommander:assignOrderTemplate(template, objective)
         if not s.orderStatus or
            s.orderStatus == orderStatus.COMPLETED or
            s.orderStatus == orderStatus.ABORTED then
-            local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
-            local dist = (s.position and template.position)
-                and SpatialAgent.distance2D(s.position, template.position) or 0
-            table.insert(suitabilityResults, {
-                commander   = commander,
-                suitability = suitability,
-                distance    = dist,
-            })
+            -- A hard floor, not just a low suitability score: a group in
+            -- dire condition (critical ammo/health/fuel) is excluded from
+            -- new tasking entirely, regardless of how well it'd otherwise
+            -- match missionProfile - suitability alone only deprioritizes
+            -- via sort order, which still picks a dire group when it's the
+            -- best (or only) candidate available.
+            if commander:isConditionCritical() then
+                env.info(string.format("*** %s Ops: excluding %s from order assignment (dire condition)",
+                    self.color, commander.groupName))
+            else
+                local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
+                local dist = (s.position and template.position)
+                    and SpatialAgent.distance2D(s.position, template.position) or 0
+                table.insert(suitabilityResults, {
+                    commander   = commander,
+                    suitability = suitability,
+                    distance    = dist,
+                })
+            end
         end
     end
 

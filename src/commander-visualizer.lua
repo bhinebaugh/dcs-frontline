@@ -63,22 +63,35 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
     local signature
     local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
 
-    local threatCount = gc.threatAssessment.count 
+    local threatCount = gc.threatAssessment.count
     local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    local condition = gc:getConditionSummary()
     if gc.orders then
         textColor = {1,1,1,0.8}
         bgColor   = {0,0,0,0.3}
         local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos}, "|")
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos, condition.level}, "|")
     else
         textColor = {0.8,0.8,0.8,0.35}
         bgColor   = {0.4,0.4,0.4,0.15}
-        signature = table.concat({"default", gc.disposition, threatCount, roundedPos}, "|")
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level}, "|")
+    end
+
+    -- Dire condition overrides the normal background so it's visually
+    -- distinct from the coalition-colored default at a glance, independent
+    -- of whatever order/disposition text says - this is the map-level
+    -- confirmation that isConditionCritical's criteria are actually firing.
+    if condition.level == "CRITICAL" then
+        bgColor = {0.6, 0.05, 0.05, 0.55}
+    elseif condition.level == "DEGRADED" then
+        bgColor = {0.6, 0.4, 0.0, 0.4}
     end
 
     local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
     local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
-    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText
+    local conditionText = string.format("%s HP:%s%% Fuel:%s%% Ammo:%s%%",
+        condition.level, condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?")
+    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText .. "\n" .. conditionText
 
 
     self:upsert(key, signature, function()

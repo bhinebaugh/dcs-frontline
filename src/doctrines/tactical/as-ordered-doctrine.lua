@@ -69,6 +69,12 @@ function AsOrderedDoctrine:considerEngage(context)
         engageAssessment = 0.0
     end
 
+    -- health/fuel: a battered or nearly-dry group shouldn't pick a fight
+    -- even against a favorable threat
+    if ForceStatusAnalyzer.isHealthLow(status.healthRatio) or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        engageAssessment = 0.0
+    end
+
     return engageAssessment
 end
 
@@ -96,6 +102,22 @@ function AsOrderedDoctrine:considerAbort(context)
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
         retreatAssessment = retreatAssessment + 1.0
     elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
         retreatAssessment = retreatAssessment + 0.5
     end
 

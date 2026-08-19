@@ -48,6 +48,22 @@ function RallyDoctrine:considerAbort(context)
         retreatAssessment = retreatAssessment + 0.5
     end
 
+    -- health: a group that hasn't lost a unit can still be battered close to
+    -- death (attritionRate below wouldn't catch this - see getStatusReport's
+    -- healthRatio)
+    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- fuel
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
     -- attrition rate
     local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
     retreatAssessment = retreatAssessment + attritionRate

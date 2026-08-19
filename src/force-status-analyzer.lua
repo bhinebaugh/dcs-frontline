@@ -23,7 +23,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
     if type(groupNameOrGroup) == "string" then
         group = Group.getByName(groupNameOrGroup)
     end
-    
+
     if not group or not group:isExist() then
         return {
             aliveCount = 0,
@@ -32,6 +32,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             fuelRemaining = fuelRemaining or 0,
             healthPool = 0,
             healthLowState = nil,
+            healthRatio = 0,
         }
     end
 
@@ -44,21 +45,28 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             fuelRemaining = fuelRemaining or 0,
             healthPool = 0,
             healthLowState = nil,
+            healthRatio = 0,
         }
     end
-    
+
     local aliveCount = 0
     local ammoCount = 0
     local ammmoLowState = nil
     local healthPool = 0
     local healthLowState = nil
-    
+    local maxHealthPool = 0
+
     for _, unitName in ipairs(initialUnitNames) do
         local unit = Unit.getByName(unitName)
         if unit and unit:isExist() then
             local unitAmmoTable = unit:getAmmo()
             local unitHealth = unit:getLife()
-            
+            -- getLife0() is the unit's starting/max life - normalizes
+            -- getLife() into a 0-1 ratio the same way ammoRatio normalizes
+            -- against initialAmmoCount (raw getLife() alone isn't
+            -- comparable across unit types with different life pools).
+            local unitMaxHealth = unit:getLife0() or unitHealth
+
             -- Sum up all ammo counts from the table
             local unitAmmoTotal = 0
             if unitAmmoTable then
@@ -72,6 +80,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             aliveCount = aliveCount + 1
             ammoCount = ammoCount + unitAmmoTotal
             healthPool = healthPool + unitHealth
+            maxHealthPool = maxHealthPool + unitMaxHealth
 
             if not ammmoLowState or unitAmmoTotal < ammmoLowState then
                 ammmoLowState = unitAmmoTotal
@@ -82,7 +91,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
             end
         end
     end
-    
+
     return {
         aliveCount = aliveCount,
         ammoCount = ammoCount,
@@ -90,6 +99,7 @@ function ForceStatusAnalyzer.getStatusReport(groupNameOrGroup, initialUnitNames,
         fuelRemaining = fuelRemaining or 0,
         healthPool = healthPool,
         healthLowState = healthLowState,
+        healthRatio = maxHealthPool > 0 and (healthPool / maxHealthPool) or 0,
     }
 end
 
@@ -223,6 +233,56 @@ end
 
 function ForceStatusAnalyzer.isUnarmed(baselineAmmo)
     return baselineAmmo == 0
+end
+
+-- ============================================================================
+-- Health Ratio / Fuel Analysis
+-- ============================================================================
+-- Both are already 0.0-1.0 ratios (see getStatusReport's healthRatio, and
+-- GroupCommander's simulated fuelRemaining) so these thresholds compare
+-- directly, unlike the ammo checks above which normalize a raw count
+-- against a baseline first.
+
+--- Check if health ratio is low (a unit near death, or a group's survivors
+-- collectively battered, even if none have been destroyed outright - see
+-- getStatusReport's healthRatio for why this differs from attritionRate).
+-- @param healthRatio number|nil - Current health ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 30%
+-- @return boolean - True if health ratio is below threshold
+function ForceStatusAnalyzer.isHealthLow(healthRatio, thresholdPercent)
+    if not healthRatio then return false end
+    local threshold = (thresholdPercent or 30) / 100
+    return healthRatio < threshold
+end
+
+--- Check if health ratio is critically low.
+-- @param healthRatio number|nil - Current health ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 15%
+-- @return boolean - True if health ratio is below threshold
+function ForceStatusAnalyzer.isHealthCritical(healthRatio, thresholdPercent)
+    if not healthRatio then return false end
+    local threshold = (thresholdPercent or 15) / 100
+    return healthRatio < threshold
+end
+
+--- Check if fuel ratio is low.
+-- @param fuelRatio number|nil - Current fuel ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 20%
+-- @return boolean - True if fuel ratio is below threshold
+function ForceStatusAnalyzer.isFuelLow(fuelRatio, thresholdPercent)
+    if not fuelRatio then return false end
+    local threshold = (thresholdPercent or 20) / 100
+    return fuelRatio < threshold
+end
+
+--- Check if fuel ratio is critically low.
+-- @param fuelRatio number|nil - Current fuel ratio (0.0-1.0)
+-- @param thresholdPercent number - Threshold percentage (0-100), default 10%
+-- @return boolean - True if fuel ratio is below threshold
+function ForceStatusAnalyzer.isFuelCritical(fuelRatio, thresholdPercent)
+    if not fuelRatio then return false end
+    local threshold = (thresholdPercent or 10) / 100
+    return fuelRatio < threshold
 end
 
 -- ============================================================================
