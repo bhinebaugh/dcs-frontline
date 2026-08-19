@@ -51,6 +51,7 @@ require("table") --Load modified standard libraries
 
 local ControlZones = require("control-zones") --Load the ControlZones class from control-zoness.lua
 local CoalitionCommander = require("coalition-commander") --Load the CoalitionCommander class from coalition-commander.lua
+local StrategicCommander = require("strategic-commander") --Load the new StrategicCommander class from strategic-commander.lua
 
 local constants = require("constants") --Load constants
 
@@ -62,7 +63,10 @@ cz:precalculateConnections()
 
 cz:assignCompassMaxima()
 
-ccBlue = CoalitionCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
+-- blue runs the new StrategicCommander/ExpandFrontierPlan, red keeps the
+-- original CoalitionCommander, so the two can be compared side by side in
+-- the same mission. Swap either side's class to compare a different pairing.
+ccBlue = StrategicCommander.new(cz, {color = "blue", groundTemplates = constants.groundTemplates.blue})
 ccRed = CoalitionCommander.new(cz, {color = "red", groundTemplates = constants.groundTemplates.red})
 cz:addCommander("blue", ccBlue)
 cz:addCommander("red", ccRed)
@@ -190,116 +194,63 @@ return {
 }
 
 end)
-__bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
--- aka Strategic Commander
-
--- local constants = require("constants")
-local GroupCommander = require("group-commander")
--- local GroupProfiler = require("group-profiler")
-local OperationalCommander = require("operational-commander")
-local OODACommander = require("ooda-commander")
-local Objective = require("objective")
--- local Order = require("order")
--- local OrderCoordinator = require("order-coordinator")
--- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
+__bundle_register("strategic-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local CommanderVisualizer = require("commander-visualizer")
+local ExpandFrontierPlan = require("doctrines.strategic.expand-frontier-plan")
+local GroupCommander = require("group-commander")
+local Objective = require("objective")
+local Operation = require("operation")
+local OODACommander = require("ooda-commander")
+local OperationalCommander = require("operational-commander")
 local SpatialAgent = require("spatial-agent")
--- local ThreatTracker = require("threat-tracker")
 
--- local alr = constants.acceptableLevelsOfRisk
--- local orderStatus = constants.orderStatus
--- local taskTypes = constants.taskTypes
--- local dispositionTypes = constants.dispositionTypes
+local StrategicCommander = {}
+setmetatable(StrategicCommander, {__index = OODACommander})
+StrategicCommander.__index = StrategicCommander
 
-local taskTypes = require("constants").taskTypes
-local statusTypes = require("constants").statusTypes
+local oodaInterval = 45.0 -- seconds, same cadence as CoalitionCommander
 
-local CoalitionCommander = {}
-setmetatable(CoalitionCommander, {__index = OODACommander})
-CoalitionCommander.__index = CoalitionCommander
-
-local oodaInterval = 45.0 -- seconds
-
-function CoalitionCommander.new(parent, config)
+-- StrategicCommander: coalition-level owner of "state of the game board"
+-- (zones, reserves, the set of active Operations), paired with a swappable
+-- StrategicDoctrine that decides what Operations to pursue. Written from
+-- scratch alongside CoalitionCommander (not a refactor of it) so the two can
+-- run side by side, one per coalition, for behavioral comparison - see
+-- frontline.lua. See src/operation.lua for why Operations hold an
+-- arbitrary-cardinality list of Objectives rather than one-per-role.
+function StrategicCommander.new(parent, config)
     local self = OODACommander.new({interval = oodaInterval})
-    setmetatable(self, CoalitionCommander)
+    setmetatable(self, StrategicCommander)
+
     self.map = parent
     self.coalition = config.color
     self.color = config.color
     self.opponent = config.color == "blue" and "red" or "blue"
-    self.templates = config.groundTemplates
-    self.groupId = 1
-    self.groups = {} -- e.g. name location task
     self.reserves = {}
-    self.groupsByZone = {}
-    for _, name in pairs(self.map.allZones) do
-        self.groupsByZone[name] = {}
-    end
-    self.groupsByTask = {}
-    for i, j in pairs(taskTypes) do
-        self.groupsByTask[j] = {}
-    end
-    self.opscoms = {}
     self.visualizer = CommanderVisualizer.new(self.map.map)
+    self.doctrine = ExpandFrontierPlan.new(self.color .. "StratCom")
+
     self.operations = {
-        active = {},
+        active  = {}, -- array of Operation
         history = {},
-        group = nil,
-        status = nil,
     }
-    -- attitude/aggressiveness = offensive, defensive, cautious, etc
+    self.pendingOperations = {}   -- Operation templates from the doctrine, staged in decide()
+    self.operationsToDisband = {} -- indices into operations.active, staged in orient()
+    self.objectivesToRefresh = {} -- {operation, entry} pairs, staged in orient()
+
     return self
 end
 
-
-function CoalitionCommander:addReserves(groups)
-    -- self.reserves = groups
+function StrategicCommander:addReserves(groups)
     for _, groupName in pairs(groups) do
         local gc = GroupCommander.new(groupName, {
             color = self.color,
-            -- visualizer = self.visualizer, --groups have own visualizer to show doctrine and movement
-            map = self.map.map,
+            map   = self.map.map,
         })
         table.insert(self.reserves, gc)
     end
 end
 
--- DEPRECATED
--- A preliminary phase to allow commander to choose group templates for all front zones
--- (random for now, TODO apply some strategy to placement of different types)
-function CoalitionCommander:initiate(front)
-    local reinforcements = {}
-    for _, zoneName in pairs(front.zones) do
-        for i = 1, math.random(2) do
-            local r = math.random(#self.templates)
-            local group = self.templates[r]
-            local groupName = zoneName.."-"..self:getNewGroupId()
-    
-            local gc = GroupCommander.new(groupName, {
-                color = self.color,
-                -- visualizer = self.visualizer,
-            })
-            table.insert(self.reserves, gc)
-
-            local groupData = {
-                groupName = groupName,
-                template = group
-            }
-            table.insert(reinforcements[zoneName], groupData)
-        end
-    end
-
-    return reinforcements
-end
-
--- NOTE: Doctrine usage example:
--- To assign a specific strategy to an objective, create the Doctrine and assign it:
---   local objective = Objective.new({...})
---   objective.doctrine = ReconRallyAssaultPlan.new(commanderName, config)
--- The OperationalCommander will use the Doctrine in its DECIDE phase.
--- If no Doctrine is assigned, it defaults to ReconRallyAssaultPlan.
-function CoalitionCommander:observe()
-    -- Prune destroyed groups from reserves
+function StrategicCommander:observe()
     local surviving = {}
     for _, gc in ipairs(self.reserves) do
         if not gc.destroyed then
@@ -308,136 +259,287 @@ function CoalitionCommander:observe()
     end
     self.reserves = surviving
 
-    env.info(string.format("****** %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | opscoms=%d",
+    self:shareThreatIntelWithinOperations()
+
+    env.info(string.format("****** %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | operations=%d",
         self.color,
         #self.map:getCluster("blue"),
         #self.map:getCluster("red"),
         #self.reserves,
-        #self.opscoms))
+        #self.operations.active))
 end
 
-function CoalitionCommander:orient()
-    -- TODO compare current state to previous to extract trends (force strength, territorial control, etc)
-    -- Consider observed threats and stalled operations / requests for reinforcements
-    -- Identify opscoms whose objective is complete or failed
-    self.opscoms_to_disband = {}
-    local activeCount = 0
-    for i, opscom in ipairs(self.opscoms) do
-        local objective = opscom.orderCoordinator.objectives[1]
-        if objective and objective:isComplete() then
-            table.insert(self.opscoms_to_disband, i)
-        else
-            activeCount = activeCount + 1
-        end
-    end
-
-    -- If no active opscoms will remain after disbanding, and reserves are available, find a new target
-    -- TODO Select target based on knowledge of enemy strength or outcome of past operations
-    self.pending_target = nil
-    if activeCount == 0 and #self.reserves > 0 then
-        local ownZones = self.map:getCluster(self.color)
-        for _, zoneName in ipairs(ownZones) do
-            local enemyNeighbors = self.map:getNeighbors(zoneName, self.opponent, true)
-            if enemyNeighbors and #enemyNeighbors > 0 then
-                local target = enemyNeighbors[math.random(#enemyNeighbors)]
-                self.pending_target = {
-                    zoneName = target,
-                    position = self.map:getZone(target).point,
-                }
-                break
-            end
-        end
-    end
-end
-
-function CoalitionCommander:decide()
-    -- Disband completed opscoms (iterate in reverse to safely remove by index)
-    table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
-    for _, i in ipairs(self.opscoms_to_disband) do
-        local opscom = self.opscoms[i]
-        self.visualizer:release("opscom:" .. opscom.name)
-        local survivors = opscom:disband()
-        for _, gc in ipairs(survivors) do
-            -- This could be a good point to check residual gc doctrine and orders,
-            -- to see if they are still appropriate or should be removed
-            table.insert(self.reserves, gc)
-        end
-        table.remove(self.opscoms, i)
-        env.info(string.format("****** %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
-            self.color, #survivors))
-    end
-
-    -- Select groups from reserves by proximity to the pending target
-    -- TODO Balance proximity and suitability for type of operation
-    self.pending_groups = {}
-    if self.pending_target then
-        local maxGroups = 3
-        local candidates = {}
-        for _, gc in ipairs(self.reserves) do
-            local status = gc:getStatus()
-            if status.position then
-                table.insert(candidates, {
-                    gc = gc,
-                    dist = SpatialAgent.distance2D(status.position, self.pending_target.position),
-                })
-            end
-        end
-        table.sort(candidates, function(a, b) return a.dist < b.dist end)
-        for i = 1, math.min(maxGroups, #candidates) do
-            table.insert(self.pending_groups, candidates[i].gc)
-        end
-    end
-end
-
-function CoalitionCommander:act()
-    -- Create a new opscom if a target and groups are ready
-    if self.pending_target and #self.pending_groups > 0 then
-        -- Remove assigned groups from reserves
-        for _, gc in ipairs(self.pending_groups) do
-            for i, reserveGc in ipairs(self.reserves) do
-                if reserveGc == gc then
-                    table.remove(self.reserves, i)
-                    break
+-- Bridges threat intel between sibling opscoms under the same Operation.
+-- Each OperationalCommander's threatTracker is fed only by its own
+-- groupCommanders' sightings (see OperationalCommander:aggregateThreatsFromGroups),
+-- so a fire-support opscom stationed too far back to detect anything near
+-- the objective itself has no visibility into what an assault opscom under
+-- the same Operation has spotted there - siblings are otherwise blind to
+-- each other, and StrategicCommander is the only thing holding references
+-- to both.
+function StrategicCommander:shareThreatIntelWithinOperations()
+    for _, operation in ipairs(self.operations.active) do
+        if #operation.objectives > 1 then
+            for _, entry in ipairs(operation.objectives) do
+                for _, other in ipairs(operation.objectives) do
+                    if other ~= entry then
+                        entry.opscom.threatTracker:mergeThreatIntel(other.opscom.threatTracker:getThreats())
+                    end
                 end
             end
         end
-
-        local opscom = OperationalCommander.new({
-            color = self.color,
-            groupCommanders = self.pending_groups,
-            visualizer = self.visualizer,
-        })
-        opscom.orderCoordinator.objectives = {
-            Objective.new({
-                type = taskTypes.ASSAULT,
-                position = self.pending_target.position,
-                radius = 500,
-            })
-        }
-        table.insert(self.opscoms, opscom)
-        env.info(string.format("****** %s StratCom ACT: created opscom → targeting %s with %d groups",
-            self.color, self.pending_target.zoneName, #self.pending_groups))
-        -- draw polygon around units and directive arrow at creation
-        self.visualizer:syncOpscom(opscom, self.color)
     end
-
-    -- Keep each active opscom's outline/directive marks in sync with current tasking
-    -- for _, opscom in ipairs(self.opscoms) do
-    --     self.visualizer:syncOpscom(opscom, self.color)
-    -- end
 end
 
+function StrategicCommander:orient()
+    self.operationsToDisband = {}
+    self.objectivesToRefresh = {}
+
+    for i, operation in ipairs(self.operations.active) do
+        -- Whether the *operation* is done is judged only by its primary
+        -- objectives (e.g. assault) - a supporting objective (e.g.
+        -- fireSupport) has no natural completion of its own and would
+        -- otherwise either hold the operation open forever (it just keeps
+        -- refreshing) or, worse, look like "the operation is done" the
+        -- instant it happened to resolve while the primary objective was
+        -- still actively being pursued.
+        local primaryCounts = operation:getObjectiveStatusCounts(true)
+        if primaryCounts.total > 0 and primaryCounts.active == 0 then
+            operation.status = (primaryCounts.failed == 0) and Operation.Status.ACHIEVED or Operation.Status.FAILED
+            table.insert(self.operationsToDisband, i)
+        else
+            -- Supporting objectives ride along with the primary's lifecycle
+            -- rather than being judged individually complete - refresh them
+            -- (disband + recreate from the same template) once they're
+            -- stale by their own configured interval, or if they resolved
+            -- on their own (e.g. their group died) and could use a
+            -- replacement. Primary objectives are never touched here; they
+            -- just run their course via their own operational doctrine.
+            for _, entry in ipairs(operation.objectives) do
+                if not entry.primary and not entry.disbanded then
+                    local interval = entry.template.refreshInterval
+                    if interval then
+                        local staleByInterval = (timer.getTime() - entry.createdAt) >= interval
+                        if staleByInterval or entry.objective:isComplete() then
+                            table.insert(self.objectivesToRefresh, {operation = operation, entry = entry})
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+function StrategicCommander:decide()
+    -- Disband resolved operations (iterate in reverse to safely remove by index)
+    table.sort(self.operationsToDisband, function(a, b) return a > b end)
+    for _, i in ipairs(self.operationsToDisband) do
+        local operation = self.operations.active[i]
+        for _, entry in ipairs(operation.objectives) do
+            -- Individually-retired entries (see the staleByInterval/resolved
+            -- handling in orient()) were already disbanded and their groups
+            -- already returned to reserves - disbanding again here would
+            -- return the same groups to self.reserves a second time.
+            if not entry.disbanded then
+                self.visualizer:release("opscom:" .. entry.opscom.name)
+                self.visualizer:releaseObjective(entry.objective)
+                local survivors = entry.opscom:disband()
+                for _, gc in ipairs(survivors) do
+                    table.insert(self.reserves, gc)
+                end
+                entry.disbanded = true
+            end
+        end
+        table.insert(self.operations.history, operation)
+        table.remove(self.operations.active, i)
+        env.info(string.format("****** %s StratCom DECIDE: disbanded operation (%s), groups returned to reserves",
+            self.color, operation.status))
+    end
+
+    for _, refresh in ipairs(self.objectivesToRefresh) do
+        local operation = refresh.operation
+        local entry = refresh.entry
+
+        self.visualizer:release("opscom:" .. entry.opscom.name)
+        self.visualizer:releaseObjective(entry.objective)
+        local survivors = entry.opscom:disband()
+        for _, gc in ipairs(survivors) do
+            table.insert(self.reserves, gc)
+        end
+        entry.disbanded = true
+
+        for i, existing in ipairs(operation.objectives) do
+            if existing == entry then
+                table.remove(operation.objectives, i)
+                break
+            end
+        end
+        local fresh = self:instantiateObjective(entry.template, entry.target)
+        if fresh then
+            operation:addObjective(fresh)
+        end
+        env.info(string.format("****** %s StratCom DECIDE: refreshed %s objective", self.color, entry.role))
+    end
+
+    local context = self:buildStrategicContext()
+    local result = self.doctrine:plan(context)
+    self.pendingOperations = (result and result.operations) or {}
+end
+
+function StrategicCommander:act()
+    for _, template in ipairs(self.pendingOperations) do
+        self:createOperation(template)
+    end
+
+    for _, operation in ipairs(self.operations.active) do
+        for _, entry in ipairs(operation.objectives) do
+            self.visualizer:syncOpscom(entry.opscom, self.color)
+        end
+    end
+end
 
 -- ============================================================================
 -- HELPER METHODS
 -- ============================================================================
 
-function CoalitionCommander:getNewGroupId()
-    self.groupId = self.groupId + 1
-    return self.groupId
+-- Same "first own zone with an enemy/neutral neighbor, then choose among its
+-- neighbors" target gathering CoalitionCommander used to do inline - just
+-- split so the doctrine (not the commander) makes the actual choice,
+-- mirroring how OperationalCommander:buildObjectiveContext gathers context
+-- for its doctrine rather than deciding anything itself.
+function StrategicCommander:buildStrategicContext()
+    local candidateTargets = {}
+    local ownZones = self.map:getCluster(self.color)
+    for _, zoneName in ipairs(ownZones) do
+        local enemyNeighbors = self.map:getNeighbors(zoneName, self.opponent, true)
+        if enemyNeighbors and #enemyNeighbors > 0 then
+            for _, neighborName in ipairs(enemyNeighbors) do
+                table.insert(candidateTargets, {
+                    zoneName = neighborName,
+                    position = self.map:getZone(neighborName).point,
+                })
+            end
+            break
+        end
+    end
+
+    return {
+        activeOperationCount = #self.operations.active,
+        reserveCount         = #self.reserves,
+        candidateTargets     = candidateTargets,
+    }
 end
 
-return CoalitionCommander
+-- Resolve one objective template into a real Objective + OperationalCommander,
+-- allocating reserves by suitability (falling back to pure proximity when
+-- the template has no missionProfile) then proximity as a tiebreak - the
+-- same sort OperationalCommander:selectGroupCommanders uses one tier down.
+-- Returns nil (rather than a half-filled entry) if no reserves are
+-- currently available/suitable for this role - callers already tolerate
+-- that gracefully, same as the original single-shot creation did.
+-- Shared by createOperation and the refresh path in decide() below, since
+-- "pick reserves and stand up an opscom for this role" is identical work
+-- either way.
+function StrategicCommander:instantiateObjective(objTemplate, target)
+    local groupCount = objTemplate.groupCount or 1
+
+    local candidates = {}
+    for _, gc in ipairs(self.reserves) do
+        local status = gc:getStatus()
+        if status.position then
+            local suitability = objTemplate.missionProfile and gc:getSuitability(objTemplate.missionProfile) or 1.0
+            table.insert(candidates, {
+                gc          = gc,
+                suitability = suitability,
+                dist        = SpatialAgent.distance2D(status.position, target.position),
+            })
+        end
+    end
+    table.sort(candidates, function(a, b)
+        if a.suitability ~= b.suitability then
+            return a.suitability > b.suitability
+        end
+        return a.dist < b.dist
+    end)
+
+    local selectedGroups = {}
+    for i = 1, math.min(groupCount, #candidates) do
+        table.insert(selectedGroups, candidates[i].gc)
+    end
+
+    if #selectedGroups == 0 then
+        return nil
+    end
+
+    for _, gc in ipairs(selectedGroups) do
+        for i, reserveGc in ipairs(self.reserves) do
+            if reserveGc == gc then
+                table.remove(self.reserves, i)
+                break
+            end
+        end
+    end
+
+    local objective = Objective.new({
+        type     = objTemplate.type,
+        position = objTemplate.position,
+        radius   = objTemplate.radius,
+    })
+
+    -- The strategic doctrine picks which operational doctrine a role needs
+    -- (it's the only layer that knows what "fireSupport" vs "assault"
+    -- actually means) - nil falls through to OperationalCommander's own
+    -- ReconRallyAssaultPlan default.
+    local doctrine = nil
+    if objTemplate.operationalDoctrine then
+        doctrine = objTemplate.operationalDoctrine.new(
+            self.color .. "Ops-" .. objTemplate.role,
+            objTemplate.operationalDoctrineConfig)
+    end
+
+    local opscom = OperationalCommander.new({
+        color           = self.color,
+        role            = objTemplate.role,
+        groupCommanders = selectedGroups,
+        visualizer      = self.visualizer,
+        doctrine        = doctrine,
+    })
+    opscom.orderCoordinator.objectives = { objective }
+
+    env.info(string.format("****** %s StratCom ACT: created objective -> targeting %s with %d groups (role=%s)",
+        self.color, target.zoneName, #selectedGroups, objTemplate.role))
+
+    return {
+        objective = objective,
+        role      = objTemplate.role,
+        primary   = objTemplate.primary,
+        opscom    = opscom,
+        template  = objTemplate,
+        target    = target,
+        createdAt = timer.getTime(),
+    }
+end
+
+-- Resolve an Operation template (from the doctrine) into a real Operation
+-- and its objectives - the same selection approach CoalitionCommander used
+-- for its single opscom, just per-objective-template so a doctrine can
+-- request more than one objective (and role) per Operation.
+function StrategicCommander:createOperation(template)
+    local operation = Operation.new({ target = template.target })
+
+    for _, objTemplate in ipairs(template.objectiveTemplates) do
+        local entry = self:instantiateObjective(objTemplate, template.target)
+        if entry then
+            operation:addObjective(entry)
+        end
+    end
+
+    if #operation.objectives > 0 then
+        table.insert(self.operations.active, operation)
+    end
+end
+
+return StrategicCommander
 
 end)
 __bundle_register("spatial-agent", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -874,529 +976,6 @@ end
 return SpatialAgent
 
 end)
-__bundle_register("commander-visualizer", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local settings = require("settings")
-local rgb = constants.rgb
-local normalizeAngle = require("helpers").normalizeAngle --Load helper functions
-local angularDistance = require("helpers").angularDistance --Load helper functions
-
-local taskTypeNames = {}
-for name, value in pairs(constants.taskTypes) do
-    taskTypeNames[value] = name
-end
-
--- Reconciles commander state (orders, dispositions, objectives, opscom tasking)
--- onto persistent map marks. Owns a registry of {signature, markIds} keyed by a
--- stable string per drawable thing, so unchanged state is a no-op and changed
--- state erases the old marks before drawing new ones.
-local CommanderVisualizer = {}
-CommanderVisualizer.__index = CommanderVisualizer
-
-function CommanderVisualizer.new(map)
-    local self = setmetatable({}, CommanderVisualizer)
-    self.map = map
-    self.registry = {}
-    return self
-end
-
--- Draw/update the marks for `key` only if `signature` differs from what's
--- currently registered. `drawFn` is called (with no args) only when a redraw
--- is needed, and must return a list of mark ids.
-function CommanderVisualizer:upsert(key, signature, drawFn)
-    local entry = self.registry[key]
-    if entry and entry.signature == signature then
-        return
-    end
-    if entry then
-        self.map:removeMarks(entry.markIds)
-    end
-    local markIds = drawFn() or {}
-    self.registry[key] = { signature = signature, markIds = markIds }
-end
-
--- Erase any marks registered for `key`, if present.
-function CommanderVisualizer:release(key)
-    local entry = self.registry[key]
-    if not entry then return end
-    self.map:removeMarks(entry.markIds)
-    self.registry[key] = nil
-end
-
--- Draw/update a label at a group's position showing its current order type
--- and disposition, or threat assessment if the group has no active order.
-function CommanderVisualizer:syncGroupOrder(gc, color)
-    local key = "group:" .. gc.groupName
-
-    local position = gc:getOwnPosition()
-    if not position then
-        self:release(key)
-        return
-    end
-
-    local text
-    local textColor
-    local bgColor
-    local signature
-    local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
-
-    local threatCount = gc.threatAssessment.count 
-    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
-    if gc.orders then
-        textColor = {1,1,1,0.8}
-        bgColor   = {0,0,0,0.3}
-        local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos}, "|")
-    else
-        textColor = {0.8,0.8,0.8,0.35}
-        bgColor   = {0.4,0.4,0.4,0.15}
-        signature = table.concat({"default", gc.disposition, threatCount, roundedPos}, "|")
-    end
-
-    local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
-    local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
-    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText
-
-
-    self:upsert(key, signature, function()
-        return self.map:drawGroupOrder(text, color, position, textColor, bgColor)
-    end)
-end
-
--- Draw and persist arrows showing each time a group changes its intended destination 
-function CommanderVisualizer:appendGroupMove(gc, color)
-    local key = color .. "_movement"
-    local entry = self.registry[key]
-    local position = gc:getOwnPosition()
-    if not position then
-        -- not releasing key can helpfully show trace trail for groups
-        -- that blunder unnoticed into bad situations and get obliterated
-        -- self:release(key)
-        return
-    end
-
-    local arrowColor = {0.3,0.3,0.3,0.04}
-    if color == "red" then
-        arrowColor[1] = 0.8
-    end
-    if color == "blue" then
-        arrowColor[3] = 0.8
-    end
-    local arrowIds = self.map:drawMovementTrail(position, gc.destination, color, arrowColor)
-    if arrowIds then
-        if not entry then
-            self:upsert(key, "_", function()
-                return arrowIds
-            end)
-        else
-            for _, mk in pairs(arrowIds) do
-                table.insert(self.registry[key].markIds, mk)
-            end
-        end
-    end
-end
-
--- Used to erase and reset movement trail upon new orders for group
-function CommanderVisualizer:syncGroupMove(gc, color)
-    local key = color .. "_movement"
-    self:release(key)
-end
-
--- Draw/update a circle + label at an objective's position showing its task
--- type and status.
-function CommanderVisualizer:syncObjective(objective, doctrine, color)
-    local key = "objective:" .. tostring(objective)
-
-    if objective:isComplete() then
-        self:release(key)
-        return
-    end
-
-    local typeName = taskTypeNames[objective.type] or tostring(objective.type)
-    local orderCounts = {}
-    for k, v in pairs(objective:getOrderStatusCounts()) do
-        orderCounts[k] = tostring(v)
-    end
-    local objectiveOrders = "Assg:" .. orderCounts.assigned .. " Act:" .. orderCounts.inProgress .. " Dn:" .. orderCounts.completed .. " X:" .. orderCounts.aborted
-    local text = doctrine.name .. ":" ..  doctrine.currentPhaseName .. "\n" .. typeName .. " (" .. objective.status .. ") [" .. objectiveOrders .. "]"
-    local signature = table.concat({typeName, objective.status, objective.radius, doctrine.name, doctrine.currentPhaseName, objectiveOrders}, "|")
-
-    self:upsert(key, signature, function()
-        return self.map:drawObjective(objective, text, color)
-    end)
-end
-
--- Draw/update the outline of tasked groups and directive arrows from each
--- group to the opscom's objective.
-function CommanderVisualizer:syncOpscom(opscom, color)
-    local key = "opscom:" .. opscom.name
-
-    local objective = opscom.orderCoordinator.objectives[1]
-    if not objective then
-        self:release(key)
-        return
-    end
-
-    local groupNames = {}
-    local points = {}
-    local polygon = {}
-    -- Calculate centroid of allied positions
-    local alliedCenterX = 0
-    local alliedCenterZ = 0
-    local center = { x = 0, y = 0, z = 0 }
-    local validCount = 0
-    for _, gc in ipairs(opscom.groupCommanders) do
-        local position = gc:getOwnPosition()
-        if position then
-            table.insert(groupNames, gc.groupName)
-            table.insert(points, position)
-            alliedCenterX = alliedCenterX + position.x
-            alliedCenterZ = alliedCenterZ + position.z
-            validCount = validCount + 1
-        end
-    end
-    table.sort(groupNames)
-
-    center.x = alliedCenterX / validCount
-    center.z = alliedCenterZ / validCount
-    -- project points from center to form enclosing polygon
-    -- for each point project 2 points away from center +/- 45deg
-    for i, data in pairs(points) do
-        -- get heading center to data
-        local heading = mist.utils.getHeadingPoints(center, data)
-        local projectedPoint1 = mist.projectPoint(data, 800, heading + math.pi/4)
-        local projectedPoint2 = mist.projectPoint(data, 800, heading - math.pi/4)
-        table.insert(polygon, projectedPoint1)
-        table.insert(polygon, projectedPoint2)
-    end
-    -- table.insert(polygon, lastPoint)
-    -- sort points
-    local initialHeading = 0
-    table.sort(polygon, function(a, b)
-        local headingA = normalizeAngle(mist.utils.getHeadingPoints(center, a))
-        local headingB = normalizeAngle(mist.utils.getHeadingPoints(center, b))
-        local arcA = angularDistance(initialHeading, headingA)
-        local arcB = angularDistance(initialHeading, headingB)
-        return arcA < arcB
-    end)
-
-    local signature = table.concat(groupNames, ",") .. "|" .. objective.status
-
-    self:upsert(key, signature, function()
-        if #polygon == 0 then return {} end
-        local markIds = {}
-        -- for _, gc in ipairs(opscom.groupCommanders) do
-        -- single arrow for whole operation
-            local origin = center --gc:getOwnPosition()
-            if origin then
-                local arrowIds = self.map:drawDirective(origin, objective.position, color)
-                if arrowIds then
-                    for _, mk in pairs(arrowIds) do
-                        table.insert(markIds, mk)
-                    end
-                end
-            end
-        -- end
-        local polygonId = self.map:drawPolygon(polygon)
-        if polygonId then
-            table.insert(markIds, polygonId)
-        end
-        return markIds
-    end)
-end
-
-return CommanderVisualizer
-
-end)
-__bundle_register("helpers", function(require, _LOADED, __bundle_register, __bundle_modules)
-local function isCounterClockwise(p1, p2, p3)
-    -- swapped to account for DCS coordinate weirdness
-    return (p2.y - p1.y) * (p3.x - p1.x) - (p2.x - p1.x) * (p3.y - p1.y) > 0
-    -- standard (x,y) as (N/S,E/W) version:
-    -- return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x) > 0
-end
-
--- Normalize angle to [0, 2π)
-local function normalizeAngle(angle)
-    local TWO_PI = 2 * math.pi
-    angle = angle % TWO_PI
-    if angle < 0 then
-        angle = angle + TWO_PI
-    end
-    return angle
-end
-local function angularDistance(from, to)
-    local TWO_PI = 2 * math.pi
-    local diff = (to - from) % TWO_PI
-    if diff < 0 then
-        diff = diff + TWO_PI
-    end
-    return diff
-end
-
-return {
-    isCounterClockwise = isCounterClockwise,
-    normalizeAngle = normalizeAngle,
-    angularDistance = angularDistance
-}
-
-end)
-__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
-local settings = {
-    -- whether UI elements will show on the map at all
-    draw = {
-        edges = true,
-        zones = true,
-        frontlines = true,
-        directives = true,
-        groupOrders = true,
-        groupMovement = true,
-        objectives = true,
-    },
-    -- whether they will be visible to the other coalition
-    displayToAll = {
-        zones = true,
-        frontlines = true,
-        directives = true,
-        groupOrders = false,
-        groupMovement = false,
-        objectives = false,
-    }
-}
-
-return settings
-end)
-__bundle_register("objective", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local taskTypes = constants.taskTypes
-
--- Objective class for strategic-level goals
--- Each objective may have multiple orders assigned to different groups
--- Tracks overall objective status and completion criteria
-
-local Objective = {}
-Objective.__index = Objective
-
--- Objective status values
-local ObjectiveStatus = {
-    ACTIVE = "Active",       -- Objective is being pursued
-    ACHIEVED = "Achieved",   -- Objective successfully completed
-    FAILED = "Failed",       -- Objective could not be completed
-    CANCELED = "Canceled",   -- Objective was canceled by strategic commander
-}
-
-function Objective.new(config)
-    local self = setmetatable({}, Objective)
-    
-    -- Required fields
-    self.type = config.type           -- taskTypes constant (DEFEND, RALLY, etc.)
-    self.position = config.position   -- {x, z}
-    
-    -- Optional fields with defaults
-    self.radius = config.radius or 500
-    self.deadline = config.deadline   -- nil or timer.getTime() + duration
-    
-    -- Status tracking
-    self.status = ObjectiveStatus.ACTIVE
-    self.createdAt = timer.getTime()
-    self.updatedAt = timer.getTime()
-    self.achievedAt = nil
-    self.failedAt = nil
-    
-    -- Associated orders
-    self.orders = {}  -- array of Order objects
-    
-    return self
-end
-
--- Add an order to this objective
-function Objective:addOrder(order)
-    table.insert(self.orders, order)
-    -- Ensure bidirectional reference
-    order.objective = self
-    self.updatedAt = timer.getTime()
-end
-
--- Remove an order from this objective
-function Objective:removeOrder(order)
-    for i, existingOrder in ipairs(self.orders) do
-        if existingOrder == order then
-            table.remove(self.orders, i)
-            self.updatedAt = timer.getTime()
-            return true
-        end
-    end
-    return false
-end
-
--- Get counts of orders by status
-function Objective:getOrderStatusCounts()
-    local counts = {
-        assigned = 0,
-        inProgress = 0,
-        completed = 0,
-        aborted = 0,
-        total = #self.orders
-    }
-    
-    local orderStatus = constants.orderStatus
-    for _, order in ipairs(self.orders) do
-        if order.status == orderStatus.ASSIGNED then
-            counts.assigned = counts.assigned + 1
-        elseif order.status == orderStatus.IN_PROGRESS then
-            counts.inProgress = counts.inProgress + 1
-        elseif order.status == orderStatus.COMPLETED then
-            counts.completed = counts.completed + 1
-        elseif order.status == orderStatus.ABORTED then
-            counts.aborted = counts.aborted + 1
-        end
-    end
-    
-    return counts
-end
-
--- Get all active orders (not completed or aborted)
-function Objective:getActiveOrders()
-    local active = {}
-    for _, order in ipairs(self.orders) do
-        if order:isActive() then
-            table.insert(active, order)
-        end
-    end
-    return active
-end
-
--- Get all finished orders (completed or aborted)
-function Objective:getFinishedOrders()
-    local finished = {}
-    for _, order in ipairs(self.orders) do
-        if order:isFinished() then
-            table.insert(finished, order)
-        end
-    end
-    return finished
-end
-
--- Mark objective as achieved
-function Objective:markAchieved()
-    self.status = ObjectiveStatus.ACHIEVED
-    self.achievedAt = timer.getTime()
-    self.updatedAt = timer.getTime()
-end
-
--- Mark objective as failed
-function Objective:markFailed(reason)
-    self.status = ObjectiveStatus.FAILED
-    self.failedAt = timer.getTime()
-    self.failReason = reason
-    self.updatedAt = timer.getTime()
-end
-
--- Returns true if the objective is no longer being actively pursued
-function Objective:isComplete()
-    return self.status ~= ObjectiveStatus.ACTIVE
-end
-
--- Mark objective as canceled
-function Objective:markCanceled()
-    self.status = ObjectiveStatus.CANCELED
-    self.updatedAt = timer.getTime()
-end
-
--- Get a summary of objective state for reporting
-function Objective:getSummary()
-    local statusCounts = self:getOrderStatusCounts()
-    
-    return {
-        type = self.type,
-        status = self.status,
-        position = self.position,
-        radius = self.radius,
-        createdAt = self.createdAt,
-        orderCounts = statusCounts,
-        timeSinceCreated = timer.getTime() - self.createdAt,
-    }
-end
-
-Objective.Status = ObjectiveStatus
-
-return Objective
-
-end)
-__bundle_register("ooda-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
-local constants = require("constants")
-local oodaStates = constants.oodaStates
-
-local OODACommander = {}
-OODACommander.__index = OODACommander
-
-function OODACommander.new(config)
-    local self = setmetatable({}, OODACommander)
-
-    local oodaInterval = config.interval or 10
-
-    self.oodaState = oodaStates.OBSERVE
-    self.oodaOffset = math.random() * oodaInterval
-    self.destroyed = false  -- Flag to stop scheduling
-
-    -- Store schedule ID so we can cancel it later
-    self.scheduleId = mist.scheduleFunction(
-        OODACommander.oodaTick,
-        {self},
-        timer.getTime() + self.oodaOffset,
-        oodaInterval
-    )
-    return self
-end
-
-function OODACommander:oodaTick()
-    if self.oodaState == oodaStates.OBSERVE then
-        self:observe()
-        self.oodaState = oodaStates.ORIENT
-    elseif self.oodaState == oodaStates.ORIENT then
-        self:orient()
-        self.oodaState = oodaStates.DECIDE
-    elseif self.oodaState == oodaStates.DECIDE then
-        self:decide()
-        self.oodaState = oodaStates.ACT
-    elseif self.oodaState == oodaStates.ACT then
-        self:act()
-        self.oodaState = oodaStates.OBSERVE
-    end
-    
-    -- After any phase, check if destroyed and cancel schedule
-    if self.destroyed then
-        self:cancelSchedule()
-    end
-end
-
-function OODACommander:observe()
-    error("OODACommander subclass must implement observe()")
-end
-
-function OODACommander:orient()
-    error("OODACommander subclass must implement orient()")
-end
-
-function OODACommander:decide()
-    error("OODACommander subclass must implement decide()")
-end
-
-function OODACommander:act()
-    error("OODACommander subclass must implement act()")
-end
-
--- Cancel the scheduled OODA loop
-function OODACommander:cancelSchedule()
-    if self.scheduleId then
-        mist.removeFunction(self.scheduleId)
-        self.scheduleId = nil
-    end
-end
-
-return OODACommander
-
-end)
 __bundle_register("operational-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
 local constants = require("constants")
 local GroupCommander = require("group-commander")
@@ -1418,6 +997,14 @@ setmetatable(OperationalCommander, {__index = OODACommander})
 OperationalCommander.__index = OperationalCommander
 
 local oodaInterval = 30.0 -- seconds
+
+-- self.name doubles as this opscom's map-mark/visualizer key
+-- (CommanderVisualizer:syncOpscom) and its doctrine's log-line commander
+-- name, so it must be unique per instance - "<color>Ops" alone collided the
+-- moment more than one opscom of the same color could be active at once
+-- (e.g. an assault opscom and a fire-support opscom under the same
+-- Operation), silently stomping each other's map marks.
+local nextInstanceId = 1
 
 local function isOrderChanged(lastOrder, newOrder, commanderStatus)
     if not lastOrder then
@@ -1452,7 +1039,9 @@ function OperationalCommander.new(config)
 
     -- OperationalCommander-specific initialization
     self.color = config.color or "white"
-    self.name = config.color .. "Ops"
+    local roleSuffix = config.role and ("-" .. config.role) or ""
+    self.name = config.color .. "Ops" .. roleSuffix .. "-" .. nextInstanceId
+    nextInstanceId = nextInstanceId + 1
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
     self.orderCoordinator = OrderCoordinator.new(self.color)
     self.lastIssuedOrders = {}
@@ -1472,7 +1061,10 @@ function OperationalCommander.new(config)
     -- status, since there's no single opscom position to age relative to.
     self.threatMemoryWindow = config.threatMemoryWindow or 120
 
-    self.doctrine = nil
+    -- Pre-built doctrine instance, e.g. from StrategicCommander for a
+    -- non-assault role - nil defaults to ReconRallyAssaultPlan below in
+    -- decide(), unchanged from before.
+    self.doctrine = config.doctrine
     -- clear out any residual orders to ensure all groups are available for new tasking
     for _, gc in ipairs(self.groupCommanders) do
         gc:clearOrders()
@@ -2625,6 +2217,14 @@ local weapons = {
         effectiveness = {unarmored = 5, light = 7, medium = 8, heavy = 9, air = 1},
         dcsTypeName = "weapons.missiles.REFLEX",
     },
+    ["2A64_152"] = {
+        displayName = "3OF45 152mm HE",
+        kind = "indirect",
+        range = 23000,
+        minRange = 200,
+        effectiveness = {unarmored = 9, light = 8, medium = 5, heavy = 2, air = 0},
+        dcsTypeName = "weapons.shells.2A64_152",
+    },
 }
 
 return weapons
@@ -2880,6 +2480,13 @@ local units = {
         life = 4,
         speedMax = 16.67,
         weapons = {"2A60_120"},
+    },
+    ["SAU Msta"] = {
+        dcsRole = "Artillery",
+        armorClass = 1,
+        life = 4,
+        speedMax = 16.67,
+        weapons = {"2A64_152", "Utes_12_7x108_T", "Utes_12_7x108"}, -- AMMODATA revealed a 12.7mm NSVT self-defense MG not in the original estimate
     },
 }
 
@@ -3631,6 +3238,80 @@ function Order:isExpired()
 end
 
 return Order
+
+end)
+__bundle_register("ooda-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local oodaStates = constants.oodaStates
+
+local OODACommander = {}
+OODACommander.__index = OODACommander
+
+function OODACommander.new(config)
+    local self = setmetatable({}, OODACommander)
+
+    local oodaInterval = config.interval or 10
+
+    self.oodaState = oodaStates.OBSERVE
+    self.oodaOffset = math.random() * oodaInterval
+    self.destroyed = false  -- Flag to stop scheduling
+
+    -- Store schedule ID so we can cancel it later
+    self.scheduleId = mist.scheduleFunction(
+        OODACommander.oodaTick,
+        {self},
+        timer.getTime() + self.oodaOffset,
+        oodaInterval
+    )
+    return self
+end
+
+function OODACommander:oodaTick()
+    if self.oodaState == oodaStates.OBSERVE then
+        self:observe()
+        self.oodaState = oodaStates.ORIENT
+    elseif self.oodaState == oodaStates.ORIENT then
+        self:orient()
+        self.oodaState = oodaStates.DECIDE
+    elseif self.oodaState == oodaStates.DECIDE then
+        self:decide()
+        self.oodaState = oodaStates.ACT
+    elseif self.oodaState == oodaStates.ACT then
+        self:act()
+        self.oodaState = oodaStates.OBSERVE
+    end
+    
+    -- After any phase, check if destroyed and cancel schedule
+    if self.destroyed then
+        self:cancelSchedule()
+    end
+end
+
+function OODACommander:observe()
+    error("OODACommander subclass must implement observe()")
+end
+
+function OODACommander:orient()
+    error("OODACommander subclass must implement orient()")
+end
+
+function OODACommander:decide()
+    error("OODACommander subclass must implement decide()")
+end
+
+function OODACommander:act()
+    error("OODACommander subclass must implement act()")
+end
+
+-- Cancel the scheduled OODA loop
+function OODACommander:cancelSchedule()
+    if self.scheduleId then
+        mist.removeFunction(self.scheduleId)
+        self.scheduleId = nil
+    end
+end
+
+return OODACommander
 
 end)
 __bundle_register("group-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -5610,6 +5291,312 @@ end
 return PatrolDoctrine
 
 end)
+__bundle_register("commander-visualizer", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local settings = require("settings")
+local rgb = constants.rgb
+local normalizeAngle = require("helpers").normalizeAngle --Load helper functions
+local angularDistance = require("helpers").angularDistance --Load helper functions
+
+local taskTypeNames = {}
+for name, value in pairs(constants.taskTypes) do
+    taskTypeNames[value] = name
+end
+
+-- Reconciles commander state (orders, dispositions, objectives, opscom tasking)
+-- onto persistent map marks. Owns a registry of {signature, markIds} keyed by a
+-- stable string per drawable thing, so unchanged state is a no-op and changed
+-- state erases the old marks before drawing new ones.
+local CommanderVisualizer = {}
+CommanderVisualizer.__index = CommanderVisualizer
+
+function CommanderVisualizer.new(map)
+    local self = setmetatable({}, CommanderVisualizer)
+    self.map = map
+    self.registry = {}
+    return self
+end
+
+-- Draw/update the marks for `key` only if `signature` differs from what's
+-- currently registered. `drawFn` is called (with no args) only when a redraw
+-- is needed, and must return a list of mark ids.
+function CommanderVisualizer:upsert(key, signature, drawFn)
+    local entry = self.registry[key]
+    if entry and entry.signature == signature then
+        return
+    end
+    if entry then
+        self.map:removeMarks(entry.markIds)
+    end
+    local markIds = drawFn() or {}
+    self.registry[key] = { signature = signature, markIds = markIds }
+end
+
+-- Erase any marks registered for `key`, if present.
+function CommanderVisualizer:release(key)
+    local entry = self.registry[key]
+    if not entry then return end
+    self.map:removeMarks(entry.markIds)
+    self.registry[key] = nil
+end
+
+-- Draw/update a label at a group's position showing its current order type
+-- and disposition, or threat assessment if the group has no active order.
+function CommanderVisualizer:syncGroupOrder(gc, color)
+    local key = "group:" .. gc.groupName
+
+    local position = gc:getOwnPosition()
+    if not position then
+        self:release(key)
+        return
+    end
+
+    local text
+    local textColor
+    local bgColor
+    local signature
+    local roundedPos = math.floor(position.x / 50) .. "," .. math.floor(position.z / 50)
+
+    local threatCount = gc.threatAssessment.count 
+    local groupDoctrineName = (gc.doctrine and gc.doctrine.name .. ":" .. gc.doctrine.currentPhaseName) or "?"
+    if gc.orders then
+        textColor = {1,1,1,0.8}
+        bgColor   = {0,0,0,0.3}
+        local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos}, "|")
+    else
+        textColor = {0.8,0.8,0.8,0.35}
+        bgColor   = {0.4,0.4,0.4,0.15}
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos}, "|")
+    end
+
+    local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
+    local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
+    text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText
+
+
+    self:upsert(key, signature, function()
+        return self.map:drawGroupOrder(text, color, position, textColor, bgColor)
+    end)
+end
+
+-- Draw and persist arrows showing each time a group changes its intended destination 
+function CommanderVisualizer:appendGroupMove(gc, color)
+    local key = color .. "_movement"
+    local entry = self.registry[key]
+    local position = gc:getOwnPosition()
+    if not position then
+        -- not releasing key can helpfully show trace trail for groups
+        -- that blunder unnoticed into bad situations and get obliterated
+        -- self:release(key)
+        return
+    end
+
+    local arrowColor = {0.3,0.3,0.3,0.04}
+    if color == "red" then
+        arrowColor[1] = 0.8
+    end
+    if color == "blue" then
+        arrowColor[3] = 0.8
+    end
+    local arrowIds = self.map:drawMovementTrail(position, gc.destination, color, arrowColor)
+    if arrowIds then
+        if not entry then
+            self:upsert(key, "_", function()
+                return arrowIds
+            end)
+        else
+            for _, mk in pairs(arrowIds) do
+                table.insert(self.registry[key].markIds, mk)
+            end
+        end
+    end
+end
+
+-- Used to erase and reset movement trail upon new orders for group
+function CommanderVisualizer:syncGroupMove(gc, color)
+    local key = color .. "_movement"
+    self:release(key)
+end
+
+-- Key for an objective's map mark, shared with releaseObjective below so
+-- whoever tears down the opscom owning this objective can clean up its
+-- mark directly - syncObjective's own isComplete() check only fires if
+-- syncObjective gets called again, which requires the opscom's act() to
+-- still be running, but the opscom is usually disbanded (its OODA schedule
+-- cancelled) in the very same moment its objective resolves.
+function CommanderVisualizer:objectiveKey(objective)
+    return "objective:" .. tostring(objective)
+end
+
+function CommanderVisualizer:releaseObjective(objective)
+    self:release(self:objectiveKey(objective))
+end
+
+-- Draw/update a circle + label at an objective's position showing its task
+-- type and status.
+function CommanderVisualizer:syncObjective(objective, doctrine, color)
+    local key = self:objectiveKey(objective)
+
+    if objective:isComplete() then
+        self:releaseObjective(objective)
+        return
+    end
+
+    local typeName = taskTypeNames[objective.type] or tostring(objective.type)
+    local orderCounts = {}
+    for k, v in pairs(objective:getOrderStatusCounts()) do
+        orderCounts[k] = tostring(v)
+    end
+    local objectiveOrders = "Assg:" .. orderCounts.assigned .. " Act:" .. orderCounts.inProgress .. " Dn:" .. orderCounts.completed .. " X:" .. orderCounts.aborted
+    local text = doctrine.name .. ":" ..  doctrine.currentPhaseName .. "\n" .. typeName .. " (" .. objective.status .. ") [" .. objectiveOrders .. "]"
+    local signature = table.concat({typeName, objective.status, objective.radius, doctrine.name, doctrine.currentPhaseName, objectiveOrders}, "|")
+
+    self:upsert(key, signature, function()
+        return self.map:drawObjective(objective, text, color)
+    end)
+end
+
+-- Draw/update the outline of tasked groups and directive arrows from each
+-- group to the opscom's objective.
+function CommanderVisualizer:syncOpscom(opscom, color)
+    local key = "opscom:" .. opscom.name
+
+    local objective = opscom.orderCoordinator.objectives[1]
+    if not objective then
+        self:release(key)
+        return
+    end
+
+    local groupNames = {}
+    local points = {}
+    local polygon = {}
+    -- Calculate centroid of allied positions
+    local alliedCenterX = 0
+    local alliedCenterZ = 0
+    local center = { x = 0, y = 0, z = 0 }
+    local validCount = 0
+    for _, gc in ipairs(opscom.groupCommanders) do
+        local position = gc:getOwnPosition()
+        if position then
+            table.insert(groupNames, gc.groupName)
+            table.insert(points, position)
+            alliedCenterX = alliedCenterX + position.x
+            alliedCenterZ = alliedCenterZ + position.z
+            validCount = validCount + 1
+        end
+    end
+    table.sort(groupNames)
+
+    center.x = alliedCenterX / validCount
+    center.z = alliedCenterZ / validCount
+    -- project points from center to form enclosing polygon
+    -- for each point project 2 points away from center +/- 45deg
+    for i, data in pairs(points) do
+        -- get heading center to data
+        local heading = mist.utils.getHeadingPoints(center, data)
+        local projectedPoint1 = mist.projectPoint(data, 800, heading + math.pi/4)
+        local projectedPoint2 = mist.projectPoint(data, 800, heading - math.pi/4)
+        table.insert(polygon, projectedPoint1)
+        table.insert(polygon, projectedPoint2)
+    end
+    -- table.insert(polygon, lastPoint)
+    -- sort points
+    local initialHeading = 0
+    table.sort(polygon, function(a, b)
+        local headingA = normalizeAngle(mist.utils.getHeadingPoints(center, a))
+        local headingB = normalizeAngle(mist.utils.getHeadingPoints(center, b))
+        local arcA = angularDistance(initialHeading, headingA)
+        local arcB = angularDistance(initialHeading, headingB)
+        return arcA < arcB
+    end)
+
+    local signature = table.concat(groupNames, ",") .. "|" .. objective.status
+
+    self:upsert(key, signature, function()
+        if #polygon == 0 then return {} end
+        local markIds = {}
+        -- for _, gc in ipairs(opscom.groupCommanders) do
+        -- single arrow for whole operation
+            local origin = center --gc:getOwnPosition()
+            if origin then
+                local arrowIds = self.map:drawDirective(origin, objective.position, color)
+                if arrowIds then
+                    for _, mk in pairs(arrowIds) do
+                        table.insert(markIds, mk)
+                    end
+                end
+            end
+        -- end
+        local polygonId = self.map:drawPolygon(polygon)
+        if polygonId then
+            table.insert(markIds, polygonId)
+        end
+        return markIds
+    end)
+end
+
+return CommanderVisualizer
+
+end)
+__bundle_register("helpers", function(require, _LOADED, __bundle_register, __bundle_modules)
+local function isCounterClockwise(p1, p2, p3)
+    -- swapped to account for DCS coordinate weirdness
+    return (p2.y - p1.y) * (p3.x - p1.x) - (p2.x - p1.x) * (p3.y - p1.y) > 0
+    -- standard (x,y) as (N/S,E/W) version:
+    -- return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x) > 0
+end
+
+-- Normalize angle to [0, 2π)
+local function normalizeAngle(angle)
+    local TWO_PI = 2 * math.pi
+    angle = angle % TWO_PI
+    if angle < 0 then
+        angle = angle + TWO_PI
+    end
+    return angle
+end
+local function angularDistance(from, to)
+    local TWO_PI = 2 * math.pi
+    local diff = (to - from) % TWO_PI
+    if diff < 0 then
+        diff = diff + TWO_PI
+    end
+    return diff
+end
+
+return {
+    isCounterClockwise = isCounterClockwise,
+    normalizeAngle = normalizeAngle,
+    angularDistance = angularDistance
+}
+
+end)
+__bundle_register("settings", function(require, _LOADED, __bundle_register, __bundle_modules)
+local settings = {
+    -- whether UI elements will show on the map at all
+    draw = {
+        edges = true,
+        zones = true,
+        frontlines = true,
+        directives = true,
+        groupOrders = true,
+        groupMovement = true,
+        objectives = true,
+    },
+    -- whether they will be visible to the other coalition
+    displayToAll = {
+        zones = true,
+        frontlines = true,
+        directives = true,
+        groupOrders = false,
+        groupMovement = false,
+        objectives = false,
+    }
+}
+
+return settings
+end)
 __bundle_register("doctrines.tactical.assault-doctrine", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- Reworking of AsOrderedDoctrine to emphasize occupying position
 --
@@ -6128,6 +6115,565 @@ end
 
 
 return DefensiveDoctrine
+
+end)
+__bundle_register("operation", function(require, _LOADED, __bundle_register, __bundle_modules)
+local Objective = require("objective")
+
+-- Operation: strategic-level bundle of Objectives working toward one target.
+-- Mirrors the Objective/Order relationship one level up: an Operation owns a
+-- growable, arbitrary-cardinality list of Objectives (tagged by role, not
+-- keyed by it), each with its own independent status - so an operation can
+-- carry multiple objectives of the same role (e.g. two concurrent air
+-- defense objectives), or have one objective's lifecycle (add/retire/
+-- replace) proceed independently of its siblings, the same way
+-- Objective.orders already supports multiple concurrent same-type orders.
+--
+-- Each entry is { objective = Objective, role = string, opscom = OperationalCommander }.
+-- role is a free-form tag for the owning StrategicDoctrine's own bookkeeping
+-- (e.g. "assault", "fireSupport") - not a unique slot key.
+
+local Operation = {}
+Operation.__index = Operation
+
+local OperationStatus = {
+    ACTIVE   = "Active",   -- Operation is being pursued
+    ACHIEVED = "Achieved", -- All objectives resolved with no failures
+    FAILED   = "Failed",   -- At least one objective failed
+    CANCELED = "Canceled", -- Operation was canceled by the strategic commander
+}
+
+function Operation.new(config)
+    local self = setmetatable({}, Operation)
+
+    self.target = config.target -- {zoneName, position}
+    self.status = OperationStatus.ACTIVE
+    self.createdAt = timer.getTime()
+    self.objectives = {} -- array of {objective, role, opscom}
+
+    return self
+end
+
+-- Add an objective entry to this operation
+function Operation:addObjective(entry)
+    table.insert(self.objectives, entry)
+end
+
+-- Get counts of this operation's objectives by status. Pass primaryOnly=true
+-- to count only entries whose template marked them primary (e.g. assault) -
+-- that's what determines whether the *operation* is done, since a
+-- supporting objective (e.g. fireSupport) has no natural completion of its
+-- own and shouldn't be able to hold the operation open forever, nor should
+-- it be treated as "the operation is done" while a primary objective is
+-- still active.
+function Operation:getObjectiveStatusCounts(primaryOnly)
+    local counts = {active = 0, achieved = 0, failed = 0, canceled = 0, total = 0}
+
+    for _, entry in ipairs(self.objectives) do
+        if not primaryOnly or entry.primary then
+            counts.total = counts.total + 1
+            local status = entry.objective.status
+            if status == Objective.Status.ACTIVE then
+                counts.active = counts.active + 1
+            elseif status == Objective.Status.ACHIEVED then
+                counts.achieved = counts.achieved + 1
+            elseif status == Objective.Status.FAILED then
+                counts.failed = counts.failed + 1
+            elseif status == Objective.Status.CANCELED then
+                counts.canceled = counts.canceled + 1
+            end
+        end
+    end
+
+    return counts
+end
+
+-- Returns true if the operation is no longer being actively pursued
+function Operation:isComplete()
+    return self.status ~= OperationStatus.ACTIVE
+end
+
+Operation.Status = OperationStatus
+
+return Operation
+
+end)
+__bundle_register("objective", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local taskTypes = constants.taskTypes
+
+-- Objective class for strategic-level goals
+-- Each objective may have multiple orders assigned to different groups
+-- Tracks overall objective status and completion criteria
+
+local Objective = {}
+Objective.__index = Objective
+
+-- Objective status values
+local ObjectiveStatus = {
+    ACTIVE = "Active",       -- Objective is being pursued
+    ACHIEVED = "Achieved",   -- Objective successfully completed
+    FAILED = "Failed",       -- Objective could not be completed
+    CANCELED = "Canceled",   -- Objective was canceled by strategic commander
+}
+
+function Objective.new(config)
+    local self = setmetatable({}, Objective)
+    
+    -- Required fields
+    self.type = config.type           -- taskTypes constant (DEFEND, RALLY, etc.)
+    self.position = config.position   -- {x, z}
+    
+    -- Optional fields with defaults
+    self.radius = config.radius or 500
+    self.deadline = config.deadline   -- nil or timer.getTime() + duration
+    
+    -- Status tracking
+    self.status = ObjectiveStatus.ACTIVE
+    self.createdAt = timer.getTime()
+    self.updatedAt = timer.getTime()
+    self.achievedAt = nil
+    self.failedAt = nil
+    
+    -- Associated orders
+    self.orders = {}  -- array of Order objects
+    
+    return self
+end
+
+-- Add an order to this objective
+function Objective:addOrder(order)
+    table.insert(self.orders, order)
+    -- Ensure bidirectional reference
+    order.objective = self
+    self.updatedAt = timer.getTime()
+end
+
+-- Remove an order from this objective
+function Objective:removeOrder(order)
+    for i, existingOrder in ipairs(self.orders) do
+        if existingOrder == order then
+            table.remove(self.orders, i)
+            self.updatedAt = timer.getTime()
+            return true
+        end
+    end
+    return false
+end
+
+-- Get counts of orders by status
+function Objective:getOrderStatusCounts()
+    local counts = {
+        assigned = 0,
+        inProgress = 0,
+        completed = 0,
+        aborted = 0,
+        total = #self.orders
+    }
+    
+    local orderStatus = constants.orderStatus
+    for _, order in ipairs(self.orders) do
+        if order.status == orderStatus.ASSIGNED then
+            counts.assigned = counts.assigned + 1
+        elseif order.status == orderStatus.IN_PROGRESS then
+            counts.inProgress = counts.inProgress + 1
+        elseif order.status == orderStatus.COMPLETED then
+            counts.completed = counts.completed + 1
+        elseif order.status == orderStatus.ABORTED then
+            counts.aborted = counts.aborted + 1
+        end
+    end
+    
+    return counts
+end
+
+-- Get all active orders (not completed or aborted)
+function Objective:getActiveOrders()
+    local active = {}
+    for _, order in ipairs(self.orders) do
+        if order:isActive() then
+            table.insert(active, order)
+        end
+    end
+    return active
+end
+
+-- Get all finished orders (completed or aborted)
+function Objective:getFinishedOrders()
+    local finished = {}
+    for _, order in ipairs(self.orders) do
+        if order:isFinished() then
+            table.insert(finished, order)
+        end
+    end
+    return finished
+end
+
+-- Mark objective as achieved
+function Objective:markAchieved()
+    self.status = ObjectiveStatus.ACHIEVED
+    self.achievedAt = timer.getTime()
+    self.updatedAt = timer.getTime()
+end
+
+-- Mark objective as failed
+function Objective:markFailed(reason)
+    self.status = ObjectiveStatus.FAILED
+    self.failedAt = timer.getTime()
+    self.failReason = reason
+    self.updatedAt = timer.getTime()
+end
+
+-- Returns true if the objective is no longer being actively pursued
+function Objective:isComplete()
+    return self.status ~= ObjectiveStatus.ACTIVE
+end
+
+-- Mark objective as canceled
+function Objective:markCanceled()
+    self.status = ObjectiveStatus.CANCELED
+    self.updatedAt = timer.getTime()
+end
+
+-- Get a summary of objective state for reporting
+function Objective:getSummary()
+    local statusCounts = self:getOrderStatusCounts()
+    
+    return {
+        type = self.type,
+        status = self.status,
+        position = self.position,
+        radius = self.radius,
+        createdAt = self.createdAt,
+        orderCounts = statusCounts,
+        timeSinceCreated = timer.getTime() - self.createdAt,
+    }
+end
+
+Objective.Status = ObjectiveStatus
+
+return Objective
+
+end)
+__bundle_register("doctrines.strategic.expand-frontier-plan", function(require, _LOADED, __bundle_register, __bundle_modules)
+local constants = require("constants")
+local Doctrine = require("doctrine")
+
+local taskTypes = constants.taskTypes
+
+-- ExpandFrontierPlan: first strategic doctrine, modeled directly on the
+-- target-selection/resourcing logic that used to be baked into
+-- CoalitionCommander - pick a random enemy-adjacent zone once no operation
+-- is active, and commit up to 3 nearest reserve groups to assault it.
+--
+-- Unlike tactical/operational doctrines, this doesn't use Doctrine's phase
+-- machinery (registerPhase/changePhase) - there's no single linear
+-- progression to be "in a phase" of once multiple independent Operations
+-- and Objectives can exist concurrently (see StrategicCommander/Operation).
+-- It still extends Doctrine for the shared name/commanderName bookkeeping
+-- and to keep the same swappable-strategy shape as the other two tiers, but
+-- overrides plan() entirely with a one-shot reconciliation pass instead of
+-- phase dispatch: given the current game-board state, decide what
+-- Operations (if any) should be started this cycle.
+local ExpandFrontierPlan = {}
+setmetatable(ExpandFrontierPlan, {__index = Doctrine})
+ExpandFrontierPlan.__index = ExpandFrontierPlan
+
+function ExpandFrontierPlan.new(commanderName)
+    local self = Doctrine.new("ExpandFrontier", commanderName)
+    setmetatable(self, ExpandFrontierPlan)
+    return self
+end
+
+-- context: { activeOperationCount, reserveCount, candidateTargets = {{zoneName, position}, ...} }
+-- returns { operations = { { target = {...}, objectiveTemplates = {...} } } }
+function ExpandFrontierPlan:plan(context)
+    -- Only pursue one operation at a time for now - same serialization
+    -- CoalitionCommander used (`activeCount == 0`). Nothing about Operation
+    -- or StrategicCommander requires this; it's just this doctrine's choice.
+    if context.activeOperationCount > 0 then
+        return {}
+    end
+
+    if context.reserveCount == 0 or #context.candidateTargets == 0 then
+        return {}
+    end
+
+    local target = context.candidateTargets[math.random(#context.candidateTargets)]
+
+    return {
+        operations = {
+            {
+                target = target,
+                objectiveTemplates = {
+                    {
+                        role       = "assault",
+                        type       = taskTypes.ASSAULT,
+                        position   = target.position,
+                        radius     = 500,
+                        groupCount = 3,
+                        -- Primary: the operation is considered done once
+                        -- this resolves (see Operation:getObjectiveStatusCounts
+                        -- and StrategicCommander:orient).
+                        primary    = true,
+                    },
+                },
+            },
+        },
+    }
+end
+
+return ExpandFrontierPlan
+
+end)
+__bundle_register("coalition-commander", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- aka Strategic Commander
+
+-- local constants = require("constants")
+local GroupCommander = require("group-commander")
+-- local GroupProfiler = require("group-profiler")
+local OperationalCommander = require("operational-commander")
+local OODACommander = require("ooda-commander")
+local Objective = require("objective")
+-- local Order = require("order")
+-- local OrderCoordinator = require("order-coordinator")
+-- local ReconRallyAssaultPlan = require("doctrines.operational.recon-rally-assault-plan")
+local CommanderVisualizer = require("commander-visualizer")
+local SpatialAgent = require("spatial-agent")
+-- local ThreatTracker = require("threat-tracker")
+
+-- local alr = constants.acceptableLevelsOfRisk
+-- local orderStatus = constants.orderStatus
+-- local taskTypes = constants.taskTypes
+-- local dispositionTypes = constants.dispositionTypes
+
+local taskTypes = require("constants").taskTypes
+local statusTypes = require("constants").statusTypes
+
+local CoalitionCommander = {}
+setmetatable(CoalitionCommander, {__index = OODACommander})
+CoalitionCommander.__index = CoalitionCommander
+
+local oodaInterval = 45.0 -- seconds
+
+function CoalitionCommander.new(parent, config)
+    local self = OODACommander.new({interval = oodaInterval})
+    setmetatable(self, CoalitionCommander)
+    self.map = parent
+    self.coalition = config.color
+    self.color = config.color
+    self.opponent = config.color == "blue" and "red" or "blue"
+    self.templates = config.groundTemplates
+    self.groupId = 1
+    self.groups = {} -- e.g. name location task
+    self.reserves = {}
+    self.groupsByZone = {}
+    for _, name in pairs(self.map.allZones) do
+        self.groupsByZone[name] = {}
+    end
+    self.groupsByTask = {}
+    for i, j in pairs(taskTypes) do
+        self.groupsByTask[j] = {}
+    end
+    self.opscoms = {}
+    self.visualizer = CommanderVisualizer.new(self.map.map)
+    self.operations = {
+        active = {},
+        history = {},
+        group = nil,
+        status = nil,
+    }
+    -- attitude/aggressiveness = offensive, defensive, cautious, etc
+    return self
+end
+
+
+function CoalitionCommander:addReserves(groups)
+    -- self.reserves = groups
+    for _, groupName in pairs(groups) do
+        local gc = GroupCommander.new(groupName, {
+            color = self.color,
+            -- visualizer = self.visualizer, --groups have own visualizer to show doctrine and movement
+            map = self.map.map,
+        })
+        table.insert(self.reserves, gc)
+    end
+end
+
+-- DEPRECATED
+-- A preliminary phase to allow commander to choose group templates for all front zones
+-- (random for now, TODO apply some strategy to placement of different types)
+function CoalitionCommander:initiate(front)
+    local reinforcements = {}
+    for _, zoneName in pairs(front.zones) do
+        for i = 1, math.random(2) do
+            local r = math.random(#self.templates)
+            local group = self.templates[r]
+            local groupName = zoneName.."-"..self:getNewGroupId()
+    
+            local gc = GroupCommander.new(groupName, {
+                color = self.color,
+                -- visualizer = self.visualizer,
+            })
+            table.insert(self.reserves, gc)
+
+            local groupData = {
+                groupName = groupName,
+                template = group
+            }
+            table.insert(reinforcements[zoneName], groupData)
+        end
+    end
+
+    return reinforcements
+end
+
+-- NOTE: Doctrine usage example:
+-- To assign a specific strategy to an objective, create the Doctrine and assign it:
+--   local objective = Objective.new({...})
+--   objective.doctrine = ReconRallyAssaultPlan.new(commanderName, config)
+-- The OperationalCommander will use the Doctrine in its DECIDE phase.
+-- If no Doctrine is assigned, it defaults to ReconRallyAssaultPlan.
+function CoalitionCommander:observe()
+    -- Prune destroyed groups from reserves
+    local surviving = {}
+    for _, gc in ipairs(self.reserves) do
+        if not gc.destroyed then
+            table.insert(surviving, gc)
+        end
+    end
+    self.reserves = surviving
+
+    env.info(string.format("****** %s StratCom OBSERVE: blue=%d red=%d zones | reserves=%d | opscoms=%d",
+        self.color,
+        #self.map:getCluster("blue"),
+        #self.map:getCluster("red"),
+        #self.reserves,
+        #self.opscoms))
+end
+
+function CoalitionCommander:orient()
+    -- TODO compare current state to previous to extract trends (force strength, territorial control, etc)
+    -- Consider observed threats and stalled operations / requests for reinforcements
+    -- Identify opscoms whose objective is complete or failed
+    self.opscoms_to_disband = {}
+    local activeCount = 0
+    for i, opscom in ipairs(self.opscoms) do
+        local objective = opscom.orderCoordinator.objectives[1]
+        if objective and objective:isComplete() then
+            table.insert(self.opscoms_to_disband, i)
+        else
+            activeCount = activeCount + 1
+        end
+    end
+
+    -- If no active opscoms will remain after disbanding, and reserves are available, find a new target
+    -- TODO Select target based on knowledge of enemy strength or outcome of past operations
+    self.pending_target = nil
+    if activeCount == 0 and #self.reserves > 0 then
+        local ownZones = self.map:getCluster(self.color)
+        for _, zoneName in ipairs(ownZones) do
+            local enemyNeighbors = self.map:getNeighbors(zoneName, self.opponent, true)
+            if enemyNeighbors and #enemyNeighbors > 0 then
+                local target = enemyNeighbors[math.random(#enemyNeighbors)]
+                self.pending_target = {
+                    zoneName = target,
+                    position = self.map:getZone(target).point,
+                }
+                break
+            end
+        end
+    end
+end
+
+function CoalitionCommander:decide()
+    -- Disband completed opscoms (iterate in reverse to safely remove by index)
+    table.sort(self.opscoms_to_disband, function(a, b) return a > b end)
+    for _, i in ipairs(self.opscoms_to_disband) do
+        local opscom = self.opscoms[i]
+        self.visualizer:release("opscom:" .. opscom.name)
+        local survivors = opscom:disband()
+        for _, gc in ipairs(survivors) do
+            -- This could be a good point to check residual gc doctrine and orders,
+            -- to see if they are still appropriate or should be removed
+            table.insert(self.reserves, gc)
+        end
+        table.remove(self.opscoms, i)
+        env.info(string.format("****** %s StratCom ACT: disbanded opscom, %d groups returned to reserves",
+            self.color, #survivors))
+    end
+
+    -- Select groups from reserves by proximity to the pending target
+    -- TODO Balance proximity and suitability for type of operation
+    self.pending_groups = {}
+    if self.pending_target then
+        local maxGroups = 3
+        local candidates = {}
+        for _, gc in ipairs(self.reserves) do
+            local status = gc:getStatus()
+            if status.position then
+                table.insert(candidates, {
+                    gc = gc,
+                    dist = SpatialAgent.distance2D(status.position, self.pending_target.position),
+                })
+            end
+        end
+        table.sort(candidates, function(a, b) return a.dist < b.dist end)
+        for i = 1, math.min(maxGroups, #candidates) do
+            table.insert(self.pending_groups, candidates[i].gc)
+        end
+    end
+end
+
+function CoalitionCommander:act()
+    -- Create a new opscom if a target and groups are ready
+    if self.pending_target and #self.pending_groups > 0 then
+        -- Remove assigned groups from reserves
+        for _, gc in ipairs(self.pending_groups) do
+            for i, reserveGc in ipairs(self.reserves) do
+                if reserveGc == gc then
+                    table.remove(self.reserves, i)
+                    break
+                end
+            end
+        end
+
+        local opscom = OperationalCommander.new({
+            color = self.color,
+            groupCommanders = self.pending_groups,
+            visualizer = self.visualizer,
+        })
+        opscom.orderCoordinator.objectives = {
+            Objective.new({
+                type = taskTypes.ASSAULT,
+                position = self.pending_target.position,
+                radius = 500,
+            })
+        }
+        table.insert(self.opscoms, opscom)
+        env.info(string.format("****** %s StratCom ACT: created opscom → targeting %s with %d groups",
+            self.color, self.pending_target.zoneName, #self.pending_groups))
+        -- draw polygon around units and directive arrow at creation
+        self.visualizer:syncOpscom(opscom, self.color)
+    end
+
+    -- Keep each active opscom's outline/directive marks in sync with current tasking
+    -- for _, opscom in ipairs(self.opscoms) do
+    --     self.visualizer:syncOpscom(opscom, self.color)
+    -- end
+end
+
+
+-- ============================================================================
+-- HELPER METHODS
+-- ============================================================================
+
+function CoalitionCommander:getNewGroupId()
+    self.groupId = self.groupId + 1
+    return self.groupId
+end
+
+return CoalitionCommander
 
 end)
 __bundle_register("control-zones", function(require, _LOADED, __bundle_register, __bundle_modules)

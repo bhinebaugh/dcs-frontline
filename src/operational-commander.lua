@@ -19,6 +19,14 @@ OperationalCommander.__index = OperationalCommander
 
 local oodaInterval = 30.0 -- seconds
 
+-- self.name doubles as this opscom's map-mark/visualizer key
+-- (CommanderVisualizer:syncOpscom) and its doctrine's log-line commander
+-- name, so it must be unique per instance - "<color>Ops" alone collided the
+-- moment more than one opscom of the same color could be active at once
+-- (e.g. an assault opscom and a fire-support opscom under the same
+-- Operation), silently stomping each other's map marks.
+local nextInstanceId = 1
+
 local function isOrderChanged(lastOrder, newOrder, commanderStatus)
     if not lastOrder then
         return true
@@ -52,7 +60,9 @@ function OperationalCommander.new(config)
 
     -- OperationalCommander-specific initialization
     self.color = config.color or "white"
-    self.name = config.color .. "Ops"
+    local roleSuffix = config.role and ("-" .. config.role) or ""
+    self.name = config.color .. "Ops" .. roleSuffix .. "-" .. nextInstanceId
+    nextInstanceId = nextInstanceId + 1
     self.threatTracker = ThreatTracker.new(self.color .. "OperationalCommander")
     self.orderCoordinator = OrderCoordinator.new(self.color)
     self.lastIssuedOrders = {}
@@ -72,7 +82,10 @@ function OperationalCommander.new(config)
     -- status, since there's no single opscom position to age relative to.
     self.threatMemoryWindow = config.threatMemoryWindow or 120
 
-    self.doctrine = nil
+    -- Pre-built doctrine instance, e.g. from StrategicCommander for a
+    -- non-assault role - nil defaults to ReconRallyAssaultPlan below in
+    -- decide(), unchanged from before.
+    self.doctrine = config.doctrine
     -- clear out any residual orders to ensure all groups are available for new tasking
     for _, gc in ipairs(self.groupCommanders) do
         gc:clearOrders()
