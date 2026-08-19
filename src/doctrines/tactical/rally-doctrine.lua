@@ -14,7 +14,7 @@
 
 local constants = require("constants")
 local Doctrine = require("doctrine")
-local AsOrderedDoctrine = require("doctrines.tactical.as-ordered-doctrine")
+local ForceStatusAnalyzer = require("force-status-analyzer")
 local SpatialAgent = require("spatial-agent")
 
 local dispositionTypes = constants.dispositionTypes
@@ -34,11 +34,38 @@ function RallyDoctrine.new(commanderName)
     return self
 end
 
--- Danger assessment is shared with AsOrderedDoctrine (ammo, attrition, threat
--- favorability, suitability) - it doesn't depend on order type. Only the
--- threshold at which it triggers an abort differs per ALR.
 function RallyDoctrine:considerAbort(context)
-    return AsOrderedDoctrine.considerAbort(self, context)
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
+
+    local retreatAssessment = 0.0
+
+    -- ammunition
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 1.0
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        retreatAssessment = retreatAssessment + 0.5
+    end
+
+    -- attrition rate
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    retreatAssessment = retreatAssessment + attritionRate
+
+    -- threat favorability
+    if threat.count > 0 and threat.favorability < 1.0 then
+        retreatAssessment = retreatAssessment + (1 - threat.favorability)
+    else
+        retreatAssessment = retreatAssessment - (1 / threat.favorability)
+    end
+
+    -- suitability: if group no longer meets missionProfile, increase abort pressure
+    local suitability = context.suitability
+    if suitability and suitability < 0.3 then
+        retreatAssessment = retreatAssessment + (0.3 - suitability) * 2
+    end
+
+    return retreatAssessment
 end
 
 -- Fallback destination if a known threat's weapon range currently reaches
