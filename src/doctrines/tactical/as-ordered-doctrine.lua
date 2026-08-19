@@ -180,15 +180,13 @@ function AsOrderedDoctrine:engagePhase(context)
     if self:considerEngage(context) >= engageThreshold then
         local ownPosition      = context.ownPosition
         local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
-        local tolerance        = 100
 
         -- Standoff position: standoffDistance from threat, on our side of it.
         -- Computed this way rather than from ownPosition so the unit can never
         -- overshoot and pass through the threat.
-        local retreatDir  = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        local standoffPos = SpatialAgent.calculateDestination(threat.center, retreatDir, standoffDistance)
+        local standoffPos = SpatialAgent.pointAtDistance(ownPosition, threat.center, standoffDistance)
 
-        if SpatialAgent.distance2D(ownPosition, standoffPos) <= tolerance then
+        if not standoffPos then
             return {
                 disposition = dispositionTypes.HOLD,
                 destination = ownPosition,

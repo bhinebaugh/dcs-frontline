@@ -207,6 +207,50 @@ function SpatialAgent.calculateDestination(origin, direction, distance)
     }
 end
 
+--- Calculate a point exactly `distance` from `center`, along the ray from
+-- center through ownPosition (i.e. on our own side of it) - the shared
+-- "stand at this exact range" primitive for both closing to and standing
+-- off at a threat's engagement envelope (see EngagementAnalyzer.assessRange's
+-- standoffDistance). Returns nil if ownPosition is already within
+-- `tolerance` of that point, so callers can treat nil as "hold here".
+-- @param ownPosition Current position
+-- @param center Position to measure distance from (e.g. threat center)
+-- @param distance Desired distance from center, in meters
+-- @param tolerance Tolerance in meters (default 100)
+-- @return table Destination position, or nil if already close enough
+function SpatialAgent.pointAtDistance(ownPosition, center, distance, tolerance)
+    tolerance = tolerance or 100
+
+    local direction = SpatialAgent.calculateDirection(center, ownPosition)
+    local point = SpatialAgent.calculateDestination(center, direction, distance)
+
+    if SpatialAgent.distance2D(ownPosition, point) <= tolerance then
+        return nil
+    end
+    return point
+end
+
+--- Calculate a fallback point exactly `safeDistance` from `center`, but
+-- only if ownPosition is currently closer than that - unlike
+-- pointAtDistance, this never asks a unit to approach, only to back off.
+-- Meant for "stay out of this threat's weapon range" behavior (retreat,
+-- recon, rally) as opposed to "get to this exact range to fight" behavior
+-- (see AsOrderedDoctrine/AssaultDoctrine's engagePhase).
+-- @param ownPosition Current position
+-- @param center Position to stay clear of (e.g. threat center)
+-- @param safeDistance Minimum safe distance from center, in meters
+-- @param tolerance Tolerance in meters (default 100)
+-- @return table Destination position, or nil if already safe
+function SpatialAgent.fallbackDestination(ownPosition, center, safeDistance, tolerance)
+    tolerance = tolerance or 100
+
+    local currentDistance = SpatialAgent.distance2D(ownPosition, center)
+    if not currentDistance or currentDistance >= safeDistance - tolerance then
+        return nil
+    end
+    return SpatialAgent.pointAtDistance(ownPosition, center, safeDistance, tolerance)
+end
+
 --- Calculate multiple staging positions around a center point
 -- Positions are spread in an arc or circle for tactical deployment
 -- @param center Center position {x, y, z}

@@ -767,6 +767,50 @@ function SpatialAgent.calculateDestination(origin, direction, distance)
     }
 end
 
+--- Calculate a point exactly `distance` from `center`, along the ray from
+-- center through ownPosition (i.e. on our own side of it) - the shared
+-- "stand at this exact range" primitive for both closing to and standing
+-- off at a threat's engagement envelope (see EngagementAnalyzer.assessRange's
+-- standoffDistance). Returns nil if ownPosition is already within
+-- `tolerance` of that point, so callers can treat nil as "hold here".
+-- @param ownPosition Current position
+-- @param center Position to measure distance from (e.g. threat center)
+-- @param distance Desired distance from center, in meters
+-- @param tolerance Tolerance in meters (default 100)
+-- @return table Destination position, or nil if already close enough
+function SpatialAgent.pointAtDistance(ownPosition, center, distance, tolerance)
+    tolerance = tolerance or 100
+
+    local direction = SpatialAgent.calculateDirection(center, ownPosition)
+    local point = SpatialAgent.calculateDestination(center, direction, distance)
+
+    if SpatialAgent.distance2D(ownPosition, point) <= tolerance then
+        return nil
+    end
+    return point
+end
+
+--- Calculate a fallback point exactly `safeDistance` from `center`, but
+-- only if ownPosition is currently closer than that - unlike
+-- pointAtDistance, this never asks a unit to approach, only to back off.
+-- Meant for "stay out of this threat's weapon range" behavior (retreat,
+-- recon, rally) as opposed to "get to this exact range to fight" behavior
+-- (see AsOrderedDoctrine/AssaultDoctrine's engagePhase).
+-- @param ownPosition Current position
+-- @param center Position to stay clear of (e.g. threat center)
+-- @param safeDistance Minimum safe distance from center, in meters
+-- @param tolerance Tolerance in meters (default 100)
+-- @return table Destination position, or nil if already safe
+function SpatialAgent.fallbackDestination(ownPosition, center, safeDistance, tolerance)
+    tolerance = tolerance or 100
+
+    local currentDistance = SpatialAgent.distance2D(ownPosition, center)
+    if not currentDistance or currentDistance >= safeDistance - tolerance then
+        return nil
+    end
+    return SpatialAgent.pointAtDistance(ownPosition, center, safeDistance, tolerance)
+end
+
 --- Calculate multiple staging positions around a center point
 -- Positions are spread in an arc or circle for tactical deployment
 -- @param center Center position {x, y, z}
@@ -4544,6 +4588,17 @@ function RallyDoctrine:considerAbort(context)
     return AsOrderedDoctrine.considerAbort(self, context)
 end
 
+-- Fallback destination if a known threat's weapon range currently reaches
+-- us, or nil if we're already outside it (see SpatialAgent.fallbackDestination).
+function RallyDoctrine:considerFallback(context)
+    local threat = context.threatAssessment
+    local safeDistance = threat.range and threat.range.theirReach
+    if not safeDistance or not threat.center then
+        return nil
+    end
+    return SpatialAgent.fallbackDestination(context.ownPosition, threat.center, safeDistance)
+end
+
 function RallyDoctrine:advancePhase(context)
     local ownPosition = context.ownPosition
     local stagingPosition = context.orderPosition
@@ -4557,6 +4612,19 @@ function RallyDoctrine:advancePhase(context)
             disposition = dispositionTypes.HOLD,
             destination = nil,
             orderAction = "abort",
+        }
+    end
+
+    -- Falling back out of a threat's weapon range takes priority over
+    -- continuing toward the staging position - a mass-up point isn't safe
+    -- if reaching it means walking through someone's engagement envelope.
+    -- Doesn't abort the order; once safe, rallying resumes on its own.
+    local fallback = self:considerFallback(context)
+    if fallback then
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = fallback,
+            orderAction = "start",
         }
     end
 
@@ -4586,6 +4654,14 @@ function RallyDoctrine:holdPhase(context)
             disposition = dispositionTypes.HOLD,
             destination = nil,
             orderAction = "abort",
+        }
+    end
+
+    local fallback = self:considerFallback(context)
+    if fallback then
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = fallback,
         }
     end
 
@@ -4798,15 +4874,13 @@ function AsOrderedDoctrine:engagePhase(context)
     if self:considerEngage(context) >= engageThreshold then
         local ownPosition      = context.ownPosition
         local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
-        local tolerance        = 100
 
         -- Standoff position: standoffDistance from threat, on our side of it.
         -- Computed this way rather than from ownPosition so the unit can never
         -- overshoot and pass through the threat.
-        local retreatDir  = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        local standoffPos = SpatialAgent.calculateDestination(threat.center, retreatDir, standoffDistance)
+        local standoffPos = SpatialAgent.pointAtDistance(ownPosition, threat.center, standoffDistance)
 
-        if SpatialAgent.distance2D(ownPosition, standoffPos) <= tolerance then
+        if not standoffPos then
             return {
                 disposition = dispositionTypes.HOLD,
                 destination = ownPosition,
@@ -5333,6 +5407,22 @@ function ReconDoctrine:observePhase(context)
         return {
             disposition = dispositionTypes.HOLD,
             destination = nil,
+        }
+    end
+
+    -- Observe from a safe distance rather than wherever we happened to be
+    -- when the threat was first spotted - fall back only as far as needed
+    -- to be out of its weapon range, not until it's out of sight entirely.
+    local threat = context.threatAssessment
+    local safeDistance = threat.range and threat.range.theirReach
+    local fallback = safeDistance and threat.center
+        and SpatialAgent.fallbackDestination(context.ownPosition, threat.center, safeDistance)
+
+    if fallback then
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = fallback,
+            orderAction = "complete",
         }
     end
 
@@ -5932,6 +6022,45 @@ function AssaultDoctrine:considerDefend(context)
     return defendAssessment
 end
 
+function AssaultDoctrine:considerEngage(context)
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
+    local ownPosition = context.ownPosition
+    local objectivePosition = context.orderPosition
+
+    local engageAssessment = 0.0
+
+    -- threat favorability
+    if threat.count > 0 and threat.favorability < 1.0 then
+        engageAssessment = engageAssessment + threat.favorability
+    else
+        engageAssessment = engageAssessment + threat.favorability / 2
+    end
+
+    -- distance: prioritize a threat sitting between us and the objective
+    local distanceToThreat = SpatialAgent.distance2D(ownPosition, threat.center)
+    local distanceToObjective = SpatialAgent.distance2D(ownPosition, objectivePosition)
+    if distanceToObjective and distanceToThreat and distanceToObjective > 0 and distanceToThreat < distanceToObjective then
+        engageAssessment = engageAssessment + distanceToThreat / distanceToObjective
+    end
+
+    -- attrition rate
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    engageAssessment = engageAssessment - attritionRate
+
+    -- ammunition
+    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        engageAssessment = 0.0
+    end
+
+    if ForceStatusAnalyzer.isUnarmed(context.initialAmmoCount) then
+        engageAssessment = 0.0
+    end
+
+    return engageAssessment
+end
+
 function AssaultDoctrine:considerAbort(context)
     local threat = context.threatAssessment
     local status = context.statusReport
@@ -5989,6 +6118,15 @@ function AssaultDoctrine:advancePhase(context)
         }
     end
 
+    if self:considerEngage(context) >= engageThreshold then
+        self:changePhase("Engage")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = destination,
+            orderAction = "start",
+        }
+    end
+
     if self:considerDefend(context) >= defendThreshold then
         self:changePhase("Defend")
         return {
@@ -6002,6 +6140,51 @@ function AssaultDoctrine:advancePhase(context)
         disposition = dispositionTypes.ADVANCE,
         destination = destination,
         orderAction = "start",
+    }
+end
+
+function AssaultDoctrine:engagePhase(context)
+    local threat = context.threatAssessment
+
+    local engageThreshold = 0.3
+    local abortThreshold = context.retreatThreshold or 0.8
+
+    if self:considerAbort(context) >= abortThreshold then
+        self:changePhase("Abort")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil,
+            orderAction = "abort",
+        }
+    end
+
+    if self:considerEngage(context) >= engageThreshold then
+        local ownPosition      = context.ownPosition
+        local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
+
+        -- Positioning at an advantageous range: stop within our own reach
+        -- but outside the threat's if we outrange them, otherwise rush to
+        -- our own effective range rather than loitering somewhere we can't
+        -- return fire (see EngagementAnalyzer.assessRange's standoffDistance).
+        local standoffPos = SpatialAgent.pointAtDistance(ownPosition, threat.center, standoffDistance)
+
+        if not standoffPos then
+            return {
+                disposition = dispositionTypes.HOLD,
+                destination = ownPosition,
+            }
+        end
+
+        return {
+            disposition = dispositionTypes.ADVANCE,
+            destination = standoffPos,
+        }
+    end
+
+    self:changePhase("Advance")
+    return {
+        disposition = dispositionTypes.HOLD,
+        destination = nil,
     }
 end
 
@@ -6352,16 +6535,27 @@ function DefensiveDoctrine:retreatPhase(context)
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    -- Use directly observed threats if available (more stable)
-    local retreatDest = nil
-
-    -- TODO reconsider retreat if threat favorability improves, not just if threat disappears
     -- TODO consider aborting doctrine if already retreated and threat is still highly unfavorable
-    if threat.center then
-        local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    else
+    if not threat.center then
         self:changePhase("Hold")
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = nil
+        }
+    end
+
+    -- Fall back only far enough to be out of the threat's own weapon range,
+    -- not until it's out of sight entirely - once safe, return to Hold
+    -- rather than continuing to retreat every cycle the threat stays visible.
+    local safeDistance = (threat.range and threat.range.theirReach) or 0
+    local retreatDest = SpatialAgent.fallbackDestination(ownPosition, threat.center, safeDistance)
+
+    if not retreatDest then
+        self:changePhase("Hold")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil
+        }
     end
 
     return {

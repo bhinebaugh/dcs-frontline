@@ -41,6 +41,17 @@ function RallyDoctrine:considerAbort(context)
     return AsOrderedDoctrine.considerAbort(self, context)
 end
 
+-- Fallback destination if a known threat's weapon range currently reaches
+-- us, or nil if we're already outside it (see SpatialAgent.fallbackDestination).
+function RallyDoctrine:considerFallback(context)
+    local threat = context.threatAssessment
+    local safeDistance = threat.range and threat.range.theirReach
+    if not safeDistance or not threat.center then
+        return nil
+    end
+    return SpatialAgent.fallbackDestination(context.ownPosition, threat.center, safeDistance)
+end
+
 function RallyDoctrine:advancePhase(context)
     local ownPosition = context.ownPosition
     local stagingPosition = context.orderPosition
@@ -54,6 +65,19 @@ function RallyDoctrine:advancePhase(context)
             disposition = dispositionTypes.HOLD,
             destination = nil,
             orderAction = "abort",
+        }
+    end
+
+    -- Falling back out of a threat's weapon range takes priority over
+    -- continuing toward the staging position - a mass-up point isn't safe
+    -- if reaching it means walking through someone's engagement envelope.
+    -- Doesn't abort the order; once safe, rallying resumes on its own.
+    local fallback = self:considerFallback(context)
+    if fallback then
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = fallback,
+            orderAction = "start",
         }
     end
 
@@ -83,6 +107,14 @@ function RallyDoctrine:holdPhase(context)
             disposition = dispositionTypes.HOLD,
             destination = nil,
             orderAction = "abort",
+        }
+    end
+
+    local fallback = self:considerFallback(context)
+    if fallback then
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = fallback,
         }
     end
 

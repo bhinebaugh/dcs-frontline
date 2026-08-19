@@ -196,16 +196,27 @@ function DefensiveDoctrine:retreatPhase(context)
     local threat = context.threatAssessment
     local ownPosition = context.ownPosition
 
-    -- Use directly observed threats if available (more stable)
-    local retreatDest = nil
-
-    -- TODO reconsider retreat if threat favorability improves, not just if threat disappears
     -- TODO consider aborting doctrine if already retreated and threat is still highly unfavorable
-    if threat.center then
-        local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    else
+    if not threat.center then
         self:changePhase("Hold")
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = nil
+        }
+    end
+
+    -- Fall back only far enough to be out of the threat's own weapon range,
+    -- not until it's out of sight entirely - once safe, return to Hold
+    -- rather than continuing to retreat every cycle the threat stays visible.
+    local safeDistance = (threat.range and threat.range.theirReach) or 0
+    local retreatDest = SpatialAgent.fallbackDestination(ownPosition, threat.center, safeDistance)
+
+    if not retreatDest then
+        self:changePhase("Hold")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil
+        }
     end
 
     return {

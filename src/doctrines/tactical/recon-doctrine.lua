@@ -92,6 +92,22 @@ function ReconDoctrine:observePhase(context)
         }
     end
 
+    -- Observe from a safe distance rather than wherever we happened to be
+    -- when the threat was first spotted - fall back only as far as needed
+    -- to be out of its weapon range, not until it's out of sight entirely.
+    local threat = context.threatAssessment
+    local safeDistance = threat.range and threat.range.theirReach
+    local fallback = safeDistance and threat.center
+        and SpatialAgent.fallbackDestination(context.ownPosition, threat.center, safeDistance)
+
+    if fallback then
+        return {
+            disposition = dispositionTypes.RETREAT,
+            destination = fallback,
+            orderAction = "complete",
+        }
+    end
+
     return {
         disposition = dispositionTypes.HOLD,
         destination = nil,

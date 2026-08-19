@@ -46,6 +46,45 @@ function AssaultDoctrine:considerDefend(context)
     return defendAssessment
 end
 
+function AssaultDoctrine:considerEngage(context)
+    local threat = context.threatAssessment
+    local status = context.statusReport
+    local totalUnits = context.totalUnits
+    local ownPosition = context.ownPosition
+    local objectivePosition = context.orderPosition
+
+    local engageAssessment = 0.0
+
+    -- threat favorability
+    if threat.count > 0 and threat.favorability < 1.0 then
+        engageAssessment = engageAssessment + threat.favorability
+    else
+        engageAssessment = engageAssessment + threat.favorability / 2
+    end
+
+    -- distance: prioritize a threat sitting between us and the objective
+    local distanceToThreat = SpatialAgent.distance2D(ownPosition, threat.center)
+    local distanceToObjective = SpatialAgent.distance2D(ownPosition, objectivePosition)
+    if distanceToObjective and distanceToThreat and distanceToObjective > 0 and distanceToThreat < distanceToObjective then
+        engageAssessment = engageAssessment + distanceToThreat / distanceToObjective
+    end
+
+    -- attrition rate
+    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
+    engageAssessment = engageAssessment - attritionRate
+
+    -- ammunition
+    if ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
+        engageAssessment = 0.0
+    end
+
+    if ForceStatusAnalyzer.isUnarmed(context.initialAmmoCount) then
+        engageAssessment = 0.0
+    end
+
+    return engageAssessment
+end
+
 function AssaultDoctrine:considerAbort(context)
     local threat = context.threatAssessment
     local status = context.statusReport
@@ -103,6 +142,15 @@ function AssaultDoctrine:advancePhase(context)
         }
     end
 
+    if self:considerEngage(context) >= engageThreshold then
+        self:changePhase("Engage")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = destination,
+            orderAction = "start",
+        }
+    end
+
     if self:considerDefend(context) >= defendThreshold then
         self:changePhase("Defend")
         return {
@@ -116,6 +164,51 @@ function AssaultDoctrine:advancePhase(context)
         disposition = dispositionTypes.ADVANCE,
         destination = destination,
         orderAction = "start",
+    }
+end
+
+function AssaultDoctrine:engagePhase(context)
+    local threat = context.threatAssessment
+
+    local engageThreshold = 0.3
+    local abortThreshold = context.retreatThreshold or 0.8
+
+    if self:considerAbort(context) >= abortThreshold then
+        self:changePhase("Abort")
+        return {
+            disposition = dispositionTypes.HOLD,
+            destination = nil,
+            orderAction = "abort",
+        }
+    end
+
+    if self:considerEngage(context) >= engageThreshold then
+        local ownPosition      = context.ownPosition
+        local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
+
+        -- Positioning at an advantageous range: stop within our own reach
+        -- but outside the threat's if we outrange them, otherwise rush to
+        -- our own effective range rather than loitering somewhere we can't
+        -- return fire (see EngagementAnalyzer.assessRange's standoffDistance).
+        local standoffPos = SpatialAgent.pointAtDistance(ownPosition, threat.center, standoffDistance)
+
+        if not standoffPos then
+            return {
+                disposition = dispositionTypes.HOLD,
+                destination = ownPosition,
+            }
+        end
+
+        return {
+            disposition = dispositionTypes.ADVANCE,
+            destination = standoffPos,
+        }
+    end
+
+    self:changePhase("Advance")
+    return {
+        disposition = dispositionTypes.HOLD,
+        destination = nil,
     }
 end
 
