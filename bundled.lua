@@ -5840,6 +5840,13 @@ local dispositionTypes = constants.dispositionTypes
 local orderStatus = constants.orderStatus
 local taskTypes = constants.taskTypes
 
+-- How long to keep trading fire with a threat blocking the route before
+-- giving up on winning that fight and pushing through to the objective
+-- anyway - capturing the zone takes priority over resolving every
+-- engagement first. Only relevant at all once considerEngage's corridor
+-- gate has already established the threat is genuinely in the way.
+local engagePatience = 180 -- seconds
+
 local AssaultDoctrine = {}
 setmetatable(AssaultDoctrine, {__index = Doctrine})
 AssaultDoctrine.__index = AssaultDoctrine
@@ -5854,6 +5861,19 @@ function AssaultDoctrine.new(commanderName)
     self:registerPhase("Abort", AssaultDoctrine.abortPhase)
 
     return self
+end
+
+-- Seconds since entering the current phase, or 0 if we haven't changed
+-- phase yet (phaseHistory empty). Doctrine:changePhase records a
+-- {name, changedAt} entry for the phase being *left* at the moment of
+-- transition, so the last entry's changedAt is when the current phase was
+-- entered.
+function AssaultDoctrine:timeInPhase()
+    local last = self.phaseHistory[#self.phaseHistory]
+    if not last then
+        return 0
+    end
+    return timer.getTime() - last.changedAt
 end
 
 function AssaultDoctrine:considerDefend(context)
@@ -6014,7 +6034,9 @@ function AssaultDoctrine:engagePhase(context)
         }
     end
 
-    if self:considerEngage(context) >= engageThreshold then
+    local patienceExpired = self:timeInPhase() >= engagePatience
+
+    if not patienceExpired and self:considerEngage(context) >= engageThreshold then
         local ownPosition      = context.ownPosition
         local standoffDistance = (threat.range and threat.range.standoffDistance) or 1000
 
@@ -6037,6 +6059,10 @@ function AssaultDoctrine:engagePhase(context)
         }
     end
 
+    -- Reached either by considerEngage dropping below threshold (threat no
+    -- longer blocking the route, or beaten badly enough to stop mattering)
+    -- or by patienceExpired (still blocking, but capturing the objective
+    -- wins out over continuing to slug it out) - same outcome either way.
     self:changePhase("Advance")
     return {
         disposition = dispositionTypes.HOLD,
