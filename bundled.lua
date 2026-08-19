@@ -130,7 +130,7 @@ local groundTemplates = { --frontline, rear, farp
 local fireSupportTemplates = {
     red = {
         {"SAU Msta"},
-        {"2S9 Nona", "2S9 Nona"},
+        {"SAU Msta", "SAU Msta"},
     },
     blue = {
         {"M-109"},
@@ -2994,9 +2994,19 @@ function ReconRallyAssaultPlan:assaultPhase(context)
     local completedThisPhase = statusCounts.completed - self.phaseBaseline.completed
     local abortedThisPhase   = statusCounts.aborted   - self.phaseBaseline.aborted
 
-    -- Assault orders resolved
+    -- Assault orders resolved - the assault force is now standing at/near
+    -- the objective and has been feeding threatTracker live sightings the
+    -- whole time (see OperationalCommander:aggregateThreatsFromGroups), so
+    -- nearObjectiveThreatCount is trustworthy here without dispatching a
+    -- redundant recon order to go re-confirm what we already have eyes on.
+    -- Only fall back to Recon (to regroup and reassess) if it isn't clear -
+    -- e.g. the assault was beaten off rather than completed.
     if totalThisPhase > 0 and (completedThisPhase + abortedThisPhase) >= totalThisPhase then
-        self:changePhase("Recon", statusCounts)
+        if context.nearObjectiveThreatCount == 0 then
+            self:changePhase("Defend", statusCounts)
+        else
+            self:changePhase("Recon", statusCounts)
+        end
         return {}
     end
 
