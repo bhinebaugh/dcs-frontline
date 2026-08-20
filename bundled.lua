@@ -433,10 +433,30 @@ function StrategicCommander:act()
     end
 
     self:dispatchDireReserves()
+    self:reclaimReleasedGroups()
 
     for _, operation in ipairs(self.operations.active) do
         for _, entry in ipairs(operation.objectives) do
             self.visualizer:syncOpscom(entry.opscom, self.color)
+        end
+    end
+end
+
+-- Drains every active operation's opscom.releasedGroupCommanders into
+-- reserves - see OperationalCommander:planObjectiveWithDoctrine's
+-- releaseGroups. Runs every cycle (not just at disband) so a group can
+-- return to service mid-operation, well before its siblings finish
+-- whatever the rest of the operation is still doing.
+function StrategicCommander:reclaimReleasedGroups()
+    for _, operation in ipairs(self.operations.active) do
+        for _, entry in ipairs(operation.objectives) do
+            local released = entry.opscom.releasedGroupCommanders
+            if #released > 0 then
+                for _, gc in ipairs(released) do
+                    table.insert(self.reserves, gc)
+                end
+                entry.opscom.releasedGroupCommanders = {}
+            end
         end
     end
 end
@@ -6928,9 +6948,9 @@ end
 -- Polls the three concurrent resolution conditions (native ammo, virtual
 -- fuel, virtual repair) and, once all have resolved, either respawns the
 -- dire unit's group fresh (health-critical) or releases it as-is - either
--- way it's done and gets to leave the roster right away via
--- groupReplacements, rather than waiting for the convoy's own return trip
--- too. Then redirects the convoy home with an updated RESUPPLY order.
+-- way it's done and gets handed back to reserves right away via
+-- releaseGroups, rather than waiting for the convoy's own return trip too.
+-- Then redirects the convoy home with an updated RESUPPLY order.
 function RepairResupplyPlan:resupplyingPhase(context)
     local failure = self:checkFailure()
     if failure then return failure end
@@ -6962,18 +6982,18 @@ function RepairResupplyPlan:resupplyingPhase(context)
         }
     end
 
-    local replacements = {}
+    local released = {}
     if self.healthCritical then
         local freshName = self.unitRecovery:respawnGroup(self.direGc, self.rendezvousZone)
-        replacements[self.direGc.groupName] = freshName and self.unitRecovery:wrapGroupCommander(freshName) or false
+        if freshName then
+            table.insert(released, self.unitRecovery:wrapGroupCommander(freshName))
+        end
     else
-        -- No roster change needed - direGc just stays where it already is
-        -- in groupCommanders, so it's simply omitted from replacements
-        -- rather than mapped to itself.
         self.direGc.fuelRemaining = 1.0 -- virtual refuel; ammo is genuinely refilled by DCS already
         if self.direGc.orders and self.direGc.orders:isActive() then
             self.direGc.orders:complete()
         end
+        table.insert(released, self.direGc)
         env.info(string.format("*** %s RepairResupplyPlan: %s resupplied in place (no respawn needed)",
             self.commanderName, self.direGc.groupName))
     end
@@ -6981,7 +7001,14 @@ function RepairResupplyPlan:resupplyingPhase(context)
     self:changePhase("Returning")
 
     return {
-        groupReplacements = replacements,
+        -- The old direGc entry (destroyed-and-replaced or simply retired
+        -- from this opscom's concern either way) comes out of
+        -- groupCommanders here; the group actually going back into service
+        -- - released above - is what StrategicCommander:reclaimReleasedGroups
+        -- picks up next cycle. Leaving it in groupCommanders too would risk
+        -- it being double-tasked once it's also sitting in reserves.
+        groupReplacements = { [self.direGc.groupName] = false },
+        releaseGroups = released,
         orders = {
             {
                 type      = taskTypes.RESUPPLY,
@@ -7119,6 +7146,13 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
+    -- Drained by StrategicCommander every cycle for any active operation
+    -- (not just at disband) - see planObjectiveWithDoctrine's releaseGroups
+    -- handling. Lets a doctrine hand a still-alive, still-managed group
+    -- back to reserves mid-operation, distinct from groupReplacements'
+    -- false (drop and forget - e.g. a despawned convoy that shouldn't come
+    -- back at all).
+    self.releasedGroupCommanders = {}
     self.visualizer = config.visualizer --shares visualizer with coalition commander
 
     self.reconRadius = config.reconRadius or 8000
@@ -7429,6 +7463,14 @@ end
 -- roster entirely (false/nil value) once it's no longer needed - e.g. a
 -- resupply convoy retiring after restocking, before the objective completes
 -- and disband() hands back whatever's still in groupCommanders.
+-- releaseGroups (optional): array of GroupCommanders to hand back to
+-- StrategicCommander's reserves right now, mid-operation, rather than
+-- waiting for this objective to complete - e.g. a dire unit that's done
+-- resupplying while its convoy still has a return trip ahead of it.
+-- Doesn't touch groupCommanders itself; pair with groupReplacements=false
+-- for the same name if the group should also stop being managed by this
+-- opscom (almost always yes - a released-but-still-tracked group could get
+-- double-tasked once StrategicCommander also has it in reserves).
 function OperationalCommander:planObjectiveWithDoctrine(objective)
     local context = self:buildObjectiveContext(objective)
     local result = self.doctrine:plan(context)
@@ -7436,6 +7478,12 @@ function OperationalCommander:planObjectiveWithDoctrine(objective)
 
     if result.groupReplacements then
         self:applyGroupReplacements(result.groupReplacements)
+    end
+
+    if result.releaseGroups then
+        for _, gc in ipairs(result.releaseGroups) do
+            table.insert(self.releasedGroupCommanders, gc)
+        end
     end
 
     if result.objectiveFailed then

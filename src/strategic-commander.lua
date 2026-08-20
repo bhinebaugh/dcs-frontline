@@ -204,10 +204,30 @@ function StrategicCommander:act()
     end
 
     self:dispatchDireReserves()
+    self:reclaimReleasedGroups()
 
     for _, operation in ipairs(self.operations.active) do
         for _, entry in ipairs(operation.objectives) do
             self.visualizer:syncOpscom(entry.opscom, self.color)
+        end
+    end
+end
+
+-- Drains every active operation's opscom.releasedGroupCommanders into
+-- reserves - see OperationalCommander:planObjectiveWithDoctrine's
+-- releaseGroups. Runs every cycle (not just at disband) so a group can
+-- return to service mid-operation, well before its siblings finish
+-- whatever the rest of the operation is still doing.
+function StrategicCommander:reclaimReleasedGroups()
+    for _, operation in ipairs(self.operations.active) do
+        for _, entry in ipairs(operation.objectives) do
+            local released = entry.opscom.releasedGroupCommanders
+            if #released > 0 then
+                for _, gc in ipairs(released) do
+                    table.insert(self.reserves, gc)
+                end
+                entry.opscom.releasedGroupCommanders = {}
+            end
         end
     end
 end

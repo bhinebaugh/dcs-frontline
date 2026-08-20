@@ -154,9 +154,9 @@ end
 -- Polls the three concurrent resolution conditions (native ammo, virtual
 -- fuel, virtual repair) and, once all have resolved, either respawns the
 -- dire unit's group fresh (health-critical) or releases it as-is - either
--- way it's done and gets to leave the roster right away via
--- groupReplacements, rather than waiting for the convoy's own return trip
--- too. Then redirects the convoy home with an updated RESUPPLY order.
+-- way it's done and gets handed back to reserves right away via
+-- releaseGroups, rather than waiting for the convoy's own return trip too.
+-- Then redirects the convoy home with an updated RESUPPLY order.
 function RepairResupplyPlan:resupplyingPhase(context)
     local failure = self:checkFailure()
     if failure then return failure end
@@ -188,18 +188,18 @@ function RepairResupplyPlan:resupplyingPhase(context)
         }
     end
 
-    local replacements = {}
+    local released = {}
     if self.healthCritical then
         local freshName = self.unitRecovery:respawnGroup(self.direGc, self.rendezvousZone)
-        replacements[self.direGc.groupName] = freshName and self.unitRecovery:wrapGroupCommander(freshName) or false
+        if freshName then
+            table.insert(released, self.unitRecovery:wrapGroupCommander(freshName))
+        end
     else
-        -- No roster change needed - direGc just stays where it already is
-        -- in groupCommanders, so it's simply omitted from replacements
-        -- rather than mapped to itself.
         self.direGc.fuelRemaining = 1.0 -- virtual refuel; ammo is genuinely refilled by DCS already
         if self.direGc.orders and self.direGc.orders:isActive() then
             self.direGc.orders:complete()
         end
+        table.insert(released, self.direGc)
         env.info(string.format("*** %s RepairResupplyPlan: %s resupplied in place (no respawn needed)",
             self.commanderName, self.direGc.groupName))
     end
@@ -207,7 +207,14 @@ function RepairResupplyPlan:resupplyingPhase(context)
     self:changePhase("Returning")
 
     return {
-        groupReplacements = replacements,
+        -- The old direGc entry (destroyed-and-replaced or simply retired
+        -- from this opscom's concern either way) comes out of
+        -- groupCommanders here; the group actually going back into service
+        -- - released above - is what StrategicCommander:reclaimReleasedGroups
+        -- picks up next cycle. Leaving it in groupCommanders too would risk
+        -- it being double-tasked once it's also sitting in reserves.
+        groupReplacements = { [self.direGc.groupName] = false },
+        releaseGroups = released,
         orders = {
             {
                 type      = taskTypes.RESUPPLY,

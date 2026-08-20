@@ -69,6 +69,13 @@ function OperationalCommander.new(config)
     self.plannedOrders = {}
     self.objectivesNeedingOrders = {}
     self.groupCommanders = config.groupCommanders or {}
+    -- Drained by StrategicCommander every cycle for any active operation
+    -- (not just at disband) - see planObjectiveWithDoctrine's releaseGroups
+    -- handling. Lets a doctrine hand a still-alive, still-managed group
+    -- back to reserves mid-operation, distinct from groupReplacements'
+    -- false (drop and forget - e.g. a despawned convoy that shouldn't come
+    -- back at all).
+    self.releasedGroupCommanders = {}
     self.visualizer = config.visualizer --shares visualizer with coalition commander
 
     self.reconRadius = config.reconRadius or 8000
@@ -379,6 +386,14 @@ end
 -- roster entirely (false/nil value) once it's no longer needed - e.g. a
 -- resupply convoy retiring after restocking, before the objective completes
 -- and disband() hands back whatever's still in groupCommanders.
+-- releaseGroups (optional): array of GroupCommanders to hand back to
+-- StrategicCommander's reserves right now, mid-operation, rather than
+-- waiting for this objective to complete - e.g. a dire unit that's done
+-- resupplying while its convoy still has a return trip ahead of it.
+-- Doesn't touch groupCommanders itself; pair with groupReplacements=false
+-- for the same name if the group should also stop being managed by this
+-- opscom (almost always yes - a released-but-still-tracked group could get
+-- double-tasked once StrategicCommander also has it in reserves).
 function OperationalCommander:planObjectiveWithDoctrine(objective)
     local context = self:buildObjectiveContext(objective)
     local result = self.doctrine:plan(context)
@@ -386,6 +401,12 @@ function OperationalCommander:planObjectiveWithDoctrine(objective)
 
     if result.groupReplacements then
         self:applyGroupReplacements(result.groupReplacements)
+    end
+
+    if result.releaseGroups then
+        for _, gc in ipairs(result.releaseGroups) do
+            table.insert(self.releasedGroupCommanders, gc)
+        end
     end
 
     if result.objectiveFailed then
