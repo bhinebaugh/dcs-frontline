@@ -133,7 +133,12 @@ end
 function OperationalCommander:orient()
     -- Clean up destroyed commanders first, before any assessment
     self:cleanupDestroyedCommanders()
-    
+
+    -- Pull out any idle-and-dire group before order assignment even
+    -- considers it - see releaseDireGroups for why this can't just wait
+    -- for the objective to naturally complete/refresh.
+    self:releaseDireGroups()
+
     -- Sync order statuses from commanders back to order graph
     self.orderCoordinator:syncOrderStatuses(self.groupCommanders)
     
@@ -308,6 +313,36 @@ function OperationalCommander:cleanupDestroyedCommanders()
     end
 end
 
+-- Pulls any idle (no active order) and dire (isConditionCritical) group out
+-- of this opscom's roster and into releasedGroupCommanders, the same drain
+-- StrategicCommander:reclaimReleasedGroups already services every cycle for
+-- RepairResupplyPlan's own early releases (see its header). Without this, a
+-- group that goes critical while tasked (an artillery group low on ammo
+-- mid-fireSupport-objective, say) would sit here safely idling in
+-- DefensiveDoctrine - assignOrderTemplate's own hard floor already refuses
+-- to give it a new order - but invisible to dispatchDireReserves, since
+-- that only scans self.reserves. It would eventually reach reserves once
+-- this objective naturally completes or refreshes, but that can be
+-- minutes away; this catches it the moment it's actually idle instead.
+--
+-- Restricted to idle groups deliberately - a group mid-order is left to
+-- its own tactical doctrine's considerAbort (already weighted by health/
+-- fuel/ammo) to decide whether to abort that order, rather than being
+-- yanked out from under an in-progress task just because it's dire.
+function OperationalCommander:releaseDireGroups()
+    local remaining = {}
+    for _, gc in ipairs(self.groupCommanders) do
+        local idle = not gc.orders or gc.orders:isFinished()
+        if idle and gc:isConditionCritical() then
+            env.info(string.format("*** %s Ops: releasing idle dire group %s for repair/resupply",
+                self.color, gc.groupName))
+            table.insert(self.releasedGroupCommanders, gc)
+        else
+            table.insert(remaining, gc)
+        end
+    end
+    self.groupCommanders = remaining
+end
 
 --- @class ObjectiveContext
 --- @field objectivePosition table

@@ -77,25 +77,41 @@ end
 -- partial success. Returns a decision table to return immediately if
 -- something failed, or nil if both partners are still in play.
 function RepairResupplyPlan:checkFailure()
-    local direLost = self.direGc.destroyed or
-        (self.direGc.orders and self.direGc.orders.status == constants.orderStatus.ABORTED)
-    local convoyLost = self.convoyGc.destroyed or
-        (self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED)
+    local direDestroyed = self.direGc.destroyed
+    local direAborted = self.direGc.orders and self.direGc.orders.status == constants.orderStatus.ABORTED
+    local direLost = direDestroyed or direAborted
+
+    local convoyDestroyed = self.convoyGc.destroyed
+    local convoyAborted = self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED
+    local convoyLost = convoyDestroyed or convoyAborted
 
     if not direLost and not convoyLost then
         return nil
     end
 
     local replacements = {}
+    local released = {}
+
     if convoyLost then
         -- Safe whether the convoy is already destroyed (no-op destroy,
         -- still checks the capacity back in) or merely aborted its order
-        -- while still alive (genuinely despawns it).
+        -- while still alive (genuinely despawns it either way) - a convoy
+        -- never goes back to reserves, destroyed or not (see
+        -- unit-recovery.lua's despawn-on-idle philosophy).
         self.unitRecovery:despawnConvoy(self.convoyGc.groupName)
         replacements[self.convoyGc.groupName] = false
     end
     if direLost then
         replacements[self.direGc.groupName] = false
+        -- Unlike the convoy, an aborted-but-alive dire unit has somewhere
+        -- to go: it fled real danger, not "job's done" - release it back to
+        -- reserves so it isn't orphaned (removed from this opscom's roster
+        -- but never handed anywhere else) - dispatchDireReserves will pick
+        -- it up again once it's safe. If it's destroyed there's nothing to
+        -- release.
+        if not direDestroyed then
+            table.insert(released, self.direGc)
+        end
     end
     -- If only the convoy was lost, the dire unit stays in the roster (not
     -- listed in replacements) so disband() returns it to reserves once this
@@ -106,6 +122,7 @@ function RepairResupplyPlan:checkFailure()
 
     return {
         groupReplacements = replacements,
+        releaseGroups = released,
         objectiveFailed = "partner_lost",
     }
 end

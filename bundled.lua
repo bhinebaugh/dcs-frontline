@@ -1581,13 +1581,26 @@ function GroupCommander:getCriticalStatus()
     return ForceStatusAnalyzer.getCriticalStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
 end
 
+-- Condition thresholds, as percent (0-100) to match ForceStatusAnalyzer's
+-- own thresholdPercent convention. Ammo/fuel critical are deliberately
+-- looser than ForceStatusAnalyzer's own defaults (5%/10%) - waiting until a
+-- group is nearly bone dry before flagging it dire meant most groups never
+-- got noticed in practice; a resupply convoy takes real travel time, so the
+-- threshold needs enough runway to matter. Degraded is set well above its
+-- matching critical threshold (not just above the old defaults) so there's
+-- still a meaningful DEGRADED window before CRITICAL takes over - health
+-- and attrition are unchanged from where they started.
+local AMMO_CRITICAL_PERCENT = 20
+local AMMO_DEGRADED_PERCENT = 40
+local FUEL_CRITICAL_PERCENT = 50
+local FUEL_DEGRADED_PERCENT = 70
+local ATTRITION_CRITICAL_RATIO = 0.6
+local ATTRITION_DEGRADED_RATIO = 0.3
+
 -- True if ammo, health, fuel, or attrition (unit count lost) is critically
 -- low - the "dire" floor used to exclude a group from new order assignment
 -- entirely (see OperationalCommander:assignOrderTemplate), independent of
--- how well it'd otherwise fit a mission's missionProfile. Same thresholds
--- considerAbort uses in each tactical doctrine, so a group that's
--- ineligible for a new order is exactly the kind that should also be
--- pushing to abort/disengage whatever it's currently doing. status is
+-- how well it'd otherwise fit a mission's missionProfile. status is
 -- optional - pass one in if you already fetched it this tick (see
 -- getConditionSummary) to avoid querying DCS for ammo/life a second time.
 --
@@ -1599,16 +1612,16 @@ end
 -- unit" specifically.
 function GroupCommander:isConditionCritical(status)
     status = status or self:getStatusReport()
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount, AMMO_CRITICAL_PERCENT) then
         return true
     end
     if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
         return true
     end
-    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining, FUEL_CRITICAL_PERCENT) then
         return true
     end
-    if ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, #self.initialUnitNames, 0.6) then
+    if ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, #self.initialUnitNames, ATTRITION_CRITICAL_RATIO) then
         return true
     end
     return false
@@ -1630,10 +1643,10 @@ function GroupCommander:getConditionSummary()
     local level = "NOMINAL"
     if self:isConditionCritical(status) then
         level = "CRITICAL"
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount)
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount, AMMO_DEGRADED_PERCENT)
         or ForceStatusAnalyzer.isHealthLow(status.healthRatio)
-        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining)
-        or ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, totalCount, 0.3) then
+        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining, FUEL_DEGRADED_PERCENT)
+        or ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, totalCount, ATTRITION_DEGRADED_RATIO) then
         level = "DEGRADED"
     end
 
@@ -6889,25 +6902,41 @@ end
 -- partial success. Returns a decision table to return immediately if
 -- something failed, or nil if both partners are still in play.
 function RepairResupplyPlan:checkFailure()
-    local direLost = self.direGc.destroyed or
-        (self.direGc.orders and self.direGc.orders.status == constants.orderStatus.ABORTED)
-    local convoyLost = self.convoyGc.destroyed or
-        (self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED)
+    local direDestroyed = self.direGc.destroyed
+    local direAborted = self.direGc.orders and self.direGc.orders.status == constants.orderStatus.ABORTED
+    local direLost = direDestroyed or direAborted
+
+    local convoyDestroyed = self.convoyGc.destroyed
+    local convoyAborted = self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED
+    local convoyLost = convoyDestroyed or convoyAborted
 
     if not direLost and not convoyLost then
         return nil
     end
 
     local replacements = {}
+    local released = {}
+
     if convoyLost then
         -- Safe whether the convoy is already destroyed (no-op destroy,
         -- still checks the capacity back in) or merely aborted its order
-        -- while still alive (genuinely despawns it).
+        -- while still alive (genuinely despawns it either way) - a convoy
+        -- never goes back to reserves, destroyed or not (see
+        -- unit-recovery.lua's despawn-on-idle philosophy).
         self.unitRecovery:despawnConvoy(self.convoyGc.groupName)
         replacements[self.convoyGc.groupName] = false
     end
     if direLost then
         replacements[self.direGc.groupName] = false
+        -- Unlike the convoy, an aborted-but-alive dire unit has somewhere
+        -- to go: it fled real danger, not "job's done" - release it back to
+        -- reserves so it isn't orphaned (removed from this opscom's roster
+        -- but never handed anywhere else) - dispatchDireReserves will pick
+        -- it up again once it's safe. If it's destroyed there's nothing to
+        -- release.
+        if not direDestroyed then
+            table.insert(released, self.direGc)
+        end
     end
     -- If only the convoy was lost, the dire unit stays in the roster (not
     -- listed in replacements) so disband() returns it to reserves once this
@@ -6918,6 +6947,7 @@ function RepairResupplyPlan:checkFailure()
 
     return {
         groupReplacements = replacements,
+        releaseGroups = released,
         objectiveFailed = "partner_lost",
     }
 end
@@ -7228,7 +7258,12 @@ end
 function OperationalCommander:orient()
     -- Clean up destroyed commanders first, before any assessment
     self:cleanupDestroyedCommanders()
-    
+
+    -- Pull out any idle-and-dire group before order assignment even
+    -- considers it - see releaseDireGroups for why this can't just wait
+    -- for the objective to naturally complete/refresh.
+    self:releaseDireGroups()
+
     -- Sync order statuses from commanders back to order graph
     self.orderCoordinator:syncOrderStatuses(self.groupCommanders)
     
@@ -7403,6 +7438,36 @@ function OperationalCommander:cleanupDestroyedCommanders()
     end
 end
 
+-- Pulls any idle (no active order) and dire (isConditionCritical) group out
+-- of this opscom's roster and into releasedGroupCommanders, the same drain
+-- StrategicCommander:reclaimReleasedGroups already services every cycle for
+-- RepairResupplyPlan's own early releases (see its header). Without this, a
+-- group that goes critical while tasked (an artillery group low on ammo
+-- mid-fireSupport-objective, say) would sit here safely idling in
+-- DefensiveDoctrine - assignOrderTemplate's own hard floor already refuses
+-- to give it a new order - but invisible to dispatchDireReserves, since
+-- that only scans self.reserves. It would eventually reach reserves once
+-- this objective naturally completes or refreshes, but that can be
+-- minutes away; this catches it the moment it's actually idle instead.
+--
+-- Restricted to idle groups deliberately - a group mid-order is left to
+-- its own tactical doctrine's considerAbort (already weighted by health/
+-- fuel/ammo) to decide whether to abort that order, rather than being
+-- yanked out from under an in-progress task just because it's dire.
+function OperationalCommander:releaseDireGroups()
+    local remaining = {}
+    for _, gc in ipairs(self.groupCommanders) do
+        local idle = not gc.orders or gc.orders:isFinished()
+        if idle and gc:isConditionCritical() then
+            env.info(string.format("*** %s Ops: releasing idle dire group %s for repair/resupply",
+                self.color, gc.groupName))
+            table.insert(self.releasedGroupCommanders, gc)
+        else
+            table.insert(remaining, gc)
+        end
+    end
+    self.groupCommanders = remaining
+end
 
 --- @class ObjectiveContext
 --- @field objectivePosition table

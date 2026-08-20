@@ -652,13 +652,26 @@ function GroupCommander:getCriticalStatus()
     return ForceStatusAnalyzer.getCriticalStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
 end
 
+-- Condition thresholds, as percent (0-100) to match ForceStatusAnalyzer's
+-- own thresholdPercent convention. Ammo/fuel critical are deliberately
+-- looser than ForceStatusAnalyzer's own defaults (5%/10%) - waiting until a
+-- group is nearly bone dry before flagging it dire meant most groups never
+-- got noticed in practice; a resupply convoy takes real travel time, so the
+-- threshold needs enough runway to matter. Degraded is set well above its
+-- matching critical threshold (not just above the old defaults) so there's
+-- still a meaningful DEGRADED window before CRITICAL takes over - health
+-- and attrition are unchanged from where they started.
+local AMMO_CRITICAL_PERCENT = 20
+local AMMO_DEGRADED_PERCENT = 40
+local FUEL_CRITICAL_PERCENT = 50
+local FUEL_DEGRADED_PERCENT = 70
+local ATTRITION_CRITICAL_RATIO = 0.6
+local ATTRITION_DEGRADED_RATIO = 0.3
+
 -- True if ammo, health, fuel, or attrition (unit count lost) is critically
 -- low - the "dire" floor used to exclude a group from new order assignment
 -- entirely (see OperationalCommander:assignOrderTemplate), independent of
--- how well it'd otherwise fit a mission's missionProfile. Same thresholds
--- considerAbort uses in each tactical doctrine, so a group that's
--- ineligible for a new order is exactly the kind that should also be
--- pushing to abort/disengage whatever it's currently doing. status is
+-- how well it'd otherwise fit a mission's missionProfile. status is
 -- optional - pass one in if you already fetched it this tick (see
 -- getConditionSummary) to avoid querying DCS for ammo/life a second time.
 --
@@ -670,16 +683,16 @@ end
 -- unit" specifically.
 function GroupCommander:isConditionCritical(status)
     status = status or self:getStatusReport()
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount) then
+    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount, AMMO_CRITICAL_PERCENT) then
         return true
     end
     if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
         return true
     end
-    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
+    if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining, FUEL_CRITICAL_PERCENT) then
         return true
     end
-    if ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, #self.initialUnitNames, 0.6) then
+    if ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, #self.initialUnitNames, ATTRITION_CRITICAL_RATIO) then
         return true
     end
     return false
@@ -701,10 +714,10 @@ function GroupCommander:getConditionSummary()
     local level = "NOMINAL"
     if self:isConditionCritical(status) then
         level = "CRITICAL"
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount)
+    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount, AMMO_DEGRADED_PERCENT)
         or ForceStatusAnalyzer.isHealthLow(status.healthRatio)
-        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining)
-        or ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, totalCount, 0.3) then
+        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining, FUEL_DEGRADED_PERCENT)
+        or ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, totalCount, ATTRITION_DEGRADED_RATIO) then
         level = "DEGRADED"
     end
 
