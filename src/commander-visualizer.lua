@@ -70,11 +70,11 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         textColor = {1,1,1,0.8}
         bgColor   = {0,0,0,0.3}
         local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos, condition.level}, "|")
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos, condition.level, condition.aliveCount}, "|")
     else
         textColor = {0.8,0.8,0.8,0.35}
         bgColor   = {0.4,0.4,0.4,0.15}
-        signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level}, "|")
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level, condition.aliveCount}, "|")
     end
 
     -- Dire condition overrides the normal background so it's visually
@@ -89,8 +89,9 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
 
     local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
     local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
-    local conditionText = string.format("%s HP:%s%% Fuel:%s%% Ammo:%s%%",
-        condition.level, condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?")
+    local conditionText = string.format("%s %d/%d units HP:%s%% Fuel:%s%% Ammo:%s%%",
+        condition.level, condition.aliveCount or 0, condition.totalCount or 0,
+        condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?")
     text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText .. "\n" .. conditionText
 
 

@@ -1135,8 +1135,9 @@ function GroupCommander:observe()
     local expectedCount = #self.threatTracker:expectedThreats(currentPos, detectionRadius)
     local expectedStr = expectedCount > 0 and (" Exp:" .. expectedCount) or ""
     local condition = self:getConditionSummary()
-    env.info(string.format("* %s OBSERVE: LOS:%d%s Mem:%d HP:%s%% Fuel:%s%% Ammo:%s%% [%s]",
+    env.info(string.format("* %s OBSERVE: LOS:%d%s Mem:%d Units:%d/%d HP:%s%% Fuel:%s%% Ammo:%s%% [%s]",
         self.groupName, #visibleThreatNames, expectedStr, memoryCount,
+        condition.aliveCount or 0, condition.totalCount or 0,
         condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?",
         condition.level))
 end
@@ -1164,10 +1165,12 @@ function GroupCommander:orient()
     -- doctrines act on are actually being computed and changing over time.
     local condition = self:getConditionSummary()
     if condition.level ~= self.lastConditionLevel then
-        env.info(string.format("* %s CONDITION: %s -> %s (health:%s%% fuel:%s%% ammo:%s%%)",
+        env.info(string.format("* %s CONDITION: %s -> %s (units:%d/%d health:%s%% fuel:%s%% ammo:%s%%)",
             self.groupName,
             self.lastConditionLevel or "?",
             condition.level,
+            condition.aliveCount or 0,
+            condition.totalCount or 0,
             condition.healthPercent or "?",
             condition.fuelPercent or "?",
             condition.ammoPercent or "?"))
@@ -1578,15 +1581,22 @@ function GroupCommander:getCriticalStatus()
     return ForceStatusAnalyzer.getCriticalStatusReport(self.groupName, self.initialUnitNames, self.fuelRemaining)
 end
 
--- True if ammo, health, or fuel is critically low - the "dire" floor used to
--- exclude a group from new order assignment entirely (see
--- OperationalCommander:assignOrderTemplate), independent of how well it'd
--- otherwise fit a mission's missionProfile. Same thresholds considerAbort
--- uses in each tactical doctrine, so a group that's ineligible for a new
--- order is exactly the kind that should also be pushing to abort/disengage
--- whatever it's currently doing. status is optional - pass one in if you
--- already fetched it this tick (see getConditionSummary) to avoid querying
--- DCS for ammo/life a second time.
+-- True if ammo, health, fuel, or attrition (unit count lost) is critically
+-- low - the "dire" floor used to exclude a group from new order assignment
+-- entirely (see OperationalCommander:assignOrderTemplate), independent of
+-- how well it'd otherwise fit a mission's missionProfile. Same thresholds
+-- considerAbort uses in each tactical doctrine, so a group that's
+-- ineligible for a new order is exactly the kind that should also be
+-- pushing to abort/disengage whatever it's currently doing. status is
+-- optional - pass one in if you already fetched it this tick (see
+-- getConditionSummary) to avoid querying DCS for ammo/life a second time.
+--
+-- Attrition is deliberately separate from healthRatio: a group that hasn't
+-- lost a single unit can still be battered close to death (healthRatio
+-- catches that), while a group that's lost most of its units but whose
+-- survivor(s) are otherwise undamaged reads perfectly healthy by
+-- healthRatio alone - attrition is what catches "whittled down to one
+-- unit" specifically.
 function GroupCommander:isConditionCritical(status)
     status = status or self:getStatusReport()
     if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, self.initialAmmoCount) then
@@ -1598,15 +1608,19 @@ function GroupCommander:isConditionCritical(status)
     if ForceStatusAnalyzer.isFuelCritical(status.fuelRemaining) then
         return true
     end
+    if ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, #self.initialUnitNames, 0.6) then
+        return true
+    end
     return false
 end
 
 -- Rolled-up condition for display/logging: NOMINAL, DEGRADED (any of ammo/
--- health/fuel below its "low" threshold), or CRITICAL (isConditionCritical).
--- Percentages are nil where the underlying data isn't available (e.g.
--- ammoPercent for a group with no initialAmmoCount).
+-- health/fuel/attrition below its "low" threshold), or CRITICAL
+-- (isConditionCritical). Percentages are nil where the underlying data
+-- isn't available (e.g. ammoPercent for a group with no initialAmmoCount).
 function GroupCommander:getConditionSummary()
     local status = self:getStatusReport()
+    local totalCount = #self.initialUnitNames
 
     local ammoPercent = (self.initialAmmoCount and self.initialAmmoCount > 0)
         and math.floor((status.ammoCount / self.initialAmmoCount) * 100) or nil
@@ -1618,7 +1632,8 @@ function GroupCommander:getConditionSummary()
         level = "CRITICAL"
     elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, self.initialAmmoCount)
         or ForceStatusAnalyzer.isHealthLow(status.healthRatio)
-        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining) then
+        or ForceStatusAnalyzer.isFuelLow(status.fuelRemaining)
+        or ForceStatusAnalyzer.hasSignificantAttrition(status.aliveCount, totalCount, 0.3) then
         level = "DEGRADED"
     end
 
@@ -1627,6 +1642,8 @@ function GroupCommander:getConditionSummary()
         ammoPercent = ammoPercent,
         healthPercent = healthPercent,
         fuelPercent = fuelPercent,
+        aliveCount = status.aliveCount,
+        totalCount = totalCount,
     }
 end
 
@@ -4517,11 +4534,11 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         textColor = {1,1,1,0.8}
         bgColor   = {0,0,0,0.3}
         local orderTypeName = taskTypeNames[gc.orders.type] or tostring(gc.orders.type)
-        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos, condition.level}, "|")
+        signature = table.concat({orderTypeName, gc.disposition, gc.orders.status, threatCount, roundedPos, condition.level, condition.aliveCount}, "|")
     else
         textColor = {0.8,0.8,0.8,0.35}
         bgColor   = {0.4,0.4,0.4,0.15}
-        signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level}, "|")
+        signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level, condition.aliveCount}, "|")
     end
 
     -- Dire condition overrides the normal background so it's visually
@@ -4536,8 +4553,9 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
 
     local doctrineText = groupDoctrineName .. " [" .. (gc.disposition or "__") .. "]"
     local threatText = threatCount and (threatCount .. "x threats for " .. math.floor(gc.threatAssessment.favorability * 10) / 10) or "no threat"
-    local conditionText = string.format("%s HP:%s%% Fuel:%s%% Ammo:%s%%",
-        condition.level, condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?")
+    local conditionText = string.format("%s %d/%d units HP:%s%% Fuel:%s%% Ammo:%s%%",
+        condition.level, condition.aliveCount or 0, condition.totalCount or 0,
+        condition.healthPercent or "?", condition.fuelPercent or "?", condition.ammoPercent or "?")
     text = gc.groupName .. "\n" .. doctrineText .. "\n" .. threatText .. "\n" .. conditionText
 
 
