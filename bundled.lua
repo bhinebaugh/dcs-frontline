@@ -138,6 +138,20 @@ local fireSupportTemplates = {
     },
 }
 
+-- Unit-recovery resupply convoy templates - an ammo truck (native DCS
+-- resupply AI, ~100-200m proximity, see GroupCommander/isConditionCritical
+-- callers) paired with a fuel truck (purely cosmetic - fuel resolution
+-- stays virtual, see GroupCommander:updateFuelConsumption - but gives a
+-- visible reason for the convoy to be a convoy, not just one truck).
+local resupplyTemplates = {
+    red = {
+        {"Ural-375", "ATZ-10"},
+    },
+    blue = {
+        {"M 818", "M978 HEMTT Tanker"},
+    },
+}
+
 local taskTypes = {
     DEFEND = 1,
     REINFORCE = 2,
@@ -148,6 +162,8 @@ local taskTypes = {
     AA = 7,
     REPOSITION = 8,
     PATROL = 9,
+    REPAIR = 10,
+    RESUPPLY = 11,
 }
 
 local threatStatus = {
@@ -200,6 +216,7 @@ return {
     garrisonTemplates = garrisonTemplates,
     groundTemplates = groundTemplates,
     orderStatus = orderStatus,
+    resupplyTemplates = resupplyTemplates,
     rulesOfEngagement = rulesOfEngagement,
     oodaStates = oodaStates,
     rgb = rgb,
@@ -2472,6 +2489,23 @@ local units = {
         weapons = {},
     },
     ["Ural-375"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    -- Fuel trucks for the unit-recovery convoy - not run through
+    -- unit-data-dump.lua, life/speed matched to sibling trucks above rather
+    -- than independently verified (see data/unit-data.csv notes).
+    ["M978 HEMTT Tanker"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["ATZ-10"] = {
         dcsRole = "Truck",
         armorClass = 0,
         life = 2,

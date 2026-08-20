@@ -101,6 +101,23 @@ local units = {
         speedMax = 20.83,
         weapons = {},
     },
+    -- Fuel trucks for the unit-recovery convoy - not run through
+    -- unit-data-dump.lua, life/speed matched to sibling trucks above rather
+    -- than independently verified (see data/unit-data.csv notes).
+    ["M978 HEMTT Tanker"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
+    ["ATZ-10"] = {
+        dcsRole = "Truck",
+        armorClass = 0,
+        life = 2,
+        speedMax = 20.83,
+        weapons = {},
+    },
     ["Ural-4320-31"] = {
         dcsRole = "Truck",
         armorClass = 0,
