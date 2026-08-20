@@ -7454,10 +7454,20 @@ end
 -- its own tactical doctrine's considerAbort (already weighted by health/
 -- fuel/ammo) to decide whether to abort that order, rather than being
 -- yanked out from under an in-progress task just because it's dire.
+--
+-- "Idle" specifically means HAD an order and it finished - not "has never
+-- had one" (gc.orders == nil). A freshly-constructed opscom clears every
+-- group's orders to nil (see OperationalCommander.new) before its doctrine
+-- ever gets a first chance to assign one; treating that as idle would pull
+-- a group back out before its own opscom could task it at all, which is
+-- exactly backwards for RepairResupplyPlan's direGc - dire is the whole
+-- reason it's there, and yanking it away the instant it arrives means it
+-- never receives its REPAIR order, only ever gets redispatched to a new
+-- convoy, forever.
 function OperationalCommander:releaseDireGroups()
     local remaining = {}
     for _, gc in ipairs(self.groupCommanders) do
-        local idle = not gc.orders or gc.orders:isFinished()
+        local idle = gc.orders and gc.orders:isFinished()
         if idle and gc:isConditionCritical() then
             env.info(string.format("*** %s Ops: releasing idle dire group %s for repair/resupply",
                 self.color, gc.groupName))
