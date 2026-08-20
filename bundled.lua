@@ -7888,6 +7888,7 @@ local fireSupportTemplates = require("constants").fireSupportTemplates
 local garrisonTemplates = require("constants").garrisonTemplates
 local groundTemplates = require("constants").groundTemplates
 local Map = require("map")
+local SpatialAgent = require("spatial-agent")
 local isCounterClockwise = require("helpers").isCounterClockwise --Load helper functions
 local normalizeAngle = require("helpers").normalizeAngle --Load helper functions
 local angularDistance = require("helpers").angularDistance --Load helper functions
@@ -8750,6 +8751,41 @@ function ControlZones:selectZonesAtDepth(color, targetDepth)
         end
     end
     return result
+end
+
+-- Nearest zone at or deeper than minDepth to `position` - the first-pass
+-- rendezvous point for a dire unit and the convoy meeting it. Deliberately
+-- deeper than fire-support/FARP placement's depth 1 (default minDepth 2),
+-- so it's genuinely rear rather than just "one zone back." Falls back
+-- toward the front (decrementing depth) if the map isn't deep enough to
+-- have anything at minDepth, rather than returning nothing.
+--
+-- This is intentionally just proximity-to-the-dire-unit for now, not the
+-- bidirectional travel-time/risk/convoy-availability optimization planned
+-- for later - isolated into its own function specifically so that upgrade
+-- can replace this body without touching any caller.
+function ControlZones:selectRendezvousZone(color, position, minDepth)
+    minDepth = minDepth or 2
+
+    local depth = minDepth
+    local candidates = self:selectZonesAtDepth(color, depth)
+    while #candidates == 0 and depth > 0 do
+        depth = depth - 1
+        candidates = self:selectZonesAtDepth(color, depth)
+    end
+    if #candidates == 0 then return nil end
+
+    local best, bestDist
+    for _, zoneName in ipairs(candidates) do
+        local zone = self:getZone(zoneName)
+        local dist = zone and SpatialAgent.distance2D(position, zone.point)
+        if dist and (not bestDist or dist < bestDist) then
+            best = zoneName
+            bestDist = dist
+        end
+    end
+
+    return best
 end
 
 -- Returns a random point on the edge between two adjacent zones of the given depth.
