@@ -11,6 +11,8 @@ local IndirectDoctrine = require("doctrines.tactical.indirect-doctrine")
 local PatrolDoctrine = require("doctrines.tactical.patrol-doctrine")
 local ReconDoctrine = require("doctrines.tactical.recon-doctrine")
 local RallyDoctrine = require("doctrines.tactical.rally-doctrine")
+local RepairDoctrine = require("doctrines.tactical.repair-doctrine")
+local ResupplyDoctrine = require("doctrines.tactical.resupply-doctrine")
 local SpatialAgent = require("spatial-agent")
 local ThreatDetector = require("threat-detector")
 local ThreatTracker = require("threat-tracker")
@@ -43,6 +45,13 @@ function GroupCommander.new(groupName, config)
     self.formationType = formationTypes.OFF_ROAD
     self.groupName = groupName
     self.initialUnitNames = self:getOwnUnitNames()
+    -- Original per-unit DCS type composition, captured once at construction
+    -- (before any losses) - not derived from any spawn-time template
+    -- parameter, since ControlZones's spawn calls don't thread one through
+    -- to GroupCommander. This works for a group spawned any way at all,
+    -- and is what UnitRecovery respawns from when a dire unit's group
+    -- needs a fresh full-strength instance (see src/unit-recovery.lua).
+    self.templateTypes = self:getOwnUnitTypes()
     self.initialCollectiveStatus = self:getCollectiveStatus()
     
     -- Capture initial ammo count for percentage-based low ammo thresholds
@@ -351,6 +360,10 @@ function GroupCommander:decide()
             self.doctrine = DefensiveDoctrine.new(self.groupName)
         elseif self.orders.type == taskTypes.INDIRECT then
             self.doctrine = IndirectDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.REPAIR then
+            self.doctrine = RepairDoctrine.new(self.groupName)
+        elseif self.orders.type == taskTypes.RESUPPLY then
+            self.doctrine = ResupplyDoctrine.new(self.groupName)
         else
             self.doctrine = AsOrderedDoctrine.new(self.groupName)
         end
@@ -741,6 +754,15 @@ function GroupCommander:getOwnUnitNames()
         table.insert(unitNames, unit:getName())
     end
     return unitNames
+end
+
+function GroupCommander:getOwnUnitTypes()
+    local units = self:getOwnUnits()
+    local unitTypes = {}
+    for _, unit in ipairs(units) do
+        table.insert(unitTypes, unit:getTypeName())
+    end
+    return unitTypes
 end
 
 function GroupCommander:getStatus()

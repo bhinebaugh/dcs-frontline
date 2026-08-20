@@ -372,12 +372,26 @@ end
 
 -- Plan objective orders using Doctrine strategy.
 -- Doctrines signal completion by returning { objectiveComplete = true, ... }.
+-- groupReplacements (optional): {[groupName] = newGroupCommander or false} -
+-- for a doctrine coordinating specific named groups rather than an
+-- interchangeable pool (see repair-resupply-plan.lua), a way to swap a
+-- managed group out for a freshly-spawned replacement, or drop one from the
+-- roster entirely (false/nil value) once it's no longer needed - e.g. a
+-- resupply convoy retiring after restocking, before the objective completes
+-- and disband() hands back whatever's still in groupCommanders.
 function OperationalCommander:planObjectiveWithDoctrine(objective)
     local context = self:buildObjectiveContext(objective)
     local result = self.doctrine:plan(context)
     if not result then return end
 
-    if result.objectiveComplete then
+    if result.groupReplacements then
+        self:applyGroupReplacements(result.groupReplacements)
+    end
+
+    if result.objectiveFailed then
+        env.info("*** " .. self.color .. " Ops: OBJECTIVE FAILED (" .. tostring(result.objectiveFailed) .. ") --------------------")
+        objective:markFailed(result.objectiveFailed)
+    elseif result.objectiveComplete then
         env.info("*** " .. self.color .. " Ops: OBJECTIVE COMPLETE --------------------")
         objective:markAchieved()
     end
@@ -387,8 +401,47 @@ function OperationalCommander:planObjectiveWithDoctrine(objective)
     end
 end
 
--- Evaluate available commanders against a template's missionProfile and issue orders
+function OperationalCommander:applyGroupReplacements(replacements)
+    for oldName, replacement in pairs(replacements) do
+        for i, gc in ipairs(self.groupCommanders) do
+            if gc.groupName == oldName then
+                table.remove(self.groupCommanders, i)
+                break
+            end
+        end
+        if replacement then
+            table.insert(self.groupCommanders, replacement)
+        end
+    end
+end
+
+-- Evaluate available commanders against a template's missionProfile and issue orders.
+-- template.assignTo (optional): a groupName string - targets that specific
+-- commander directly instead of running suitability selection across the
+-- whole pool. For a doctrine coordinating specific named groups (see
+-- repair-resupply-plan.lua) rather than "any N suitable groups."
 function OperationalCommander:assignOrderTemplate(template, objective)
+    if template.assignTo then
+        for _, commander in ipairs(self.groupCommanders) do
+            if commander.groupName == template.assignTo and not self.plannedThisCycle[commander.groupName] then
+                local order = Order.new({
+                    type           = template.type,
+                    position       = template.position,
+                    proximity      = template.proximity,
+                    alr            = template.alr,
+                    missionProfile = template.missionProfile,
+                    objective      = objective,
+                    deadline       = template.deadline,
+                    assignedTo     = commander.groupName,
+                })
+                table.insert(self.plannedOrders, { commander = commander, order = order })
+                self.plannedThisCycle[commander.groupName] = true
+                break
+            end
+        end
+        return
+    end
+
     local count          = template.count or 1
     local missionProfile = template.missionProfile
 

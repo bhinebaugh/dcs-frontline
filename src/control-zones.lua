@@ -903,6 +903,37 @@ function ControlZones:selectRendezvousZone(color, position, minDepth)
     return best
 end
 
+-- The rearmost zone(s) for a color (maximum BFS depth from the perimeter,
+-- see calculateDepthMap) - the convoy's origin/restock point, as far from
+-- the front as this color's territory gets. Nearest of those to
+-- `position` if given (e.g. bias toward whichever home zone is closer to
+-- a particular rendezvous point), otherwise just the first one found.
+function ControlZones:selectHomeZone(color, position)
+    local depthMap = self.depthMap[color]
+    if not depthMap then return nil end
+
+    local maxDepth = -1
+    for _, depth in pairs(depthMap) do
+        if depth > maxDepth then maxDepth = depth end
+    end
+    if maxDepth < 0 then return nil end
+
+    local candidates = self:selectZonesAtDepth(color, maxDepth)
+    if #candidates == 0 then return nil end
+    if not position then return candidates[1] end
+
+    local best, bestDist
+    for _, zoneName in ipairs(candidates) do
+        local zone = self:getZone(zoneName)
+        local dist = zone and SpatialAgent.distance2D(position, zone.point)
+        if dist and (not bestDist or dist < bestDist) then
+            best = zoneName
+            bestDist = dist
+        end
+    end
+    return best or candidates[1]
+end
+
 -- Returns a random point on the edge between two adjacent zones of the given depth.
 -- Pass an optional bias (0-1) to weight t toward the midpoint; default 0 = uniform.
 function ControlZones:randomPointOnEdgeAtDepth(color, targetDepth, bias)
