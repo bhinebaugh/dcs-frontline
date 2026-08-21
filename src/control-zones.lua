@@ -869,16 +869,16 @@ function ControlZones:selectZonesAtDepth(color, targetDepth)
 end
 
 -- Nearest zone at or deeper than minDepth to `position` - the first-pass
--- rendezvous point for a dire unit and the convoy meeting it. Deliberately
--- deeper than fire-support/FARP placement's depth 1 (default minDepth 2),
--- so it's genuinely rear rather than just "one zone back." Falls back
--- toward the front (decrementing depth) if the map isn't deep enough to
--- have anything at minDepth, rather than returning nothing.
+-- rendezvous point for a distressed unit and the convoy meeting it.
+-- Deliberately deeper than fire-support/FARP placement's depth 1 (default
+-- minDepth 2), so it's genuinely rear rather than just "one zone back."
+-- Falls back toward the front (decrementing depth) if the map isn't deep
+-- enough to have anything at minDepth, rather than returning nothing.
 --
--- This is intentionally just proximity-to-the-dire-unit for now, not the
--- bidirectional travel-time/risk/convoy-availability optimization planned
--- for later - isolated into its own function specifically so that upgrade
--- can replace this body without touching any caller.
+-- This is intentionally just proximity-to-the-distressed-unit for now, not
+-- the bidirectional travel-time/risk/convoy-availability optimization
+-- planned for later - isolated into its own function specifically so that
+-- upgrade can replace this body without touching any caller.
 function ControlZones:selectRendezvousZone(color, position, minDepth)
     minDepth = minDepth or 2
 

@@ -1,8 +1,8 @@
 -- UnitRecovery: capacity accounting and DCS spawn/despawn utilities for the
 -- repair/resupply system, owned by StrategicCommander but exercised mostly
 -- by RepairResupplyPlan (src/doctrines/operational/repair-resupply-plan.lua),
--- which owns the actual phase/timing state machine for a given dire unit +
--- convoy pairing. This module deliberately holds no session state of its
+-- which owns the actual phase/timing state machine for a given distressed
+-- unit + convoy pairing. This module deliberately holds no session state of its
 -- own - just the ReservePool ledger and stateless-except-for-that spawn/
 -- despawn mechanics, callable from wherever needs them (StrategicCommander
 -- dispatches the initial convoy; the doctrine calls back in for the
@@ -91,28 +91,28 @@ function UnitRecovery:despawnConvoy(groupName)
     self.pool:checkIn(convoyKey(self.color))
 end
 
--- Despawns a dire unit's remnant and spawns a fresh full-strength instance
--- of its original template (direGc.templateTypes) at `atZone`. See
--- reserve-pool.lua's header for the checkIn/checkOut accounting this
--- performs: surviving units' slots are checked in and immediately
--- re-checked-out (net zero), while slots for destroyed companions are
--- genuine depletions of headroom that was never spawned in the first
--- place. Returns the new group's name, or nil if no capacity remained even
--- for the survivors' own slots (shouldn't normally happen).
-function UnitRecovery:respawnGroup(direGc, atZone)
+-- Despawns a distressed unit's remnant and spawns a fresh full-strength
+-- instance of its original template (distressedGc.templateTypes) at
+-- `atZone`. See reserve-pool.lua's header for the checkIn/checkOut
+-- accounting this performs: surviving units' slots are checked in and
+-- immediately re-checked-out (net zero), while slots for destroyed
+-- companions are genuine depletions of headroom that was never spawned in
+-- the first place. Returns the new group's name, or nil if no capacity
+-- remained even for the survivors' own slots (shouldn't normally happen).
+function UnitRecovery:respawnGroup(distressedGc, atZone)
     local color = self.color
 
-    for _, unit in ipairs(direGc:getOwnUnits()) do
+    for _, unit in ipairs(distressedGc:getOwnUnits()) do
         self.pool:checkIn(unitKey(color, unit:getTypeName()))
     end
 
-    local group = Group.getByName(direGc.groupName)
+    local group = Group.getByName(distressedGc.groupName)
     if group and group:isExist() then
         group:destroy()
     end
 
     local grantedTypes = {}
-    for _, unitType in ipairs(direGc.templateTypes) do
+    for _, unitType in ipairs(distressedGc.templateTypes) do
         if self.pool:checkOut(unitKey(color, unitType)) then
             table.insert(grantedTypes, unitType)
         end
@@ -120,7 +120,7 @@ function UnitRecovery:respawnGroup(direGc, atZone)
 
     if #grantedTypes == 0 then
         env.info(string.format("*** %s UnitRecovery: %s destroyed, no capacity remained to respawn it",
-            color, direGc.groupName))
+            color, distressedGc.groupName))
         return nil
     end
 
@@ -129,7 +129,7 @@ function UnitRecovery:respawnGroup(direGc, atZone)
     self.map:spawnGroupInZone(freshGroupName, atZone, color, grantedTypes, heading)
 
     env.info(string.format("*** %s UnitRecovery: %s respawned fresh as %s (%d/%d original units granted)",
-        color, direGc.groupName, freshGroupName, #grantedTypes, #direGc.templateTypes))
+        color, distressedGc.groupName, freshGroupName, #grantedTypes, #distressedGc.templateTypes))
     return freshGroupName
 end
 

@@ -203,7 +203,7 @@ function StrategicCommander:act()
         self:createOperation(template)
     end
 
-    self:dispatchDireReserves()
+    self:dispatchDistressedReserves()
     self:reclaimReleasedGroups()
 
     for _, operation in ipairs(self.operations.active) do
@@ -236,21 +236,22 @@ end
 -- HELPER METHODS
 -- ============================================================================
 
--- Hands every dire reserve to a fresh repair Operation, removing it from
--- self.reserves so it can't also be picked up by instantiateObjective in
--- the same tick (that has its own isConditionCritical floor too, belt-and-
--- suspenders, but this is what actually stops it from sitting in reserves
--- looking dire and unused). A group stays in reserves if UnitRecovery has
--- no convoy capacity for it right now - it'll be tried again next tick.
-function StrategicCommander:dispatchDireReserves()
-    local direReserves = {}
+-- Hands every distressed reserve to a fresh repair Operation, removing it
+-- from self.reserves so it can't also be picked up by instantiateObjective
+-- in the same tick (that has its own isConditionCritical floor too, belt-
+-- and-suspenders, but this is what actually stops it from sitting in
+-- reserves looking distressed and unused). A group stays in reserves if
+-- UnitRecovery has no convoy capacity for it right now - it'll be tried
+-- again next tick.
+function StrategicCommander:dispatchDistressedReserves()
+    local distressedReserves = {}
     for _, gc in ipairs(self.reserves) do
         if gc:isConditionCritical() then
-            table.insert(direReserves, gc)
+            table.insert(distressedReserves, gc)
         end
     end
 
-    for _, gc in ipairs(direReserves) do
+    for _, gc in ipairs(distressedReserves) do
         if self:beginRepair(gc) then
             for i, reserveGc in ipairs(self.reserves) do
                 if reserveGc == gc then
@@ -262,26 +263,26 @@ function StrategicCommander:dispatchDireReserves()
     end
 end
 
--- Stands up a one-objective Operation pairing a dire unit with a freshly
--- spawned/dispatched resupply convoy, backed by RepairResupplyPlan (see its
--- own header for why this doctrine holds live group references rather than
--- working from a pool like every other operational doctrine). Reuses the
--- same Operation/entry machinery instantiateObjective builds for ordinary
--- objectives, so the existing orient()/decide() disband logic handles
--- returning the resolved group(s) to reserves with no special-casing here -
--- RepairResupplyPlan retires the convoy from the opscom's roster itself
--- before signaling objectiveComplete, so disband() only ever hands back
--- whichever dire-unit outcome (repaired in place, or its fresh
--- replacement) is still in groupCommanders by then.
-function StrategicCommander:beginRepair(direGc)
+-- Stands up a one-objective Operation pairing a distressed unit with a
+-- freshly spawned/dispatched resupply convoy, backed by RepairResupplyPlan
+-- (see its own header for why this doctrine holds live group references
+-- rather than working from a pool like every other operational doctrine).
+-- Reuses the same Operation/entry machinery instantiateObjective builds for
+-- ordinary objectives, so the existing orient()/decide() disband logic
+-- handles returning the resolved group(s) to reserves with no special-
+-- casing here - RepairResupplyPlan retires the convoy from the opscom's
+-- roster itself before signaling objectiveComplete, so disband() only ever
+-- hands back whichever distressed-unit outcome (repaired in place, or its
+-- fresh replacement) is still in groupCommanders by then.
+function StrategicCommander:beginRepair(distressedGc)
     if not self.unitRecovery:hasConvoyCapacity() then
         return false
     end
 
-    local direPosition = direGc:getOwnPosition()
-    if not direPosition then return false end
+    local distressedPosition = distressedGc:getOwnPosition()
+    if not distressedPosition then return false end
 
-    local rendezvousZone = self.map:selectRendezvousZone(self.color, direPosition)
+    local rendezvousZone = self.map:selectRendezvousZone(self.color, distressedPosition)
     if not rendezvousZone then return false end
     local rendezvousPoint = self.map:getZone(rendezvousZone).point
 
@@ -300,7 +301,7 @@ function StrategicCommander:beginRepair(direGc)
     })
 
     local doctrine = RepairResupplyPlan.new(self.color .. "Ops-repair", {
-        direGc          = direGc,
+        distressedGc    = distressedGc,
         convoyGc        = convoyGc,
         unitRecovery    = self.unitRecovery,
         rendezvousZone  = rendezvousZone,
@@ -312,7 +313,7 @@ function StrategicCommander:beginRepair(direGc)
     local opscom = OperationalCommander.new({
         color           = self.color,
         role            = "repair",
-        groupCommanders = { direGc, convoyGc },
+        groupCommanders = { distressedGc, convoyGc },
         visualizer      = self.visualizer,
         doctrine        = doctrine,
     })
@@ -330,8 +331,8 @@ function StrategicCommander:beginRepair(direGc)
     })
     table.insert(self.operations.active, operation)
 
-    env.info(string.format("****** %s StratCom ACT: dispatched %s to meet dire unit %s at %s",
-        self.color, convoyGroupName, direGc.groupName, rendezvousZone))
+    env.info(string.format("****** %s StratCom ACT: dispatched %s to meet distressed unit %s at %s",
+        self.color, convoyGroupName, distressedGc.groupName, rendezvousZone))
     return true
 end
 
@@ -380,9 +381,10 @@ function StrategicCommander:instantiateObjective(objTemplate, target)
     for _, gc in ipairs(self.reserves) do
         local status = gc:getStatus()
         -- Same hard floor OperationalCommander:assignOrderTemplate applies -
-        -- a dire reserve is excluded from fresh tasking entirely, not just
-        -- deprioritized in the suitability sort, since dispatchDireReserves
-        -- is what's responsible for it now (see StrategicCommander:act).
+        -- a distressed reserve is excluded from fresh tasking entirely, not
+        -- just deprioritized in the suitability sort, since
+        -- dispatchDistressedReserves is what's responsible for it now (see
+        -- StrategicCommander:act).
         if status.position and not gc:isConditionCritical() then
             local suitability = objTemplate.missionProfile and gc:getSuitability(objTemplate.missionProfile) or 1.0
             table.insert(candidates, {

@@ -1,19 +1,19 @@
--- RepairResupplyPlan: coordinates a dire unit and its resupply convoy
+-- RepairResupplyPlan: coordinates a distressed unit and its resupply convoy
 -- meeting at a rendezvous point, then resolving native DCS ammo resupply,
--- a virtual fuel top-off timer, and (if health-critical) a virtual repair
--- timer - all running concurrently, resolving on whichever finishes last -
--- before releasing both back to service. See src/unit-recovery.lua for the
--- spawn/despawn/respawn mechanics this calls into, and StrategicCommander
--- for how this doctrine's Operation/Objective/OperationalCommander gets
--- set up in the first place.
+-- a virtual fuel top-off timer, and (if health-critical or badly attrited)
+-- a virtual repair timer - all running concurrently, resolving on whichever
+-- finishes last - before releasing both back to service. See
+-- src/unit-recovery.lua for the spawn/despawn/respawn mechanics this calls
+-- into, and StrategicCommander for how this doctrine's
+-- Operation/Objective/OperationalCommander gets set up in the first place.
 --
 -- Unlike the pool-based operational doctrines (ReconRallyAssaultPlan,
 -- FireSupportPlan), this one coordinates exactly two specific, named,
--- non-interchangeable groups - it holds direGc/convoyGc as live instance
--- references from construction (same pattern DefensiveDoctrine uses for
--- self.basePosition, just extended to whole GroupCommanders) and targets
--- orders at them directly via OperationalCommander's assignTo, rather than
--- letting suitability scoring pick from a pool.
+-- non-interchangeable groups - it holds distressedGc/convoyGc as live
+-- instance references from construction (same pattern DefensiveDoctrine
+-- uses for self.basePosition, just extended to whole GroupCommanders) and
+-- targets orders at them directly via OperationalCommander's assignTo,
+-- rather than letting suitability scoring pick from a pool.
 --
 -- Phases: Traveling -> Resupplying -> Returning -> Restocking -> complete.
 -- OperationalCommander doesn't freeze on a finished order the way
@@ -32,25 +32,30 @@ local taskTypes = constants.taskTypes
 local alr = constants.acceptableLevelsOfRisk
 
 -- Tunable timers, all seconds. FUEL_TOPOFF_TIME effectively floors every
--- resupply's duration (even an ammo-only dire unit waits this long) since
--- it's the shortest of the three real-world-plausible numbers here.
+-- resupply's duration (even an ammo-only distressed unit waits this long)
+-- since it's the shortest of the three real-world-plausible numbers here.
 local FUEL_TOPOFF_TIME = 120
 local REPAIR_TIME = 300
 local RESTOCK_TIME = 90
 local AMMO_STABLE_CHECKS = 2 -- consecutive unchanged polls before "DCS finished rearming"
 local ARRIVAL_PROXIMITY = 500
+-- Matches GroupCommander's own ATTRITION_CRITICAL_RATIO threshold - if lost
+-- unit-mates (not survivor health/ammo/fuel) is what flagged this unit
+-- distressed in the first place, only a respawn actually fixes that;
+-- nothing else in this system replaces a destroyed unit.
+local ATTRITION_RESPAWN_THRESHOLD = 0.6
 
 local RepairResupplyPlan = {}
 setmetatable(RepairResupplyPlan, {__index = Doctrine})
 RepairResupplyPlan.__index = RepairResupplyPlan
 
--- config: { direGc, convoyGc, unitRecovery, rendezvousZone, rendezvousPoint,
---           homeZone, homePoint }
+-- config: { distressedGc, convoyGc, unitRecovery, rendezvousZone,
+--           rendezvousPoint, homeZone, homePoint }
 function RepairResupplyPlan.new(commanderName, config)
     local self = Doctrine.new("RepairResupply", commanderName)
     setmetatable(self, RepairResupplyPlan)
 
-    self.direGc = config.direGc
+    self.distressedGc = config.distressedGc
     self.convoyGc = config.convoyGc
     self.unitRecovery = config.unitRecovery
     self.rendezvousZone = config.rendezvousZone
@@ -58,11 +63,15 @@ function RepairResupplyPlan.new(commanderName, config)
     self.homeZone = config.homeZone
     self.homePoint = config.homePoint
 
-    self.healthCritical = nil
+    self.needsRespawn = nil
     self.resupplyStartedAt = nil
     self.restockStartedAt = nil
     self.lastAmmoCount = nil
     self.ammoStableTicks = 0
+    -- Set by checkFailure when the distressed unit is lost but the convoy
+    -- isn't - restockingPhase reports this as the objective's real outcome
+    -- once the convoy actually gets home, instead of a false "complete".
+    self.pendingFailureReason = nil
 
     self:registerPhase("Traveling", RepairResupplyPlan.travelingPhase)
     self:registerPhase("Resupplying", RepairResupplyPlan.resupplyingPhase)
@@ -77,53 +86,77 @@ end
 -- partial success. Returns a decision table to return immediately if
 -- something failed, or nil if both partners are still in play.
 function RepairResupplyPlan:checkFailure()
-    local direDestroyed = self.direGc.destroyed
-    local direAborted = self.direGc.orders and self.direGc.orders.status == constants.orderStatus.ABORTED
-    local direLost = direDestroyed or direAborted
+    local distressedDestroyed = self.distressedGc.destroyed
+    local distressedAborted = self.distressedGc.orders and self.distressedGc.orders.status == constants.orderStatus.ABORTED
+    local distressedLost = distressedDestroyed or distressedAborted
 
     local convoyDestroyed = self.convoyGc.destroyed
     local convoyAborted = self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED
     local convoyLost = convoyDestroyed or convoyAborted
 
-    if not direLost and not convoyLost then
+    if not distressedLost and not convoyLost then
         return nil
     end
 
     local replacements = {}
     local released = {}
 
+    if distressedLost then
+        replacements[self.distressedGc.groupName] = false
+        -- Unlike the convoy, an aborted-but-alive distressed unit has
+        -- somewhere to go: it fled real danger, not "job's done" - release
+        -- it back to reserves so it isn't orphaned (removed from this
+        -- opscom's roster but never handed anywhere else) -
+        -- dispatchDistressedReserves will pick it up again once it's safe.
+        -- If it's destroyed there's nothing to release.
+        if not distressedDestroyed then
+            table.insert(released, self.distressedGc)
+        end
+    end
+
     if convoyLost then
-        -- Safe whether the convoy is already destroyed (no-op destroy,
-        -- still checks the capacity back in) or merely aborted its order
-        -- while still alive (genuinely despawns it either way) - a convoy
+        -- Convoy itself is gone (destroyed - no-op destroy, still checks
+        -- the capacity back in - or aborted its own order while still
+        -- alive) - nowhere left to send it, retire it in place. A convoy
         -- never goes back to reserves, destroyed or not (see
         -- unit-recovery.lua's despawn-on-idle philosophy).
         self.unitRecovery:despawnConvoy(self.convoyGc.groupName)
         replacements[self.convoyGc.groupName] = false
-    end
-    if direLost then
-        replacements[self.direGc.groupName] = false
-        -- Unlike the convoy, an aborted-but-alive dire unit has somewhere
-        -- to go: it fled real danger, not "job's done" - release it back to
-        -- reserves so it isn't orphaned (removed from this opscom's roster
-        -- but never handed anywhere else) - dispatchDireReserves will pick
-        -- it up again once it's safe. If it's destroyed there's nothing to
-        -- release.
-        if not direDestroyed then
-            table.insert(released, self.direGc)
-        end
-    end
-    -- If only the convoy was lost, the dire unit stays in the roster (not
-    -- listed in replacements) so disband() returns it to reserves once this
-    -- objective completes below, same as any other survivor.
 
-    env.info(string.format("*** %s RepairResupplyPlan: session for %s ended in failure (direLost=%s convoyLost=%s)",
-        self.commanderName, self.direGc.groupName, tostring(direLost), tostring(convoyLost)))
+        env.info(string.format("*** %s RepairResupplyPlan: session for %s ended in failure (distressedLost=%s convoyLost=%s)",
+            self.commanderName, self.distressedGc.groupName, tostring(distressedLost), tostring(convoyLost)))
+
+        return {
+            groupReplacements = replacements,
+            releaseGroups = released,
+            objectiveFailed = "partner_lost",
+        }
+    end
+
+    -- distressedLost but the convoy is still fine - it has no one left to
+    -- resupply, but it shouldn't simply cease to exist wherever it happens
+    -- to be standing. Send it home via the same Returning/Restocking path
+    -- the normal completion flow already uses (it doesn't care why it's
+    -- heading home), and remember the real outcome for restockingPhase to
+    -- report once it actually gets there - leaving groupCommanders alone
+    -- for now, since this opscom still needs to route orders to it.
+    self.pendingFailureReason = "partner_lost"
+    self:changePhase("Returning")
+    env.info(string.format("*** %s RepairResupplyPlan: %s lost, sending %s home before retiring",
+        self.commanderName, self.distressedGc.groupName, self.convoyGc.groupName))
 
     return {
         groupReplacements = replacements,
         releaseGroups = released,
-        objectiveFailed = "partner_lost",
+        orders = {
+            {
+                type      = taskTypes.RESUPPLY,
+                position  = self.homePoint,
+                proximity = ARRIVAL_PROXIMITY,
+                alr       = alr.LOW,
+                assignTo  = self.convoyGc.groupName,
+            },
+        },
     }
 end
 
@@ -131,21 +164,27 @@ function RepairResupplyPlan:travelingPhase(context)
     local failure = self:checkFailure()
     if failure then return failure end
 
-    local direStatus = self.direGc:getStatus()
+    local distressedStatus = self.distressedGc:getStatus()
     local convoyStatus = self.convoyGc:getStatus()
-    local direArrived = direStatus.position
-        and SpatialAgent.distance2D(direStatus.position, self.rendezvousPoint) <= ARRIVAL_PROXIMITY
+    local distressedArrived = distressedStatus.position
+        and SpatialAgent.distance2D(distressedStatus.position, self.rendezvousPoint) <= ARRIVAL_PROXIMITY
     local convoyArrived = convoyStatus.position
         and SpatialAgent.distance2D(convoyStatus.position, self.rendezvousPoint) <= ARRIVAL_PROXIMITY
 
-    if direArrived and convoyArrived then
-        local direReport = self.direGc:getStatusReport()
-        self.healthCritical = ForceStatusAnalyzer.isHealthCritical(direReport.healthRatio)
+    if distressedArrived and convoyArrived then
+        local distressedReport = self.distressedGc:getStatusReport()
+        local totalUnits = #self.distressedGc.initialUnitNames
+        -- Health-critical survivors need a respawn to fix; so does a group
+        -- that's merely lost most of its unit-mates while the survivors
+        -- themselves are fine - fuel/ammo top-off does nothing for either
+        -- of those, only despawn+respawn actually restores a full roster.
+        self.needsRespawn = ForceStatusAnalyzer.isHealthCritical(distressedReport.healthRatio)
+            or ForceStatusAnalyzer.hasSignificantAttrition(distressedReport.aliveCount, totalUnits, ATTRITION_RESPAWN_THRESHOLD)
         self.resupplyStartedAt = timer.getTime()
-        self.lastAmmoCount = direReport.ammoCount
+        self.lastAmmoCount = distressedReport.ammoCount
         self:changePhase("Resupplying")
-        env.info(string.format("*** %s RepairResupplyPlan: %s and %s met, resupply starting (healthCritical=%s)",
-            self.commanderName, self.direGc.groupName, self.convoyGc.groupName, tostring(self.healthCritical)))
+        env.info(string.format("*** %s RepairResupplyPlan: %s and %s met, resupply starting (needsRespawn=%s)",
+            self.commanderName, self.distressedGc.groupName, self.convoyGc.groupName, tostring(self.needsRespawn)))
     end
 
     return {
@@ -154,8 +193,8 @@ function RepairResupplyPlan:travelingPhase(context)
                 type      = taskTypes.REPAIR,
                 position  = self.rendezvousPoint,
                 proximity = ARRIVAL_PROXIMITY,
-                alr       = alr.LOW, -- dire units should flee readily, not stand and fight
-                assignTo  = self.direGc.groupName,
+                alr       = alr.LOW, -- distressed units should flee readily, not stand and fight
+                assignTo  = self.distressedGc.groupName,
             },
             {
                 type      = taskTypes.RESUPPLY,
@@ -170,15 +209,16 @@ end
 
 -- Polls the three concurrent resolution conditions (native ammo, virtual
 -- fuel, virtual repair) and, once all have resolved, either respawns the
--- dire unit's group fresh (health-critical) or releases it as-is - either
--- way it's done and gets handed back to reserves right away via
--- releaseGroups, rather than waiting for the convoy's own return trip too.
--- Then redirects the convoy home with an updated RESUPPLY order.
+-- distressed unit's group fresh (health-critical or badly attrited) or
+-- releases it as-is - either way it's done and gets handed back to reserves
+-- right away via releaseGroups, rather than waiting for the convoy's own
+-- return trip too. Then redirects the convoy home with an updated RESUPPLY
+-- order.
 function RepairResupplyPlan:resupplyingPhase(context)
     local failure = self:checkFailure()
     if failure then return failure end
 
-    local status = self.direGc:getStatusReport()
+    local status = self.distressedGc:getStatusReport()
     if status.ammoCount == self.lastAmmoCount then
         self.ammoStableTicks = self.ammoStableTicks + 1
     else
@@ -189,7 +229,7 @@ function RepairResupplyPlan:resupplyingPhase(context)
 
     local elapsed = timer.getTime() - self.resupplyStartedAt
     local fuelResolved = elapsed >= FUEL_TOPOFF_TIME
-    local repairResolved = (not self.healthCritical) or elapsed >= REPAIR_TIME
+    local repairResolved = (not self.needsRespawn) or elapsed >= REPAIR_TIME
 
     if not (ammoResolved and fuelResolved and repairResolved) then
         return {
@@ -199,38 +239,38 @@ function RepairResupplyPlan:resupplyingPhase(context)
                     position  = self.rendezvousPoint,
                     proximity = ARRIVAL_PROXIMITY,
                     alr       = alr.LOW,
-                    assignTo  = self.direGc.groupName,
+                    assignTo  = self.distressedGc.groupName,
                 },
             },
         }
     end
 
     local released = {}
-    if self.healthCritical then
-        local freshName = self.unitRecovery:respawnGroup(self.direGc, self.rendezvousZone)
+    if self.needsRespawn then
+        local freshName = self.unitRecovery:respawnGroup(self.distressedGc, self.rendezvousZone)
         if freshName then
             table.insert(released, self.unitRecovery:wrapGroupCommander(freshName))
         end
     else
-        self.direGc.fuelRemaining = 1.0 -- virtual refuel; ammo is genuinely refilled by DCS already
-        if self.direGc.orders and self.direGc.orders:isActive() then
-            self.direGc.orders:complete()
+        self.distressedGc.fuelRemaining = 1.0 -- virtual refuel; ammo is genuinely refilled by DCS already
+        if self.distressedGc.orders and self.distressedGc.orders:isActive() then
+            self.distressedGc.orders:complete()
         end
-        table.insert(released, self.direGc)
+        table.insert(released, self.distressedGc)
         env.info(string.format("*** %s RepairResupplyPlan: %s resupplied in place (no respawn needed)",
-            self.commanderName, self.direGc.groupName))
+            self.commanderName, self.distressedGc.groupName))
     end
 
     self:changePhase("Returning")
 
     return {
-        -- The old direGc entry (destroyed-and-replaced or simply retired
-        -- from this opscom's concern either way) comes out of
+        -- The old distressedGc entry (destroyed-and-replaced or simply
+        -- retired from this opscom's concern either way) comes out of
         -- groupCommanders here; the group actually going back into service
         -- - released above - is what StrategicCommander:reclaimReleasedGroups
         -- picks up next cycle. Leaving it in groupCommanders too would risk
         -- it being double-tasked once it's also sitting in reserves.
-        groupReplacements = { [self.direGc.groupName] = false },
+        groupReplacements = { [self.distressedGc.groupName] = false },
         releaseGroups = released,
         orders = {
             {
@@ -245,9 +285,10 @@ function RepairResupplyPlan:resupplyingPhase(context)
 end
 
 function RepairResupplyPlan:returningPhase(context)
-    -- Only the convoy is still being coordinated at this point - direGc was
-    -- already released in resupplyingPhase, so checkFailure would wrongly
-    -- fire on it (see its guard comment); just watch the convoy directly.
+    -- Only the convoy is still being coordinated at this point -
+    -- distressedGc was already released in resupplyingPhase, so
+    -- checkFailure would wrongly fire on it (see its guard comment); just
+    -- watch the convoy directly.
     if self.convoyGc.destroyed or
         (self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED) then
         env.info(string.format("*** %s RepairResupplyPlan: convoy %s lost on the way home",
@@ -287,6 +328,13 @@ function RepairResupplyPlan:restockingPhase(context)
     env.info(string.format("*** %s RepairResupplyPlan: %s restocked, retiring",
         self.commanderName, self.convoyGc.groupName))
     self.unitRecovery:despawnConvoy(self.convoyGc.groupName)
+
+    if self.pendingFailureReason then
+        return {
+            groupReplacements = { [self.convoyGc.groupName] = false },
+            objectiveFailed = self.pendingFailureReason,
+        }
+    end
 
     return {
         groupReplacements = { [self.convoyGc.groupName] = false },

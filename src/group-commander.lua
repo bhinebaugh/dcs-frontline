@@ -49,7 +49,7 @@ function GroupCommander.new(groupName, config)
     -- (before any losses) - not derived from any spawn-time template
     -- parameter, since ControlZones's spawn calls don't thread one through
     -- to GroupCommander. This works for a group spawned any way at all,
-    -- and is what UnitRecovery respawns from when a dire unit's group
+    -- and is what UnitRecovery respawns from when a distressed unit's group
     -- needs a fresh full-strength instance (see src/unit-recovery.lua).
     self.templateTypes = self:getOwnUnitTypes()
     self.initialCollectiveStatus = self:getCollectiveStatus()
@@ -134,9 +134,16 @@ end
 function GroupCommander:observe()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then
-        -- Mark as destroyed (oodaTick will handle cancellation)
+        -- Mark as destroyed (oodaTick will handle cancellation) - release our
+        -- own map mark right here, since oodaTick cancels our schedule
+        -- immediately after this call, before act() (which normally does
+        -- this via syncGroupOrder noticing a missing position) ever runs
+        -- again.
         self.destroyed = true
         self.lastObserveTime = timer.getTime()
+        if self.visualizer then
+            self.visualizer:release("group:" .. self.groupName)
+        end
         env.info(self.groupName .. " destroyed - marking for cleanup")
         return
     end
@@ -655,9 +662,9 @@ end
 -- Condition thresholds, as percent (0-100) to match ForceStatusAnalyzer's
 -- own thresholdPercent convention. Ammo/fuel critical are deliberately
 -- looser than ForceStatusAnalyzer's own defaults (5%/10%) - waiting until a
--- group is nearly bone dry before flagging it dire meant most groups never
--- got noticed in practice; a resupply convoy takes real travel time, so the
--- threshold needs enough runway to matter. Degraded is set well above its
+-- group is nearly bone dry before flagging it distressed meant most groups
+-- never got noticed in practice; a resupply convoy takes real travel time,
+-- so the threshold needs enough runway to matter. Degraded is set well above its
 -- matching critical threshold (not just above the old defaults) so there's
 -- still a meaningful DEGRADED window before CRITICAL takes over - health
 -- and attrition are unchanged from where they started.
@@ -669,9 +676,9 @@ local ATTRITION_CRITICAL_RATIO = 0.6
 local ATTRITION_DEGRADED_RATIO = 0.3
 
 -- True if ammo, health, fuel, or attrition (unit count lost) is critically
--- low - the "dire" floor used to exclude a group from new order assignment
--- entirely (see OperationalCommander:assignOrderTemplate), independent of
--- how well it'd otherwise fit a mission's missionProfile. status is
+-- low - the "distressed" floor used to exclude a group from new order
+-- assignment entirely (see OperationalCommander:assignOrderTemplate),
+-- independent of how well it'd otherwise fit a mission's missionProfile. status is
 -- optional - pass one in if you already fetched it this tick (see
 -- getConditionSummary) to avoid querying DCS for ammo/life a second time.
 --

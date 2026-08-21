@@ -109,7 +109,7 @@ function OperationalCommander:disband()
             table.insert(survivors, gc)
         end
     end
-    env.info("*** " .. self.color .. " Ops: disbanded, returning " .. #survivors .. " groups to reserves")
+    env.info("*** " .. self.name .. " (" .. self.color .. " Ops): disbanded, returning " .. #survivors .. " groups to reserves")
     return survivors
 end
 
@@ -127,17 +127,17 @@ function OperationalCommander:observe()
         activeGroups = activeGroups + 1
     end
     local totalThreats = self.threatTracker:count()
-    env.info("*** " .. self.color .. " Ops OBSERVE: " .. activeGroups .. " groups, " .. totalThreats .. " threats tracked")
+    env.info("*** " .. self.name .. " (" .. self.color .. " Ops) OBSERVE: " .. activeGroups .. " groups, " .. totalThreats .. " threats tracked")
 end
 
 function OperationalCommander:orient()
     -- Clean up destroyed commanders first, before any assessment
     self:cleanupDestroyedCommanders()
 
-    -- Pull out any idle-and-dire group before order assignment even
-    -- considers it - see releaseDireGroups for why this can't just wait
-    -- for the objective to naturally complete/refresh.
-    self:releaseDireGroups()
+    -- Pull out any idle-and-distressed group before order assignment even
+    -- considers it - see releaseDistressedGroups for why this can't just
+    -- wait for the objective to naturally complete/refresh.
+    self:releaseDistressedGroups()
 
     -- Sync order statuses from commanders back to order graph
     self.orderCoordinator:syncOrderStatuses(self.groupCommanders)
@@ -163,7 +163,7 @@ function OperationalCommander:orient()
         end
     end
     if totalOrders > 0 then
-        env.info("*** " .. self.color .. " Ops ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops) ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
     end
 end
 
@@ -180,7 +180,7 @@ function OperationalCommander:decide()
             assaultRadius          = self.assaultRadius,
             assaultStagingDistance = self.assaultStagingDistance,
         })
-        env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan doctrine")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops): Assigned ReconRallyAssaultPlan doctrine")
     end
 
     for _, objective in ipairs(self.orderCoordinator.objectives) do
@@ -191,9 +191,9 @@ function OperationalCommander:decide()
     
     -- Log consolidated DECIDE summary
     if #self.plannedOrders > 0 then
-        env.info("*** " .. self.color .. " Ops DECIDE: Planning " .. #self.plannedOrders .. " orders")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops) DECIDE: Planning " .. #self.plannedOrders .. " orders")
     else
-        env.info("*** " .. self.color .. " Ops DECIDE: No new orders planned")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops) DECIDE: No new orders planned")
     end
 end
 
@@ -250,12 +250,12 @@ function OperationalCommander:issuePlannedOrders()
                                 order.type == taskTypes.DEFEND and "DEFEND" or 
                                 order.type == taskTypes.REPOSITION and "REPOSITION" or 
                                 tostring(order.type)
-            env.info("*** " .. self.color .. " Ops ACT: " .. orderTypeName .. " → " .. commander.groupName)
+            env.info("*** " .. self.name .. " (" .. self.color .. " Ops) ACT: " .. orderTypeName .. " → " .. commander.groupName)
         end
     end
     
     -- Log consolidated ACT summary
-    env.info("*** " .. self.color .. " Ops ACT: Issued " .. issuedCount .. " orders total")
+    env.info("*** " .. self.name .. " (" .. self.color .. " Ops) ACT: Issued " .. issuedCount .. " orders total")
 end
 
 
@@ -282,7 +282,7 @@ function OperationalCommander:cleanupDestroyedCommanders()
         local objective = self.orderCoordinator.objectives[1]
         if objective and not objective:isComplete() then
             objective:markFailed("all groups destroyed")
-            env.info("*** " .. self.color .. " Ops: objective failed - all groups destroyed")
+            env.info("*** " .. self.name .. " (" .. self.color .. " Ops): objective failed - all groups destroyed")
         end
     end
 
@@ -301,8 +301,8 @@ function OperationalCommander:cleanupDestroyedCommanders()
                             end
                         end
                         if not groupStillExists then
-                            env.info(string.format("*** %s Ops: Aborting order for %s (group missing)",
-                                self.color, order.assignedTo or "unknown"))
+                            env.info(string.format("*** %s (%s Ops): Aborting order for %s (group missing)",
+                                self.name, self.color, order.assignedTo or "unknown"))
                             order.status = constants.orderStatus.ABORTED
                             objective.updatedAt = timer.getTime()
                         end
@@ -313,39 +313,47 @@ function OperationalCommander:cleanupDestroyedCommanders()
     end
 end
 
--- Pulls any idle (no active order) and dire (isConditionCritical) group out
--- of this opscom's roster and into releasedGroupCommanders, the same drain
--- StrategicCommander:reclaimReleasedGroups already services every cycle for
--- RepairResupplyPlan's own early releases (see its header). Without this, a
--- group that goes critical while tasked (an artillery group low on ammo
--- mid-fireSupport-objective, say) would sit here safely idling in
--- DefensiveDoctrine - assignOrderTemplate's own hard floor already refuses
--- to give it a new order - but invisible to dispatchDireReserves, since
--- that only scans self.reserves. It would eventually reach reserves once
--- this objective naturally completes or refreshes, but that can be
--- minutes away; this catches it the moment it's actually idle instead.
+-- Pulls any idle (no active order) and distressed (isConditionCritical)
+-- group out of this opscom's roster and into releasedGroupCommanders, the
+-- same drain StrategicCommander:reclaimReleasedGroups already services
+-- every cycle for RepairResupplyPlan's own early releases (see its header).
+-- Without this, a group that goes critical while tasked (an artillery group
+-- low on ammo mid-fireSupport-objective, say) would sit here safely idling
+-- in DefensiveDoctrine - assignOrderTemplate's own hard floor already
+-- refuses to give it a new order - but invisible to
+-- dispatchDistressedReserves, since that only scans self.reserves. It would
+-- eventually reach reserves once this objective naturally completes or
+-- refreshes, but that can be minutes away; this catches it the moment it's
+-- actually idle instead.
 --
 -- Restricted to idle groups deliberately - a group mid-order is left to
 -- its own tactical doctrine's considerAbort (already weighted by health/
 -- fuel/ammo) to decide whether to abort that order, rather than being
--- yanked out from under an in-progress task just because it's dire.
+-- yanked out from under an in-progress task just because it's distressed.
 --
 -- "Idle" specifically means HAD an order and it finished - not "has never
--- had one" (gc.orders == nil). A freshly-constructed opscom clears every
--- group's orders to nil (see OperationalCommander.new) before its doctrine
--- ever gets a first chance to assign one; treating that as idle would pull
--- a group back out before its own opscom could task it at all, which is
--- exactly backwards for RepairResupplyPlan's direGc - dire is the whole
--- reason it's there, and yanking it away the instant it arrives means it
--- never receives its REPAIR order, only ever gets redispatched to a new
--- convoy, forever.
-function OperationalCommander:releaseDireGroups()
+-- had one" (gc.orders == nil). Both a freshly-constructed opscom (which
+-- clears every group's orders to nil in OperationalCommander.new, before its
+-- doctrine ever gets a first chance to assign one) and a group whose last
+-- order has already finished and been cleared back to nil (see
+-- GroupCommander:clearOrders/decide's freeze-guard, the ordinary state for
+-- ANY idle group, distressed or not) look identical via gc.orders alone.
+-- The two need opposite treatment - releasing the former pulls a group back
+-- out before its own opscom could task it at all (exactly backwards for
+-- RepairResupplyPlan's distressedGc, which would just get redispatched to a
+-- new convoy forever without ever receiving its REPAIR order), while
+-- refusing to release the latter leaves a distressed group stuck forever,
+-- invisible to repair, once it naturally falls idle mid-operation.
+-- self.lastIssuedOrders - this opscom's own record of ever having actually
+-- issued a group an order - disambiguates them.
+function OperationalCommander:releaseDistressedGroups()
     local remaining = {}
     for _, gc in ipairs(self.groupCommanders) do
-        local idle = gc.orders and gc.orders:isFinished()
+        local everTaskedByUs = self.lastIssuedOrders[gc.groupName] ~= nil
+        local idle = everTaskedByUs and (not gc.orders or gc.orders:isFinished())
         if idle and gc:isConditionCritical() then
-            env.info(string.format("*** %s Ops: releasing idle dire group %s for repair/resupply",
-                self.color, gc.groupName))
+            env.info(string.format("*** %s (%s Ops): releasing idle distressed group %s for repair/resupply",
+                self.name, self.color, gc.groupName))
             table.insert(self.releasedGroupCommanders, gc)
         else
             table.insert(remaining, gc)
@@ -433,8 +441,8 @@ end
 -- and disband() hands back whatever's still in groupCommanders.
 -- releaseGroups (optional): array of GroupCommanders to hand back to
 -- StrategicCommander's reserves right now, mid-operation, rather than
--- waiting for this objective to complete - e.g. a dire unit that's done
--- resupplying while its convoy still has a return trip ahead of it.
+-- waiting for this objective to complete - e.g. a distressed unit that's
+-- done resupplying while its convoy still has a return trip ahead of it.
 -- Doesn't touch groupCommanders itself; pair with groupReplacements=false
 -- for the same name if the group should also stop being managed by this
 -- opscom (almost always yes - a released-but-still-tracked group could get
@@ -455,10 +463,10 @@ function OperationalCommander:planObjectiveWithDoctrine(objective)
     end
 
     if result.objectiveFailed then
-        env.info("*** " .. self.color .. " Ops: OBJECTIVE FAILED (" .. tostring(result.objectiveFailed) .. ") --------------------")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops): OBJECTIVE FAILED (" .. tostring(result.objectiveFailed) .. ") --------------------")
         objective:markFailed(result.objectiveFailed)
     elseif result.objectiveComplete then
-        env.info("*** " .. self.color .. " Ops: OBJECTIVE COMPLETE --------------------")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops): OBJECTIVE COMPLETE --------------------")
         objective:markAchieved()
     end
 
@@ -519,14 +527,14 @@ function OperationalCommander:assignOrderTemplate(template, objective)
            s.orderStatus == orderStatus.COMPLETED or
            s.orderStatus == orderStatus.ABORTED then
             -- A hard floor, not just a low suitability score: a group in
-            -- dire condition (critical ammo/health/fuel) is excluded from
-            -- new tasking entirely, regardless of how well it'd otherwise
-            -- match missionProfile - suitability alone only deprioritizes
-            -- via sort order, which still picks a dire group when it's the
-            -- best (or only) candidate available.
+            -- distressed condition (critical ammo/health/fuel) is excluded
+            -- from new tasking entirely, regardless of how well it'd
+            -- otherwise match missionProfile - suitability alone only
+            -- deprioritizes via sort order, which still picks a distressed
+            -- group when it's the best (or only) candidate available.
             if commander:isConditionCritical() then
-                env.info(string.format("*** %s Ops: excluding %s from order assignment (dire condition)",
-                    self.color, commander.groupName))
+                env.info(string.format("*** %s (%s Ops): excluding %s from order assignment (distressed condition)",
+                    self.name, self.color, commander.groupName))
             else
                 local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
                 local dist = (s.position and template.position)

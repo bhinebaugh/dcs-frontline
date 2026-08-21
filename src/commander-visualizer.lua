@@ -77,7 +77,7 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level, condition.aliveCount}, "|")
     end
 
-    -- Dire condition overrides the normal background so it's visually
+    -- Distressed condition overrides the normal background so it's visually
     -- distinct from the coalition-colored default at a glance, independent
     -- of whatever order/disposition text says - this is the map-level
     -- confirmation that isConditionCritical's criteria are actually firing.

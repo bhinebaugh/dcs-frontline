@@ -432,7 +432,7 @@ function StrategicCommander:act()
         self:createOperation(template)
     end
 
-    self:dispatchDireReserves()
+    self:dispatchDistressedReserves()
     self:reclaimReleasedGroups()
 
     for _, operation in ipairs(self.operations.active) do
@@ -465,21 +465,22 @@ end
 -- HELPER METHODS
 -- ============================================================================
 
--- Hands every dire reserve to a fresh repair Operation, removing it from
--- self.reserves so it can't also be picked up by instantiateObjective in
--- the same tick (that has its own isConditionCritical floor too, belt-and-
--- suspenders, but this is what actually stops it from sitting in reserves
--- looking dire and unused). A group stays in reserves if UnitRecovery has
--- no convoy capacity for it right now - it'll be tried again next tick.
-function StrategicCommander:dispatchDireReserves()
-    local direReserves = {}
+-- Hands every distressed reserve to a fresh repair Operation, removing it
+-- from self.reserves so it can't also be picked up by instantiateObjective
+-- in the same tick (that has its own isConditionCritical floor too, belt-
+-- and-suspenders, but this is what actually stops it from sitting in
+-- reserves looking distressed and unused). A group stays in reserves if
+-- UnitRecovery has no convoy capacity for it right now - it'll be tried
+-- again next tick.
+function StrategicCommander:dispatchDistressedReserves()
+    local distressedReserves = {}
     for _, gc in ipairs(self.reserves) do
         if gc:isConditionCritical() then
-            table.insert(direReserves, gc)
+            table.insert(distressedReserves, gc)
         end
     end
 
-    for _, gc in ipairs(direReserves) do
+    for _, gc in ipairs(distressedReserves) do
         if self:beginRepair(gc) then
             for i, reserveGc in ipairs(self.reserves) do
                 if reserveGc == gc then
@@ -491,26 +492,26 @@ function StrategicCommander:dispatchDireReserves()
     end
 end
 
--- Stands up a one-objective Operation pairing a dire unit with a freshly
--- spawned/dispatched resupply convoy, backed by RepairResupplyPlan (see its
--- own header for why this doctrine holds live group references rather than
--- working from a pool like every other operational doctrine). Reuses the
--- same Operation/entry machinery instantiateObjective builds for ordinary
--- objectives, so the existing orient()/decide() disband logic handles
--- returning the resolved group(s) to reserves with no special-casing here -
--- RepairResupplyPlan retires the convoy from the opscom's roster itself
--- before signaling objectiveComplete, so disband() only ever hands back
--- whichever dire-unit outcome (repaired in place, or its fresh
--- replacement) is still in groupCommanders by then.
-function StrategicCommander:beginRepair(direGc)
+-- Stands up a one-objective Operation pairing a distressed unit with a
+-- freshly spawned/dispatched resupply convoy, backed by RepairResupplyPlan
+-- (see its own header for why this doctrine holds live group references
+-- rather than working from a pool like every other operational doctrine).
+-- Reuses the same Operation/entry machinery instantiateObjective builds for
+-- ordinary objectives, so the existing orient()/decide() disband logic
+-- handles returning the resolved group(s) to reserves with no special-
+-- casing here - RepairResupplyPlan retires the convoy from the opscom's
+-- roster itself before signaling objectiveComplete, so disband() only ever
+-- hands back whichever distressed-unit outcome (repaired in place, or its
+-- fresh replacement) is still in groupCommanders by then.
+function StrategicCommander:beginRepair(distressedGc)
     if not self.unitRecovery:hasConvoyCapacity() then
         return false
     end
 
-    local direPosition = direGc:getOwnPosition()
-    if not direPosition then return false end
+    local distressedPosition = distressedGc:getOwnPosition()
+    if not distressedPosition then return false end
 
-    local rendezvousZone = self.map:selectRendezvousZone(self.color, direPosition)
+    local rendezvousZone = self.map:selectRendezvousZone(self.color, distressedPosition)
     if not rendezvousZone then return false end
     local rendezvousPoint = self.map:getZone(rendezvousZone).point
 
@@ -529,7 +530,7 @@ function StrategicCommander:beginRepair(direGc)
     })
 
     local doctrine = RepairResupplyPlan.new(self.color .. "Ops-repair", {
-        direGc          = direGc,
+        distressedGc    = distressedGc,
         convoyGc        = convoyGc,
         unitRecovery    = self.unitRecovery,
         rendezvousZone  = rendezvousZone,
@@ -541,7 +542,7 @@ function StrategicCommander:beginRepair(direGc)
     local opscom = OperationalCommander.new({
         color           = self.color,
         role            = "repair",
-        groupCommanders = { direGc, convoyGc },
+        groupCommanders = { distressedGc, convoyGc },
         visualizer      = self.visualizer,
         doctrine        = doctrine,
     })
@@ -559,8 +560,8 @@ function StrategicCommander:beginRepair(direGc)
     })
     table.insert(self.operations.active, operation)
 
-    env.info(string.format("****** %s StratCom ACT: dispatched %s to meet dire unit %s at %s",
-        self.color, convoyGroupName, direGc.groupName, rendezvousZone))
+    env.info(string.format("****** %s StratCom ACT: dispatched %s to meet distressed unit %s at %s",
+        self.color, convoyGroupName, distressedGc.groupName, rendezvousZone))
     return true
 end
 
@@ -609,9 +610,10 @@ function StrategicCommander:instantiateObjective(objTemplate, target)
     for _, gc in ipairs(self.reserves) do
         local status = gc:getStatus()
         -- Same hard floor OperationalCommander:assignOrderTemplate applies -
-        -- a dire reserve is excluded from fresh tasking entirely, not just
-        -- deprioritized in the suitability sort, since dispatchDireReserves
-        -- is what's responsible for it now (see StrategicCommander:act).
+        -- a distressed reserve is excluded from fresh tasking entirely, not
+        -- just deprioritized in the suitability sort, since
+        -- dispatchDistressedReserves is what's responsible for it now (see
+        -- StrategicCommander:act).
         if status.position and not gc:isConditionCritical() then
             local suitability = objTemplate.missionProfile and gc:getSuitability(objTemplate.missionProfile) or 1.0
             table.insert(candidates, {
@@ -712,8 +714,8 @@ __bundle_register("unit-recovery", function(require, _LOADED, __bundle_register,
 -- UnitRecovery: capacity accounting and DCS spawn/despawn utilities for the
 -- repair/resupply system, owned by StrategicCommander but exercised mostly
 -- by RepairResupplyPlan (src/doctrines/operational/repair-resupply-plan.lua),
--- which owns the actual phase/timing state machine for a given dire unit +
--- convoy pairing. This module deliberately holds no session state of its
+-- which owns the actual phase/timing state machine for a given distressed
+-- unit + convoy pairing. This module deliberately holds no session state of its
 -- own - just the ReservePool ledger and stateless-except-for-that spawn/
 -- despawn mechanics, callable from wherever needs them (StrategicCommander
 -- dispatches the initial convoy; the doctrine calls back in for the
@@ -802,28 +804,28 @@ function UnitRecovery:despawnConvoy(groupName)
     self.pool:checkIn(convoyKey(self.color))
 end
 
--- Despawns a dire unit's remnant and spawns a fresh full-strength instance
--- of its original template (direGc.templateTypes) at `atZone`. See
--- reserve-pool.lua's header for the checkIn/checkOut accounting this
--- performs: surviving units' slots are checked in and immediately
--- re-checked-out (net zero), while slots for destroyed companions are
--- genuine depletions of headroom that was never spawned in the first
--- place. Returns the new group's name, or nil if no capacity remained even
--- for the survivors' own slots (shouldn't normally happen).
-function UnitRecovery:respawnGroup(direGc, atZone)
+-- Despawns a distressed unit's remnant and spawns a fresh full-strength
+-- instance of its original template (distressedGc.templateTypes) at
+-- `atZone`. See reserve-pool.lua's header for the checkIn/checkOut
+-- accounting this performs: surviving units' slots are checked in and
+-- immediately re-checked-out (net zero), while slots for destroyed
+-- companions are genuine depletions of headroom that was never spawned in
+-- the first place. Returns the new group's name, or nil if no capacity
+-- remained even for the survivors' own slots (shouldn't normally happen).
+function UnitRecovery:respawnGroup(distressedGc, atZone)
     local color = self.color
 
-    for _, unit in ipairs(direGc:getOwnUnits()) do
+    for _, unit in ipairs(distressedGc:getOwnUnits()) do
         self.pool:checkIn(unitKey(color, unit:getTypeName()))
     end
 
-    local group = Group.getByName(direGc.groupName)
+    local group = Group.getByName(distressedGc.groupName)
     if group and group:isExist() then
         group:destroy()
     end
 
     local grantedTypes = {}
-    for _, unitType in ipairs(direGc.templateTypes) do
+    for _, unitType in ipairs(distressedGc.templateTypes) do
         if self.pool:checkOut(unitKey(color, unitType)) then
             table.insert(grantedTypes, unitType)
         end
@@ -831,7 +833,7 @@ function UnitRecovery:respawnGroup(direGc, atZone)
 
     if #grantedTypes == 0 then
         env.info(string.format("*** %s UnitRecovery: %s destroyed, no capacity remained to respawn it",
-            color, direGc.groupName))
+            color, distressedGc.groupName))
         return nil
     end
 
@@ -840,7 +842,7 @@ function UnitRecovery:respawnGroup(direGc, atZone)
     self.map:spawnGroupInZone(freshGroupName, atZone, color, grantedTypes, heading)
 
     env.info(string.format("*** %s UnitRecovery: %s respawned fresh as %s (%d/%d original units granted)",
-        color, direGc.groupName, freshGroupName, #grantedTypes, #direGc.templateTypes))
+        color, distressedGc.groupName, freshGroupName, #grantedTypes, #distressedGc.templateTypes))
     return freshGroupName
 end
 
@@ -978,7 +980,7 @@ function GroupCommander.new(groupName, config)
     -- (before any losses) - not derived from any spawn-time template
     -- parameter, since ControlZones's spawn calls don't thread one through
     -- to GroupCommander. This works for a group spawned any way at all,
-    -- and is what UnitRecovery respawns from when a dire unit's group
+    -- and is what UnitRecovery respawns from when a distressed unit's group
     -- needs a fresh full-strength instance (see src/unit-recovery.lua).
     self.templateTypes = self:getOwnUnitTypes()
     self.initialCollectiveStatus = self:getCollectiveStatus()
@@ -1063,9 +1065,16 @@ end
 function GroupCommander:observe()
     local group = Group.getByName(self.groupName)
     if not group or not group:isExist() then
-        -- Mark as destroyed (oodaTick will handle cancellation)
+        -- Mark as destroyed (oodaTick will handle cancellation) - release our
+        -- own map mark right here, since oodaTick cancels our schedule
+        -- immediately after this call, before act() (which normally does
+        -- this via syncGroupOrder noticing a missing position) ever runs
+        -- again.
         self.destroyed = true
         self.lastObserveTime = timer.getTime()
+        if self.visualizer then
+            self.visualizer:release("group:" .. self.groupName)
+        end
         env.info(self.groupName .. " destroyed - marking for cleanup")
         return
     end
@@ -1584,9 +1593,9 @@ end
 -- Condition thresholds, as percent (0-100) to match ForceStatusAnalyzer's
 -- own thresholdPercent convention. Ammo/fuel critical are deliberately
 -- looser than ForceStatusAnalyzer's own defaults (5%/10%) - waiting until a
--- group is nearly bone dry before flagging it dire meant most groups never
--- got noticed in practice; a resupply convoy takes real travel time, so the
--- threshold needs enough runway to matter. Degraded is set well above its
+-- group is nearly bone dry before flagging it distressed meant most groups
+-- never got noticed in practice; a resupply convoy takes real travel time,
+-- so the threshold needs enough runway to matter. Degraded is set well above its
 -- matching critical threshold (not just above the old defaults) so there's
 -- still a meaningful DEGRADED window before CRITICAL takes over - health
 -- and attrition are unchanged from where they started.
@@ -1598,9 +1607,9 @@ local ATTRITION_CRITICAL_RATIO = 0.6
 local ATTRITION_DEGRADED_RATIO = 0.3
 
 -- True if ammo, health, fuel, or attrition (unit count lost) is critically
--- low - the "dire" floor used to exclude a group from new order assignment
--- entirely (see OperationalCommander:assignOrderTemplate), independent of
--- how well it'd otherwise fit a mission's missionProfile. status is
+-- low - the "distressed" floor used to exclude a group from new order
+-- assignment entirely (see OperationalCommander:assignOrderTemplate),
+-- independent of how well it'd otherwise fit a mission's missionProfile. status is
 -- optional - pass one in if you already fetched it this tick (see
 -- getConditionSummary) to avoid querying DCS for ammo/life a second time.
 --
@@ -3735,7 +3744,7 @@ __bundle_register("doctrines.tactical.repair-doctrine", function(require, _LOADE
 -- REPAIR orders (see src/doctrines/operational/repair-resupply-plan.lua).
 --
 -- Unlike every other tactical doctrine, this one never marks its own order
--- complete - a dire unit's repair/respawn is resolved externally by
+-- complete - a distressed unit's repair/respawn is resolved externally by
 -- RepairResupplyPlan (the operational doctrine coordinating this unit and
 -- the resupply convoy it's waiting to meet), since that decision depends on
 -- state (the convoy's own position, native DCS ammo resupply progress,
@@ -3743,10 +3752,20 @@ __bundle_register("doctrines.tactical.repair-doctrine", function(require, _LOADE
 -- shouldn't reach for - see the doctrine-independence rule this codebase
 -- follows. Advance/Hold here only ever get the unit to the rendezvous point
 -- and keep it safe while it waits.
+--
+-- Also unlike every other tactical doctrine, there's no Abort phase here: a
+-- distressed unit's order already *is* "get to safety" - giving up on it
+-- under threat and handing off to DefensiveDoctrine would just swap one
+-- flight response for a different one, with a dead standing-still tick in
+-- between (the trigger-then-terminal-phase pattern every other doctrine's
+-- Abort uses this session) at exactly the moment the unit needed to be
+-- moving. A distressed unit is also, by definition, already weak, so
+-- scoring threat favorability the way Rally/Assault do would trip
+-- constantly on ordinary contact. Threat just makes it retreat harder via
+-- considerFallback - it never gives up on the order.
 
 local constants = require("constants")
 local Doctrine = require("doctrine")
-local ForceStatusAnalyzer = require("force-status-analyzer")
 local SpatialAgent = require("spatial-agent")
 
 local dispositionTypes = constants.dispositionTypes
@@ -3761,43 +3780,8 @@ function RepairDoctrine.new(commanderName)
 
     self:registerPhase("Advance", RepairDoctrine.advancePhase)
     self:registerPhase("Hold", RepairDoctrine.holdPhase)
-    self:registerPhase("Abort", RepairDoctrine.abortPhase)
 
     return self
-end
-
--- A unit already headed for repair is already in bad shape by definition -
--- this is about acute danger on the way there (something worse than the
--- condition that sent it here), not the dire condition itself.
-function RepairDoctrine:considerAbort(context)
-    local threat = context.threatAssessment
-    local status = context.statusReport
-    local totalUnits = context.totalUnits
-
-    local retreatAssessment = 0.0
-
-    if ForceStatusAnalyzer.isAmmoCritical(status.ammoCount, context.initialAmmoCount) then
-        retreatAssessment = retreatAssessment + 1.0
-    elseif ForceStatusAnalyzer.isAmmoLow(status.ammoCount, context.initialAmmoCount) then
-        retreatAssessment = retreatAssessment + 0.5
-    end
-
-    if ForceStatusAnalyzer.isHealthCritical(status.healthRatio) then
-        retreatAssessment = retreatAssessment + 1.0
-    elseif ForceStatusAnalyzer.isHealthLow(status.healthRatio) then
-        retreatAssessment = retreatAssessment + 0.5
-    end
-
-    local attritionRate = ForceStatusAnalyzer.calculateAttritionRate(status.aliveCount, totalUnits)
-    retreatAssessment = retreatAssessment + attritionRate
-
-    if threat.count > 0 and threat.favorability < 1.0 then
-        retreatAssessment = retreatAssessment + (1 - threat.favorability)
-    else
-        retreatAssessment = retreatAssessment - (1 / threat.favorability)
-    end
-
-    return retreatAssessment
 end
 
 -- Fallback destination if a known threat's weapon range currently reaches
@@ -3815,16 +3799,6 @@ function RepairDoctrine:advancePhase(context)
     local ownPosition = context.ownPosition
     local rendezvous = context.orderPosition
     local proximity = context.orderProximity or 500
-
-    local abortThreshold = context.retreatThreshold or 0.4
-
-    if self:considerAbort(context) >= abortThreshold then
-        self:changePhase("Abort")
-        return {
-            disposition = dispositionTypes.HOLD,
-            destination = nil,
-        }
-    end
 
     local fallback = self:considerFallback(context)
     if fallback then
@@ -3853,16 +3827,6 @@ function RepairDoctrine:advancePhase(context)
 end
 
 function RepairDoctrine:holdPhase(context)
-    local abortThreshold = context.retreatThreshold or 0.4
-
-    if self:considerAbort(context) >= abortThreshold then
-        self:changePhase("Abort")
-        return {
-            disposition = dispositionTypes.HOLD,
-            destination = nil,
-        }
-    end
-
     local fallback = self:considerFallback(context)
     if fallback then
         return {
@@ -3874,30 +3838,6 @@ function RepairDoctrine:holdPhase(context)
     return {
         disposition = dispositionTypes.HOLD,
         destination = nil,
-    }
-end
-
--- Abort's one real shot to act() (see GroupCommander:decide, and every
--- other tactical doctrine's abortPhase this session) - the trigger that
--- got us here deliberately only transitioned phase without setting
--- orderAction, so this handler is what actually retreats and declares the
--- order aborted. RepairResupplyPlan's checkFailure notices the aborted
--- order and tears down the session rather than waiting for a repair that
--- isn't going to happen.
-function RepairDoctrine:abortPhase(context)
-    local threat = context.threatAssessment
-    local ownPosition = context.ownPosition
-
-    local retreatDest = nil
-    if threat.center then
-        local direction = SpatialAgent.calculateDirection(threat.center, ownPosition)
-        retreatDest = SpatialAgent.calculateDestination(ownPosition, direction, 1000)
-    end
-
-    return {
-        disposition = dispositionTypes.RETREAT,
-        destination = retreatDest,
-        orderAction = "abort",
     }
 end
 
@@ -4554,7 +4494,7 @@ function CommanderVisualizer:syncGroupOrder(gc, color)
         signature = table.concat({"default", gc.disposition, threatCount, roundedPos, condition.level, condition.aliveCount}, "|")
     end
 
-    -- Dire condition overrides the normal background so it's visually
+    -- Distressed condition overrides the normal background so it's visually
     -- distinct from the coalition-colored default at a glance, independent
     -- of whatever order/disposition text says - this is the map-level
     -- confirmation that isConditionCritical's criteria are actually firing.
@@ -6823,22 +6763,22 @@ return DefensiveDoctrine
 
 end)
 __bundle_register("doctrines.operational.repair-resupply-plan", function(require, _LOADED, __bundle_register, __bundle_modules)
--- RepairResupplyPlan: coordinates a dire unit and its resupply convoy
+-- RepairResupplyPlan: coordinates a distressed unit and its resupply convoy
 -- meeting at a rendezvous point, then resolving native DCS ammo resupply,
--- a virtual fuel top-off timer, and (if health-critical) a virtual repair
--- timer - all running concurrently, resolving on whichever finishes last -
--- before releasing both back to service. See src/unit-recovery.lua for the
--- spawn/despawn/respawn mechanics this calls into, and StrategicCommander
--- for how this doctrine's Operation/Objective/OperationalCommander gets
--- set up in the first place.
+-- a virtual fuel top-off timer, and (if health-critical or badly attrited)
+-- a virtual repair timer - all running concurrently, resolving on whichever
+-- finishes last - before releasing both back to service. See
+-- src/unit-recovery.lua for the spawn/despawn/respawn mechanics this calls
+-- into, and StrategicCommander for how this doctrine's
+-- Operation/Objective/OperationalCommander gets set up in the first place.
 --
 -- Unlike the pool-based operational doctrines (ReconRallyAssaultPlan,
 -- FireSupportPlan), this one coordinates exactly two specific, named,
--- non-interchangeable groups - it holds direGc/convoyGc as live instance
--- references from construction (same pattern DefensiveDoctrine uses for
--- self.basePosition, just extended to whole GroupCommanders) and targets
--- orders at them directly via OperationalCommander's assignTo, rather than
--- letting suitability scoring pick from a pool.
+-- non-interchangeable groups - it holds distressedGc/convoyGc as live
+-- instance references from construction (same pattern DefensiveDoctrine
+-- uses for self.basePosition, just extended to whole GroupCommanders) and
+-- targets orders at them directly via OperationalCommander's assignTo,
+-- rather than letting suitability scoring pick from a pool.
 --
 -- Phases: Traveling -> Resupplying -> Returning -> Restocking -> complete.
 -- OperationalCommander doesn't freeze on a finished order the way
@@ -6857,25 +6797,30 @@ local taskTypes = constants.taskTypes
 local alr = constants.acceptableLevelsOfRisk
 
 -- Tunable timers, all seconds. FUEL_TOPOFF_TIME effectively floors every
--- resupply's duration (even an ammo-only dire unit waits this long) since
--- it's the shortest of the three real-world-plausible numbers here.
+-- resupply's duration (even an ammo-only distressed unit waits this long)
+-- since it's the shortest of the three real-world-plausible numbers here.
 local FUEL_TOPOFF_TIME = 120
 local REPAIR_TIME = 300
 local RESTOCK_TIME = 90
 local AMMO_STABLE_CHECKS = 2 -- consecutive unchanged polls before "DCS finished rearming"
 local ARRIVAL_PROXIMITY = 500
+-- Matches GroupCommander's own ATTRITION_CRITICAL_RATIO threshold - if lost
+-- unit-mates (not survivor health/ammo/fuel) is what flagged this unit
+-- distressed in the first place, only a respawn actually fixes that;
+-- nothing else in this system replaces a destroyed unit.
+local ATTRITION_RESPAWN_THRESHOLD = 0.6
 
 local RepairResupplyPlan = {}
 setmetatable(RepairResupplyPlan, {__index = Doctrine})
 RepairResupplyPlan.__index = RepairResupplyPlan
 
--- config: { direGc, convoyGc, unitRecovery, rendezvousZone, rendezvousPoint,
---           homeZone, homePoint }
+-- config: { distressedGc, convoyGc, unitRecovery, rendezvousZone,
+--           rendezvousPoint, homeZone, homePoint }
 function RepairResupplyPlan.new(commanderName, config)
     local self = Doctrine.new("RepairResupply", commanderName)
     setmetatable(self, RepairResupplyPlan)
 
-    self.direGc = config.direGc
+    self.distressedGc = config.distressedGc
     self.convoyGc = config.convoyGc
     self.unitRecovery = config.unitRecovery
     self.rendezvousZone = config.rendezvousZone
@@ -6883,11 +6828,15 @@ function RepairResupplyPlan.new(commanderName, config)
     self.homeZone = config.homeZone
     self.homePoint = config.homePoint
 
-    self.healthCritical = nil
+    self.needsRespawn = nil
     self.resupplyStartedAt = nil
     self.restockStartedAt = nil
     self.lastAmmoCount = nil
     self.ammoStableTicks = 0
+    -- Set by checkFailure when the distressed unit is lost but the convoy
+    -- isn't - restockingPhase reports this as the objective's real outcome
+    -- once the convoy actually gets home, instead of a false "complete".
+    self.pendingFailureReason = nil
 
     self:registerPhase("Traveling", RepairResupplyPlan.travelingPhase)
     self:registerPhase("Resupplying", RepairResupplyPlan.resupplyingPhase)
@@ -6902,53 +6851,77 @@ end
 -- partial success. Returns a decision table to return immediately if
 -- something failed, or nil if both partners are still in play.
 function RepairResupplyPlan:checkFailure()
-    local direDestroyed = self.direGc.destroyed
-    local direAborted = self.direGc.orders and self.direGc.orders.status == constants.orderStatus.ABORTED
-    local direLost = direDestroyed or direAborted
+    local distressedDestroyed = self.distressedGc.destroyed
+    local distressedAborted = self.distressedGc.orders and self.distressedGc.orders.status == constants.orderStatus.ABORTED
+    local distressedLost = distressedDestroyed or distressedAborted
 
     local convoyDestroyed = self.convoyGc.destroyed
     local convoyAborted = self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED
     local convoyLost = convoyDestroyed or convoyAborted
 
-    if not direLost and not convoyLost then
+    if not distressedLost and not convoyLost then
         return nil
     end
 
     local replacements = {}
     local released = {}
 
+    if distressedLost then
+        replacements[self.distressedGc.groupName] = false
+        -- Unlike the convoy, an aborted-but-alive distressed unit has
+        -- somewhere to go: it fled real danger, not "job's done" - release
+        -- it back to reserves so it isn't orphaned (removed from this
+        -- opscom's roster but never handed anywhere else) -
+        -- dispatchDistressedReserves will pick it up again once it's safe.
+        -- If it's destroyed there's nothing to release.
+        if not distressedDestroyed then
+            table.insert(released, self.distressedGc)
+        end
+    end
+
     if convoyLost then
-        -- Safe whether the convoy is already destroyed (no-op destroy,
-        -- still checks the capacity back in) or merely aborted its order
-        -- while still alive (genuinely despawns it either way) - a convoy
+        -- Convoy itself is gone (destroyed - no-op destroy, still checks
+        -- the capacity back in - or aborted its own order while still
+        -- alive) - nowhere left to send it, retire it in place. A convoy
         -- never goes back to reserves, destroyed or not (see
         -- unit-recovery.lua's despawn-on-idle philosophy).
         self.unitRecovery:despawnConvoy(self.convoyGc.groupName)
         replacements[self.convoyGc.groupName] = false
-    end
-    if direLost then
-        replacements[self.direGc.groupName] = false
-        -- Unlike the convoy, an aborted-but-alive dire unit has somewhere
-        -- to go: it fled real danger, not "job's done" - release it back to
-        -- reserves so it isn't orphaned (removed from this opscom's roster
-        -- but never handed anywhere else) - dispatchDireReserves will pick
-        -- it up again once it's safe. If it's destroyed there's nothing to
-        -- release.
-        if not direDestroyed then
-            table.insert(released, self.direGc)
-        end
-    end
-    -- If only the convoy was lost, the dire unit stays in the roster (not
-    -- listed in replacements) so disband() returns it to reserves once this
-    -- objective completes below, same as any other survivor.
 
-    env.info(string.format("*** %s RepairResupplyPlan: session for %s ended in failure (direLost=%s convoyLost=%s)",
-        self.commanderName, self.direGc.groupName, tostring(direLost), tostring(convoyLost)))
+        env.info(string.format("*** %s RepairResupplyPlan: session for %s ended in failure (distressedLost=%s convoyLost=%s)",
+            self.commanderName, self.distressedGc.groupName, tostring(distressedLost), tostring(convoyLost)))
+
+        return {
+            groupReplacements = replacements,
+            releaseGroups = released,
+            objectiveFailed = "partner_lost",
+        }
+    end
+
+    -- distressedLost but the convoy is still fine - it has no one left to
+    -- resupply, but it shouldn't simply cease to exist wherever it happens
+    -- to be standing. Send it home via the same Returning/Restocking path
+    -- the normal completion flow already uses (it doesn't care why it's
+    -- heading home), and remember the real outcome for restockingPhase to
+    -- report once it actually gets there - leaving groupCommanders alone
+    -- for now, since this opscom still needs to route orders to it.
+    self.pendingFailureReason = "partner_lost"
+    self:changePhase("Returning")
+    env.info(string.format("*** %s RepairResupplyPlan: %s lost, sending %s home before retiring",
+        self.commanderName, self.distressedGc.groupName, self.convoyGc.groupName))
 
     return {
         groupReplacements = replacements,
         releaseGroups = released,
-        objectiveFailed = "partner_lost",
+        orders = {
+            {
+                type      = taskTypes.RESUPPLY,
+                position  = self.homePoint,
+                proximity = ARRIVAL_PROXIMITY,
+                alr       = alr.LOW,
+                assignTo  = self.convoyGc.groupName,
+            },
+        },
     }
 end
 
@@ -6956,21 +6929,27 @@ function RepairResupplyPlan:travelingPhase(context)
     local failure = self:checkFailure()
     if failure then return failure end
 
-    local direStatus = self.direGc:getStatus()
+    local distressedStatus = self.distressedGc:getStatus()
     local convoyStatus = self.convoyGc:getStatus()
-    local direArrived = direStatus.position
-        and SpatialAgent.distance2D(direStatus.position, self.rendezvousPoint) <= ARRIVAL_PROXIMITY
+    local distressedArrived = distressedStatus.position
+        and SpatialAgent.distance2D(distressedStatus.position, self.rendezvousPoint) <= ARRIVAL_PROXIMITY
     local convoyArrived = convoyStatus.position
         and SpatialAgent.distance2D(convoyStatus.position, self.rendezvousPoint) <= ARRIVAL_PROXIMITY
 
-    if direArrived and convoyArrived then
-        local direReport = self.direGc:getStatusReport()
-        self.healthCritical = ForceStatusAnalyzer.isHealthCritical(direReport.healthRatio)
+    if distressedArrived and convoyArrived then
+        local distressedReport = self.distressedGc:getStatusReport()
+        local totalUnits = #self.distressedGc.initialUnitNames
+        -- Health-critical survivors need a respawn to fix; so does a group
+        -- that's merely lost most of its unit-mates while the survivors
+        -- themselves are fine - fuel/ammo top-off does nothing for either
+        -- of those, only despawn+respawn actually restores a full roster.
+        self.needsRespawn = ForceStatusAnalyzer.isHealthCritical(distressedReport.healthRatio)
+            or ForceStatusAnalyzer.hasSignificantAttrition(distressedReport.aliveCount, totalUnits, ATTRITION_RESPAWN_THRESHOLD)
         self.resupplyStartedAt = timer.getTime()
-        self.lastAmmoCount = direReport.ammoCount
+        self.lastAmmoCount = distressedReport.ammoCount
         self:changePhase("Resupplying")
-        env.info(string.format("*** %s RepairResupplyPlan: %s and %s met, resupply starting (healthCritical=%s)",
-            self.commanderName, self.direGc.groupName, self.convoyGc.groupName, tostring(self.healthCritical)))
+        env.info(string.format("*** %s RepairResupplyPlan: %s and %s met, resupply starting (needsRespawn=%s)",
+            self.commanderName, self.distressedGc.groupName, self.convoyGc.groupName, tostring(self.needsRespawn)))
     end
 
     return {
@@ -6979,8 +6958,8 @@ function RepairResupplyPlan:travelingPhase(context)
                 type      = taskTypes.REPAIR,
                 position  = self.rendezvousPoint,
                 proximity = ARRIVAL_PROXIMITY,
-                alr       = alr.LOW, -- dire units should flee readily, not stand and fight
-                assignTo  = self.direGc.groupName,
+                alr       = alr.LOW, -- distressed units should flee readily, not stand and fight
+                assignTo  = self.distressedGc.groupName,
             },
             {
                 type      = taskTypes.RESUPPLY,
@@ -6995,15 +6974,16 @@ end
 
 -- Polls the three concurrent resolution conditions (native ammo, virtual
 -- fuel, virtual repair) and, once all have resolved, either respawns the
--- dire unit's group fresh (health-critical) or releases it as-is - either
--- way it's done and gets handed back to reserves right away via
--- releaseGroups, rather than waiting for the convoy's own return trip too.
--- Then redirects the convoy home with an updated RESUPPLY order.
+-- distressed unit's group fresh (health-critical or badly attrited) or
+-- releases it as-is - either way it's done and gets handed back to reserves
+-- right away via releaseGroups, rather than waiting for the convoy's own
+-- return trip too. Then redirects the convoy home with an updated RESUPPLY
+-- order.
 function RepairResupplyPlan:resupplyingPhase(context)
     local failure = self:checkFailure()
     if failure then return failure end
 
-    local status = self.direGc:getStatusReport()
+    local status = self.distressedGc:getStatusReport()
     if status.ammoCount == self.lastAmmoCount then
         self.ammoStableTicks = self.ammoStableTicks + 1
     else
@@ -7014,7 +6994,7 @@ function RepairResupplyPlan:resupplyingPhase(context)
 
     local elapsed = timer.getTime() - self.resupplyStartedAt
     local fuelResolved = elapsed >= FUEL_TOPOFF_TIME
-    local repairResolved = (not self.healthCritical) or elapsed >= REPAIR_TIME
+    local repairResolved = (not self.needsRespawn) or elapsed >= REPAIR_TIME
 
     if not (ammoResolved and fuelResolved and repairResolved) then
         return {
@@ -7024,38 +7004,38 @@ function RepairResupplyPlan:resupplyingPhase(context)
                     position  = self.rendezvousPoint,
                     proximity = ARRIVAL_PROXIMITY,
                     alr       = alr.LOW,
-                    assignTo  = self.direGc.groupName,
+                    assignTo  = self.distressedGc.groupName,
                 },
             },
         }
     end
 
     local released = {}
-    if self.healthCritical then
-        local freshName = self.unitRecovery:respawnGroup(self.direGc, self.rendezvousZone)
+    if self.needsRespawn then
+        local freshName = self.unitRecovery:respawnGroup(self.distressedGc, self.rendezvousZone)
         if freshName then
             table.insert(released, self.unitRecovery:wrapGroupCommander(freshName))
         end
     else
-        self.direGc.fuelRemaining = 1.0 -- virtual refuel; ammo is genuinely refilled by DCS already
-        if self.direGc.orders and self.direGc.orders:isActive() then
-            self.direGc.orders:complete()
+        self.distressedGc.fuelRemaining = 1.0 -- virtual refuel; ammo is genuinely refilled by DCS already
+        if self.distressedGc.orders and self.distressedGc.orders:isActive() then
+            self.distressedGc.orders:complete()
         end
-        table.insert(released, self.direGc)
+        table.insert(released, self.distressedGc)
         env.info(string.format("*** %s RepairResupplyPlan: %s resupplied in place (no respawn needed)",
-            self.commanderName, self.direGc.groupName))
+            self.commanderName, self.distressedGc.groupName))
     end
 
     self:changePhase("Returning")
 
     return {
-        -- The old direGc entry (destroyed-and-replaced or simply retired
-        -- from this opscom's concern either way) comes out of
+        -- The old distressedGc entry (destroyed-and-replaced or simply
+        -- retired from this opscom's concern either way) comes out of
         -- groupCommanders here; the group actually going back into service
         -- - released above - is what StrategicCommander:reclaimReleasedGroups
         -- picks up next cycle. Leaving it in groupCommanders too would risk
         -- it being double-tasked once it's also sitting in reserves.
-        groupReplacements = { [self.direGc.groupName] = false },
+        groupReplacements = { [self.distressedGc.groupName] = false },
         releaseGroups = released,
         orders = {
             {
@@ -7070,9 +7050,10 @@ function RepairResupplyPlan:resupplyingPhase(context)
 end
 
 function RepairResupplyPlan:returningPhase(context)
-    -- Only the convoy is still being coordinated at this point - direGc was
-    -- already released in resupplyingPhase, so checkFailure would wrongly
-    -- fire on it (see its guard comment); just watch the convoy directly.
+    -- Only the convoy is still being coordinated at this point -
+    -- distressedGc was already released in resupplyingPhase, so
+    -- checkFailure would wrongly fire on it (see its guard comment); just
+    -- watch the convoy directly.
     if self.convoyGc.destroyed or
         (self.convoyGc.orders and self.convoyGc.orders.status == constants.orderStatus.ABORTED) then
         env.info(string.format("*** %s RepairResupplyPlan: convoy %s lost on the way home",
@@ -7112,6 +7093,13 @@ function RepairResupplyPlan:restockingPhase(context)
     env.info(string.format("*** %s RepairResupplyPlan: %s restocked, retiring",
         self.commanderName, self.convoyGc.groupName))
     self.unitRecovery:despawnConvoy(self.convoyGc.groupName)
+
+    if self.pendingFailureReason then
+        return {
+            groupReplacements = { [self.convoyGc.groupName] = false },
+            objectiveFailed = self.pendingFailureReason,
+        }
+    end
 
     return {
         groupReplacements = { [self.convoyGc.groupName] = false },
@@ -7234,7 +7222,7 @@ function OperationalCommander:disband()
             table.insert(survivors, gc)
         end
     end
-    env.info("*** " .. self.color .. " Ops: disbanded, returning " .. #survivors .. " groups to reserves")
+    env.info("*** " .. self.name .. " (" .. self.color .. " Ops): disbanded, returning " .. #survivors .. " groups to reserves")
     return survivors
 end
 
@@ -7252,17 +7240,17 @@ function OperationalCommander:observe()
         activeGroups = activeGroups + 1
     end
     local totalThreats = self.threatTracker:count()
-    env.info("*** " .. self.color .. " Ops OBSERVE: " .. activeGroups .. " groups, " .. totalThreats .. " threats tracked")
+    env.info("*** " .. self.name .. " (" .. self.color .. " Ops) OBSERVE: " .. activeGroups .. " groups, " .. totalThreats .. " threats tracked")
 end
 
 function OperationalCommander:orient()
     -- Clean up destroyed commanders first, before any assessment
     self:cleanupDestroyedCommanders()
 
-    -- Pull out any idle-and-dire group before order assignment even
-    -- considers it - see releaseDireGroups for why this can't just wait
-    -- for the objective to naturally complete/refresh.
-    self:releaseDireGroups()
+    -- Pull out any idle-and-distressed group before order assignment even
+    -- considers it - see releaseDistressedGroups for why this can't just
+    -- wait for the objective to naturally complete/refresh.
+    self:releaseDistressedGroups()
 
     -- Sync order statuses from commanders back to order graph
     self.orderCoordinator:syncOrderStatuses(self.groupCommanders)
@@ -7288,7 +7276,7 @@ function OperationalCommander:orient()
         end
     end
     if totalOrders > 0 then
-        env.info("*** " .. self.color .. " Ops ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops) ORIENT: Orders " .. activeOrders .. "/" .. totalOrders .. " active (" .. completedOrders .. " done, " .. abortedOrders .. " aborted)")
     end
 end
 
@@ -7305,7 +7293,7 @@ function OperationalCommander:decide()
             assaultRadius          = self.assaultRadius,
             assaultStagingDistance = self.assaultStagingDistance,
         })
-        env.info("*** " .. self.color .. " Ops: Assigned ReconRallyAssaultPlan doctrine")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops): Assigned ReconRallyAssaultPlan doctrine")
     end
 
     for _, objective in ipairs(self.orderCoordinator.objectives) do
@@ -7316,9 +7304,9 @@ function OperationalCommander:decide()
     
     -- Log consolidated DECIDE summary
     if #self.plannedOrders > 0 then
-        env.info("*** " .. self.color .. " Ops DECIDE: Planning " .. #self.plannedOrders .. " orders")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops) DECIDE: Planning " .. #self.plannedOrders .. " orders")
     else
-        env.info("*** " .. self.color .. " Ops DECIDE: No new orders planned")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops) DECIDE: No new orders planned")
     end
 end
 
@@ -7375,12 +7363,12 @@ function OperationalCommander:issuePlannedOrders()
                                 order.type == taskTypes.DEFEND and "DEFEND" or 
                                 order.type == taskTypes.REPOSITION and "REPOSITION" or 
                                 tostring(order.type)
-            env.info("*** " .. self.color .. " Ops ACT: " .. orderTypeName .. " → " .. commander.groupName)
+            env.info("*** " .. self.name .. " (" .. self.color .. " Ops) ACT: " .. orderTypeName .. " → " .. commander.groupName)
         end
     end
     
     -- Log consolidated ACT summary
-    env.info("*** " .. self.color .. " Ops ACT: Issued " .. issuedCount .. " orders total")
+    env.info("*** " .. self.name .. " (" .. self.color .. " Ops) ACT: Issued " .. issuedCount .. " orders total")
 end
 
 
@@ -7407,7 +7395,7 @@ function OperationalCommander:cleanupDestroyedCommanders()
         local objective = self.orderCoordinator.objectives[1]
         if objective and not objective:isComplete() then
             objective:markFailed("all groups destroyed")
-            env.info("*** " .. self.color .. " Ops: objective failed - all groups destroyed")
+            env.info("*** " .. self.name .. " (" .. self.color .. " Ops): objective failed - all groups destroyed")
         end
     end
 
@@ -7426,8 +7414,8 @@ function OperationalCommander:cleanupDestroyedCommanders()
                             end
                         end
                         if not groupStillExists then
-                            env.info(string.format("*** %s Ops: Aborting order for %s (group missing)",
-                                self.color, order.assignedTo or "unknown"))
+                            env.info(string.format("*** %s (%s Ops): Aborting order for %s (group missing)",
+                                self.name, self.color, order.assignedTo or "unknown"))
                             order.status = constants.orderStatus.ABORTED
                             objective.updatedAt = timer.getTime()
                         end
@@ -7438,39 +7426,47 @@ function OperationalCommander:cleanupDestroyedCommanders()
     end
 end
 
--- Pulls any idle (no active order) and dire (isConditionCritical) group out
--- of this opscom's roster and into releasedGroupCommanders, the same drain
--- StrategicCommander:reclaimReleasedGroups already services every cycle for
--- RepairResupplyPlan's own early releases (see its header). Without this, a
--- group that goes critical while tasked (an artillery group low on ammo
--- mid-fireSupport-objective, say) would sit here safely idling in
--- DefensiveDoctrine - assignOrderTemplate's own hard floor already refuses
--- to give it a new order - but invisible to dispatchDireReserves, since
--- that only scans self.reserves. It would eventually reach reserves once
--- this objective naturally completes or refreshes, but that can be
--- minutes away; this catches it the moment it's actually idle instead.
+-- Pulls any idle (no active order) and distressed (isConditionCritical)
+-- group out of this opscom's roster and into releasedGroupCommanders, the
+-- same drain StrategicCommander:reclaimReleasedGroups already services
+-- every cycle for RepairResupplyPlan's own early releases (see its header).
+-- Without this, a group that goes critical while tasked (an artillery group
+-- low on ammo mid-fireSupport-objective, say) would sit here safely idling
+-- in DefensiveDoctrine - assignOrderTemplate's own hard floor already
+-- refuses to give it a new order - but invisible to
+-- dispatchDistressedReserves, since that only scans self.reserves. It would
+-- eventually reach reserves once this objective naturally completes or
+-- refreshes, but that can be minutes away; this catches it the moment it's
+-- actually idle instead.
 --
 -- Restricted to idle groups deliberately - a group mid-order is left to
 -- its own tactical doctrine's considerAbort (already weighted by health/
 -- fuel/ammo) to decide whether to abort that order, rather than being
--- yanked out from under an in-progress task just because it's dire.
+-- yanked out from under an in-progress task just because it's distressed.
 --
 -- "Idle" specifically means HAD an order and it finished - not "has never
--- had one" (gc.orders == nil). A freshly-constructed opscom clears every
--- group's orders to nil (see OperationalCommander.new) before its doctrine
--- ever gets a first chance to assign one; treating that as idle would pull
--- a group back out before its own opscom could task it at all, which is
--- exactly backwards for RepairResupplyPlan's direGc - dire is the whole
--- reason it's there, and yanking it away the instant it arrives means it
--- never receives its REPAIR order, only ever gets redispatched to a new
--- convoy, forever.
-function OperationalCommander:releaseDireGroups()
+-- had one" (gc.orders == nil). Both a freshly-constructed opscom (which
+-- clears every group's orders to nil in OperationalCommander.new, before its
+-- doctrine ever gets a first chance to assign one) and a group whose last
+-- order has already finished and been cleared back to nil (see
+-- GroupCommander:clearOrders/decide's freeze-guard, the ordinary state for
+-- ANY idle group, distressed or not) look identical via gc.orders alone.
+-- The two need opposite treatment - releasing the former pulls a group back
+-- out before its own opscom could task it at all (exactly backwards for
+-- RepairResupplyPlan's distressedGc, which would just get redispatched to a
+-- new convoy forever without ever receiving its REPAIR order), while
+-- refusing to release the latter leaves a distressed group stuck forever,
+-- invisible to repair, once it naturally falls idle mid-operation.
+-- self.lastIssuedOrders - this opscom's own record of ever having actually
+-- issued a group an order - disambiguates them.
+function OperationalCommander:releaseDistressedGroups()
     local remaining = {}
     for _, gc in ipairs(self.groupCommanders) do
-        local idle = gc.orders and gc.orders:isFinished()
+        local everTaskedByUs = self.lastIssuedOrders[gc.groupName] ~= nil
+        local idle = everTaskedByUs and (not gc.orders or gc.orders:isFinished())
         if idle and gc:isConditionCritical() then
-            env.info(string.format("*** %s Ops: releasing idle dire group %s for repair/resupply",
-                self.color, gc.groupName))
+            env.info(string.format("*** %s (%s Ops): releasing idle distressed group %s for repair/resupply",
+                self.name, self.color, gc.groupName))
             table.insert(self.releasedGroupCommanders, gc)
         else
             table.insert(remaining, gc)
@@ -7558,8 +7554,8 @@ end
 -- and disband() hands back whatever's still in groupCommanders.
 -- releaseGroups (optional): array of GroupCommanders to hand back to
 -- StrategicCommander's reserves right now, mid-operation, rather than
--- waiting for this objective to complete - e.g. a dire unit that's done
--- resupplying while its convoy still has a return trip ahead of it.
+-- waiting for this objective to complete - e.g. a distressed unit that's
+-- done resupplying while its convoy still has a return trip ahead of it.
 -- Doesn't touch groupCommanders itself; pair with groupReplacements=false
 -- for the same name if the group should also stop being managed by this
 -- opscom (almost always yes - a released-but-still-tracked group could get
@@ -7580,10 +7576,10 @@ function OperationalCommander:planObjectiveWithDoctrine(objective)
     end
 
     if result.objectiveFailed then
-        env.info("*** " .. self.color .. " Ops: OBJECTIVE FAILED (" .. tostring(result.objectiveFailed) .. ") --------------------")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops): OBJECTIVE FAILED (" .. tostring(result.objectiveFailed) .. ") --------------------")
         objective:markFailed(result.objectiveFailed)
     elseif result.objectiveComplete then
-        env.info("*** " .. self.color .. " Ops: OBJECTIVE COMPLETE --------------------")
+        env.info("*** " .. self.name .. " (" .. self.color .. " Ops): OBJECTIVE COMPLETE --------------------")
         objective:markAchieved()
     end
 
@@ -7644,14 +7640,14 @@ function OperationalCommander:assignOrderTemplate(template, objective)
            s.orderStatus == orderStatus.COMPLETED or
            s.orderStatus == orderStatus.ABORTED then
             -- A hard floor, not just a low suitability score: a group in
-            -- dire condition (critical ammo/health/fuel) is excluded from
-            -- new tasking entirely, regardless of how well it'd otherwise
-            -- match missionProfile - suitability alone only deprioritizes
-            -- via sort order, which still picks a dire group when it's the
-            -- best (or only) candidate available.
+            -- distressed condition (critical ammo/health/fuel) is excluded
+            -- from new tasking entirely, regardless of how well it'd
+            -- otherwise match missionProfile - suitability alone only
+            -- deprioritizes via sort order, which still picks a distressed
+            -- group when it's the best (or only) candidate available.
             if commander:isConditionCritical() then
-                env.info(string.format("*** %s Ops: excluding %s from order assignment (dire condition)",
-                    self.color, commander.groupName))
+                env.info(string.format("*** %s (%s Ops): excluding %s from order assignment (distressed condition)",
+                    self.name, self.color, commander.groupName))
             else
                 local suitability = missionProfile and commander:getSuitability(missionProfile) or 1.0
                 local dist = (s.position and template.position)
@@ -9956,16 +9952,16 @@ function ControlZones:selectZonesAtDepth(color, targetDepth)
 end
 
 -- Nearest zone at or deeper than minDepth to `position` - the first-pass
--- rendezvous point for a dire unit and the convoy meeting it. Deliberately
--- deeper than fire-support/FARP placement's depth 1 (default minDepth 2),
--- so it's genuinely rear rather than just "one zone back." Falls back
--- toward the front (decrementing depth) if the map isn't deep enough to
--- have anything at minDepth, rather than returning nothing.
+-- rendezvous point for a distressed unit and the convoy meeting it.
+-- Deliberately deeper than fire-support/FARP placement's depth 1 (default
+-- minDepth 2), so it's genuinely rear rather than just "one zone back."
+-- Falls back toward the front (decrementing depth) if the map isn't deep
+-- enough to have anything at minDepth, rather than returning nothing.
 --
--- This is intentionally just proximity-to-the-dire-unit for now, not the
--- bidirectional travel-time/risk/convoy-availability optimization planned
--- for later - isolated into its own function specifically so that upgrade
--- can replace this body without touching any caller.
+-- This is intentionally just proximity-to-the-distressed-unit for now, not
+-- the bidirectional travel-time/risk/convoy-availability optimization
+-- planned for later - isolated into its own function specifically so that
+-- upgrade can replace this body without touching any caller.
 function ControlZones:selectRendezvousZone(color, position, minDepth)
     minDepth = minDepth or 2
 
